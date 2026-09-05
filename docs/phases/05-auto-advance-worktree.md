@@ -167,3 +167,103 @@ Thread thr_pbtdsi8szc archived
 - UI was typechecked and bundled, but not screenshot-tested in a browser session.
 - Workspace setup execution still depends on the Phase 6 `setup-worktree` skill text; Phase 5 only stores config and sends the rerun prompt to the worktree thread.
 - `notification_suppressions` is recorded for Phase 7 consumption; current bb child-completion posting is not suppressed by this phase.
+
+## Review Fixes
+
+Commits:
+
+- `0ffb56e` fixes findings 1, 2, 3, 4, 6, 7, and 9: atomic advance claim plus pending attempt insert in one SQLite transaction, per-task launch mutex, recoverable pre-spawn failure reset, sibling phase launches with plugin metadata only, retry/adopt preserving attempt metadata and environment role, idle ingest before extraction, completed-turn extraction keys, per-turn notification suppressions, and expanded node:test coverage.
+- `d230b2b` fixes findings 5, 8, 10, and 11: strict rooted workspace config parsing, task creation and launch validation for worktree configs, setup rerun targeting only the worktree environment with effective primary config, workflow strip worktree placement and label mapping, and the Phase 6 launch gate via `RPI_SKILLS_AVAILABLE = false`.
+- `7a90261` fixes the live-check regression found while retesting finding 3: bb normal plugin-spawn messages carry `systemMessageKind: "unlabeled"`, which must still allow extraction. Only concrete child/system messages or `senderThreadId` preserve the prior next step.
+
+Finding map:
+
+- 1: `0ffb56e`
+- 2: `0ffb56e`
+- 3: `0ffb56e`, `7a90261`
+- 4: `0ffb56e`
+- 5: `d230b2b`
+- 6: `0ffb56e`
+- 7: `0ffb56e`
+- 8: `d230b2b`
+- 9: `0ffb56e`
+- 10: `d230b2b`
+- 11: `d230b2b`
+
+SDK system-message fields inspected in `node_modules/@get-bb/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts`:
+
+- `client/turn/requested.data.senderThreadId`: nullable string.
+- `client/turn/requested.data.systemMessageKind`: optional enum with `child-completed`, `child-failed`, `child-interrupted`, `child-needs-attention`, `child-outcome-batch`, `ownership-assigned`, `ownership-removed`, and `unlabeled`.
+- Timeline conversation user rows expose `senderThreadId`, `systemMessageKind`, `systemMessageSubject`, `sourceSeqStart`, `sourceSeqEnd`, `turnId`, and `text`.
+- Live observation: normal plugin-spawn user messages used `systemMessageKind: "unlabeled"` and `senderThreadId: null`; child/system follow-up preservation therefore checks `systemMessageKind !== "unlabeled"` or a non-null `senderThreadId`.
+
+Verification after fixes:
+
+```text
+npm test
+tests 92
+pass 92
+fail 0
+```
+
+```text
+npx tsc --noEmit
+passed
+```
+
+```text
+bb plugin build
+dist/server.js
+dist/server.js.map
+dist/server.meta.json
+dist/app.js
+dist/app.css
+dist/app.meta.json
+```
+
+Live sibling check:
+
+```text
+bb plugin install . --yes
+humanlayer@0.1.0 running
+
+bb plugin reload humanlayer
+humanlayer@0.1.0 running
+```
+
+Live task `d3decaa3-d22f-434a-a055-2b2753fd1761`:
+
+```json
+{"threadId":"thr_qv7feedyxd"}
+```
+
+After predecessor idle, auto-advance spawned sibling `thr_b9xy4wcfqb` with plugin metadata:
+
+```json
+{"threadId":"thr_b9xy4wcfqb","label":"research","skillId":"create-research","launchedBy":"auto_advance","forkedFromThreadId":"thr_qv7feedyxd"}
+```
+
+Sibling proof:
+
+```text
+bb thread count --parent thr_qv7feedyxd
+0
+```
+
+`bb thread list --project proj_v36xq75qse --json` showed both live threads with `parentThreadId: null`. The predecessor timeline contained only the launch user message and the assistant completion, with no system follow-up turn. The predecessor session retained:
+
+```json
+{
+  "nextStepJson": {
+    "extraction": {
+      "type": "next_step_found",
+      "nextStepPrompt": "/rpi-create-research",
+      "nextStepType": "create-research"
+    }
+  },
+  "completedTurnKey": "events:1788613133946",
+  "nextStepTurnKey": "events:1788613133946"
+}
+```
+
+The live successor was stopped and both live-check threads were archived after evidence capture.
