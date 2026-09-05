@@ -3,12 +3,14 @@ import type { FormEvent } from "react";
 import {
   Markdown,
   experimental_SourceCode as SourceCode,
+  experimental_useSidebarThreads,
   useBbContext,
   useBbNavigate,
   useRealtime,
   useRpc,
   useSettings,
 } from "@get-bb/plugin-sdk/app";
+import type { PluginSidebarThread, PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type {
   ArtifactRecord,
@@ -22,6 +24,8 @@ import type {
   TaskRow,
   TaskUiState,
   TaskWorkspaceState,
+  WorkflowOverride,
+  WorkflowType,
   WorkspaceViewRecord,
   CommentThreadRecord,
 } from "../contract";
@@ -106,6 +110,33 @@ function SessionStatus({ status }: { status: string }) {
     <span className={cn("inline-flex items-center gap-2 text-sm font-medium", meta.className)}>
       <Icon name={meta.icon} className="size-4" />
       {meta.text}
+    </span>
+  );
+}
+
+// Warning threshold per plan §2.8 (≥70% of the model's context window).
+const CONTEXT_WARNING_THRESHOLD = 0.7;
+
+function contextGaugeText(usage: SessionView["contextUsage"]) {
+  if (!usage) return null;
+  const percent = Math.round(usage.percent * 100);
+  return {
+    percent,
+    warn: usage.percent >= CONTEXT_WARNING_THRESHOLD,
+    title: `${usage.usedTokens.toLocaleString()} / ${usage.modelContextWindow.toLocaleString()} tokens${usage.estimated ? " (estimated)" : ""}`,
+  };
+}
+
+function ContextGauge({ usage }: { usage: SessionView["contextUsage"] }) {
+  const meta = contextGaugeText(usage);
+  if (!meta) return null;
+  return (
+    <span
+      title={meta.title}
+      className={cn("inline-flex items-center gap-1 text-xs", meta.warn ? "text-warning" : "text-muted-foreground")}
+    >
+      <Icon name="ChartColumn" className="size-3.5" />
+      {meta.percent}%
     </span>
   );
 }
@@ -1031,6 +1062,7 @@ function SessionsTable({ sessions }: { sessions: SessionView[] }) {
             <th className="px-4 py-3 font-medium">Status</th>
             <th className="px-4 py-3 font-medium">Title</th>
             <th className="px-4 py-3 font-medium">Label</th>
+            <th className="px-4 py-3 font-medium">Context</th>
             <th className="px-4 py-3 font-medium">Working directory</th>
             <th className="px-4 py-3 font-medium">Updated</th>
           </tr>
@@ -1051,6 +1083,7 @@ function SessionsTable({ sessions }: { sessions: SessionView[] }) {
                 </div>
               </td>
               <td className="px-4 py-3">{session.label ? <span className={pillClassName("step")}>{session.label}</span> : <span className={pillClassName("ghost")}>none</span>}</td>
+              <td className="px-4 py-3"><ContextGauge usage={session.contextUsage} /></td>
               <td className="max-w-[320px] truncate px-4 py-3 text-muted-foreground">{session.workingDirectory ?? "unknown"}</td>
               <td className="px-4 py-3 text-muted-foreground">{relativeTime(session.threadUpdatedAt ?? session.updatedAt)}</td>
             </tr>
@@ -1237,6 +1270,106 @@ function WorkspaceStat({ label, value }: { label: string; value: string }) {
     <div className="rounded-md border border-border bg-card p-3">
       <div className="text-xs uppercase tracking-[0.22em] text-muted-foreground">{label}</div>
       <div className="mt-1 truncate text-sm font-medium text-foreground">{value}</div>
+    </div>
+  );
+}
+
+const SCRATCH_PAD_SAVE_DEBOUNCE_MS = 600;
+
+function ScratchPadPanel({ taskId }: { taskId: string }) {
+  const rpc = useRpc<RpcContract>();
+  const [text, setText] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+  const textRef = useRef(text);
+  textRef.current = text;
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoaded(false);
+    rpc.call("getTaskUiState", { taskId }).then((state) => {
+      if (cancelled) return;
+      setText(state.scratch ?? "");
+      setLoaded(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [taskId, rpc]);
+
+  // Flush a pending debounce on unmount (task switch, panel close) so the last keystroke is not
+  // silently lost.
+  useEffect(() => () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      void rpc.call("saveScratchPad", { taskId, text: textRef.current });
+    }
+  }, [taskId, rpc]);
+
+  const onChange = (value: string) => {
+    setText(value);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null;
+      void rpc.call("saveScratchPad", { taskId, text: value }).then(() => setSavedAt(Date.now()));
+    }, SCRATCH_PAD_SAVE_DEBOUNCE_MS);
+  };
+
+  if (!loaded) return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-foreground">Scratch pad</h3>
+        <span className="text-xs text-muted-foreground">{savedAt ? `Saved ${relativeTime(savedAt)} ago` : "Local notes, not visible to sessions"}</span>
+      </div>
+      <textarea
+        value={text}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="Local notes for this task..."
+        className="min-h-[360px] w-full resize-y rounded-md border border-border bg-card p-3 text-sm text-foreground outline-none focus:border-foreground"
+      />
+    </div>
+  );
+}
+
+function MinimapPanel({ taskId }: { taskId: string }) {
+  const rpc = useRpc<RpcContract>();
+  const navigate = useBbNavigate();
+  const [sessions, setSessions] = useState<SessionView[]>([]);
+
+  const refetch = () => {
+    rpc.call("listSessions", { taskId }).then(({ sessions: next }) => setSessions(next));
+  };
+  useEffect(() => {
+    refetch();
+  }, [taskId]);
+  useRealtime("hl:sessions", refetch);
+
+  const ordered = useMemo(() => [...sessions].sort((a, b) => a.createdAt - b.createdAt), [sessions]);
+  if (ordered.length === 0) return <div className="p-4 text-sm text-muted-foreground">No sessions yet.</div>;
+  return (
+    <div className="space-y-2">
+      <h3 className="text-sm font-semibold text-foreground">Minimap</h3>
+      <div className="flex flex-wrap gap-2">
+        {ordered.map((session, index) => {
+          const meta = statusMeta(session.hlStatus);
+          return (
+            <button
+              key={session.threadId}
+              type="button"
+              onClick={() => navigate.toThread(session.threadId)}
+              title={session.title ?? session.threadId}
+              className="inline-flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-xs transition hover:border-foreground/40"
+            >
+              <span className="text-muted-foreground">{index + 1}</span>
+              <Icon name={meta.icon} className={cn("size-3.5", meta.className)} />
+              <span className="font-medium text-foreground">{session.label ?? "freeform"}</span>
+              <span className="text-muted-foreground">{relativeTime(session.threadUpdatedAt ?? session.updatedAt)}</span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -1776,7 +1909,7 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
   const [task, setTask] = useState<TaskRecord | null>(null);
   const [workspace, setWorkspace] = useState<TaskWorkspaceState | null>(null);
   const [sessions, setSessions] = useState<SessionView[]>([]);
-  const [tab, setTab] = useState<"sessions" | "artifacts" | "workspace" | "auto-advance" | "tips">(artifactFileName ? "artifacts" : "sessions");
+  const [tab, setTab] = useState<"sessions" | "artifacts" | "workspace" | "auto-advance" | "scratch" | "minimap" | "tips">(artifactFileName ? "artifacts" : "sessions");
 
   const refetch = () => {
     Promise.all([
@@ -1847,6 +1980,8 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
         <button type="button" onClick={() => setTab("artifacts")} className={cn("rounded-md px-3 py-1.5", tab === "artifacts" && "bg-card text-foreground")}>Artifacts</button>
         <button type="button" onClick={() => setTab("workspace")} className={cn("rounded-md px-3 py-1.5", tab === "workspace" && "bg-card text-foreground")}>Workspace</button>
         <button type="button" onClick={() => setTab("auto-advance")} className={cn("rounded-md px-3 py-1.5", tab === "auto-advance" && "bg-card text-foreground")}>Auto-advance</button>
+        <button type="button" onClick={() => setTab("scratch")} className={cn("rounded-md px-3 py-1.5", tab === "scratch" && "bg-card text-foreground")}>Scratch</button>
+        <button type="button" onClick={() => setTab("minimap")} className={cn("rounded-md px-3 py-1.5", tab === "minimap" && "bg-card text-foreground")}>Minimap</button>
         <button type="button" onClick={() => setTab("tips")} className={cn("rounded-md px-3 py-1.5", tab === "tips" && "bg-card text-foreground")}>Tips</button>
       </div>
       <WorkflowStrip workflowType={task.workflowType} worktreeTiming={task.worktreeTiming} currentLabel={workspace.currentLabel} />
@@ -1858,6 +1993,10 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
         <WorkspacePanel taskId={taskId} />
       ) : tab === "auto-advance" ? (
         <AutoAdvancePanel task={task} onUpdated={refetch} />
+      ) : tab === "scratch" ? (
+        <ScratchPadPanel taskId={taskId} />
+      ) : tab === "minimap" ? (
+        <MinimapPanel taskId={taskId} />
       ) : tab === "tips" ? (
         <TipsPanel taskId={taskId} label={workspace.currentLabel} />
       ) : (
@@ -1932,6 +2071,40 @@ export function HumanLayerTipsThreadPanel({ threadId }: { threadId: string }) {
   );
 }
 
+export function HumanLayerScratchThreadPanel({ threadId }: { threadId: string }) {
+  const rpc = useRpc<RpcContract>();
+  const [session, setSession] = useState<SessionView | null | undefined>(undefined);
+
+  useEffect(() => {
+    rpc.call("getSession", { threadId }).then(({ session: next }) => setSession(next));
+  }, [rpc, threadId]);
+
+  if (session === undefined) return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
+  if (!session) return <div className="p-4 text-sm text-muted-foreground">Not a HumanLayer task session</div>;
+  return (
+    <div className="h-full min-h-0 overflow-auto p-3">
+      <ScratchPadPanel taskId={session.taskId} />
+    </div>
+  );
+}
+
+export function HumanLayerMinimapThreadPanel({ threadId }: { threadId: string }) {
+  const rpc = useRpc<RpcContract>();
+  const [session, setSession] = useState<SessionView | null | undefined>(undefined);
+
+  useEffect(() => {
+    rpc.call("getSession", { threadId }).then(({ session: next }) => setSession(next));
+  }, [rpc, threadId]);
+
+  if (session === undefined) return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
+  if (!session) return <div className="p-4 text-sm text-muted-foreground">Not a HumanLayer task session</div>;
+  return (
+    <div className="h-full min-h-0 overflow-auto p-3">
+      <MinimapPanel taskId={session.taskId} />
+    </div>
+  );
+}
+
 export function HumanLayerArtifactDirective({ attributes, source }: { attributes: Readonly<Record<string, string>>; source: string }) {
   const navigate = useBbNavigate();
   const taskId = attributes.task;
@@ -1950,6 +2123,136 @@ export function HumanLayerArtifactDirective({ attributes, source }: { attributes
       <Icon name="Code" className="size-4" />
       {fileName}
     </button>
+  );
+}
+
+// Sidebar thread-list replacement (Fable §11, shipped last/optional per plan §2.7). Groups this
+// plugin's own task session threads under their task with a phase pill and relative time; every
+// other thread (freeform sessions, other plugins' threads) renders as a plain row below, using
+// bb's own sidebar feed (`experimental_useSidebarThreads`) for title/indicator/time. A manual
+// "Use default list" toggle renders `Original` on request, on top of the host's own automatic
+// fallback for a missing/crashing replacement.
+function otherThreadGlyph(thread: { hasPendingInteraction: boolean; isUnread: boolean }) {
+  if (thread.hasPendingInteraction) return { icon: "AlertCircle" as const, className: "text-destructive" };
+  if (thread.isUnread) return { icon: "Circle" as const, className: "text-foreground" };
+  return { icon: "Circle" as const, className: "text-muted-foreground" };
+}
+
+export function HumanLayerThreadList({ activeThreadId, isCompactViewport, onNavigate, Original }: PluginThreadListProps) {
+  const rpc = useRpc<RpcContract>();
+  const navigate = useBbNavigate();
+  const sidebar = experimental_useSidebarThreads();
+  const [useDefault, setUseDefault] = useState(false);
+  const [sessionsByThread, setSessionsByThread] = useState<Map<string, SessionView>>(new Map());
+  const [taskNames, setTaskNames] = useState<Map<string, string>>(new Map());
+
+  const refetch = () => {
+    Promise.all([
+      rpc.call("listSessions", { taskId: null }),
+      rpc.call("listTasks", { archived: false }),
+    ]).then(([sessionResult, taskResult]) => {
+      setSessionsByThread(new Map(sessionResult.sessions.map((session) => [session.threadId, session])));
+      setTaskNames(new Map(taskResult.tasks.map((task) => [task.id, task.name])));
+    });
+  };
+  useEffect(() => {
+    refetch();
+  }, []);
+  useRealtime("tasks", refetch);
+  useRealtime("hl:sessions", refetch);
+
+  if (useDefault) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <button type="button" onClick={() => setUseDefault(false)} className="px-3 py-1.5 text-left text-[11px] uppercase tracking-[0.2em] text-muted-foreground hover:text-foreground">
+          Use HumanLayer list
+        </button>
+        <div className="min-h-0 flex-1"><Original /></div>
+      </div>
+    );
+  }
+  if (sidebar.status !== "ready") return <Original />;
+
+  const groups = new Map<string, { taskName: string; threads: PluginSidebarThread[] }>();
+  const other: PluginSidebarThread[] = [];
+  for (const thread of sidebar.threads) {
+    const session = sessionsByThread.get(thread.id);
+    const taskName = session ? taskNames.get(session.taskId) : undefined;
+    if (!session || !taskName) {
+      other.push(thread);
+      continue;
+    }
+    const group = groups.get(session.taskId) ?? { taskName, threads: [] };
+    group.threads.push(thread);
+    groups.set(session.taskId, group);
+  }
+  const sortedOther = [...other].sort((a, b) => b.updatedAt - a.updatedAt);
+
+  const go = (threadId: string) => {
+    navigate.toThread(threadId);
+    onNavigate();
+  };
+
+  return (
+    <div className="flex h-full min-h-0 flex-col overflow-y-auto p-2">
+      <button type="button" onClick={() => setUseDefault(true)} className="px-1 pb-2 text-left text-[11px] uppercase tracking-[0.2em] text-muted-foreground hover:text-foreground">
+        Use default list
+      </button>
+      <div className="space-y-3">
+        {[...groups.entries()].map(([taskId, group]) => (
+          <div key={taskId} className="space-y-1">
+            <div className="px-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">{group.taskName}</div>
+            {group.threads
+              .slice()
+              .sort((a, b) => b.updatedAt - a.updatedAt)
+              .map((thread) => {
+                const session = sessionsByThread.get(thread.id)!;
+                const meta = statusMeta(session.hlStatus);
+                return (
+                  <button
+                    key={thread.id}
+                    type="button"
+                    onClick={() => go(thread.id)}
+                    title={thread.title ?? thread.titleFallback ?? undefined}
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm",
+                      thread.id === activeThreadId ? "bg-card text-foreground" : "text-muted-foreground hover:bg-card/60",
+                    )}
+                  >
+                    <Icon name={meta.icon} className={cn("size-3.5 shrink-0", meta.className)} />
+                    <span className="truncate">{thread.title ?? thread.titleFallback ?? "Untitled"}</span>
+                    <span className={cn("ml-auto shrink-0 text-[10px]", isCompactViewport && "hidden")}>{session.label ?? ""}</span>
+                  </button>
+                );
+              })}
+          </div>
+        ))}
+        {sortedOther.length > 0 ? (
+          <div className="space-y-1">
+            <div className="px-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">Other</div>
+            {sortedOther.map((thread) => {
+              const glyph = otherThreadGlyph(thread);
+              return (
+                <button
+                  key={thread.id}
+                  type="button"
+                  onClick={() => go(thread.id)}
+                  title={thread.indicatorLabel ?? undefined}
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm",
+                    thread.id === activeThreadId ? "bg-card text-foreground" : "text-muted-foreground hover:bg-card/60",
+                  )}
+                >
+                  <Icon name={glyph.icon} className={cn("size-3.5 shrink-0", glyph.className)} />
+                  <span className="truncate">{thread.title ?? thread.titleFallback ?? "Untitled"}</span>
+                  <span className="ml-auto shrink-0 text-[10px]">{relativeTime(thread.updatedAt)}</span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -2039,13 +2342,124 @@ export function HumanLayerNotificationSettings() {
   );
 }
 
+const WORKFLOW_TYPE_OPTIONS: Array<{ value: WorkflowType; label: string }> = [
+  { value: "rpi", label: "RPI" },
+  { value: "outline_only", label: "Outline" },
+  { value: "prd_tdd", label: "PRD / TDD" },
+  { value: "oneshot", label: "Oneshot" },
+  { value: "freeform", label: "Freeform" },
+];
+
+const EMPTY_WORKFLOW_OVERRIDE: WorkflowOverride = {};
+
+export function HumanLayerDefaultsSettings() {
+  const rpc = useRpc<RpcContract>();
+  const [prefs, setPrefs] = useState<Prefs | null>(null);
+
+  const refresh = () => {
+    rpc.call("getPrefs", {}).then(setPrefs);
+  };
+  useEffect(() => {
+    refresh();
+  }, []);
+  useRealtime("prefs", refresh);
+
+  if (!prefs) return <div className="p-2 text-sm text-muted-foreground">Loading...</div>;
+
+  const saveDefaults = (patch: Partial<Prefs["defaults"]>) => {
+    void rpc.call("setPrefs", { defaults: patch }).then(setPrefs);
+  };
+  const saveWorkflow = (workflowType: WorkflowType, patch: WorkflowOverride) => {
+    void rpc.call("setPrefs", { workflowDefaults: { [workflowType]: patch } }).then(setPrefs);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-sm font-semibold uppercase tracking-[0.24em] text-foreground">Defaults</h2>
+        <p className="mt-1 text-sm text-muted-foreground">Provider, model, reasoning, and permission mode used for new tasks, per workflow type. Blank falls back to the row above.</p>
+      </div>
+      <div className="grid gap-3 lg:grid-cols-2">
+        <label className="space-y-1 rounded-md border border-border bg-card p-3 text-sm text-foreground">
+          <span className="block font-medium">Provider</span>
+          <Input value={prefs.defaults.providerId ?? ""} onChange={(event) => saveDefaults({ providerId: event.currentTarget.value || null })} placeholder="e.g. anthropic" />
+        </label>
+        <label className="space-y-1 rounded-md border border-border bg-card p-3 text-sm text-foreground">
+          <span className="block font-medium">Model</span>
+          <Input value={prefs.defaults.model ?? ""} onChange={(event) => saveDefaults({ model: event.currentTarget.value || null })} placeholder="e.g. claude-sonnet-5" />
+        </label>
+        <label className="space-y-1 rounded-md border border-border bg-card p-3 text-sm text-foreground">
+          <span className="block font-medium">Reasoning effort</span>
+          <Input value={prefs.defaults.reasoningLevel ?? ""} onChange={(event) => saveDefaults({ reasoningLevel: event.currentTarget.value || null })} placeholder="e.g. high" />
+        </label>
+        <label className="space-y-1 rounded-md border border-border bg-card p-3 text-sm text-foreground">
+          <span className="block font-medium">Research subagent model</span>
+          <Input value={prefs.defaults.researchModel ?? ""} onChange={(event) => saveDefaults({ researchModel: event.currentTarget.value || null })} placeholder="e.g. claude-haiku-4-5" />
+        </label>
+      </div>
+      <div className="space-y-2">
+        <h3 className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">Per workflow type</h3>
+        <div className="overflow-hidden rounded-xl border border-border bg-card">
+          <table className="min-w-full border-collapse text-sm">
+            <thead className="border-b border-border text-left text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
+              <tr>
+                <th className="px-3 py-2 font-medium">Workflow</th>
+                <th className="px-3 py-2 font-medium">Provider</th>
+                <th className="px-3 py-2 font-medium">Model</th>
+                <th className="px-3 py-2 font-medium">Reasoning</th>
+                <th className="px-3 py-2 font-medium">Permission</th>
+              </tr>
+            </thead>
+            <tbody>
+              {WORKFLOW_TYPE_OPTIONS.map((option) => {
+                const override = prefs.workflowDefaults[option.value] ?? EMPTY_WORKFLOW_OVERRIDE;
+                return (
+                  <tr key={option.value} className="border-b border-border last:border-b-0">
+                    <td className="px-3 py-2 font-medium text-foreground">{option.label}</td>
+                    <td className="px-3 py-2">
+                      <Input className="h-8" value={override.providerId ?? ""} onChange={(event) => saveWorkflow(option.value, { providerId: event.currentTarget.value || null })} />
+                    </td>
+                    <td className="px-3 py-2">
+                      <Input className="h-8" value={override.model ?? ""} onChange={(event) => saveWorkflow(option.value, { model: event.currentTarget.value || null })} />
+                    </td>
+                    <td className="px-3 py-2">
+                      <Input className="h-8" value={override.reasoningLevel ?? ""} onChange={(event) => saveWorkflow(option.value, { reasoningLevel: event.currentTarget.value || null })} />
+                    </td>
+                    <td className="px-3 py-2">
+                      <ComposerToolbarSelect
+                        value={override.permissionMode ?? ""}
+                        onChange={(value) => saveWorkflow(option.value, { permissionMode: (value === "" ? null : value) as WorkflowOverride["permissionMode"] })}
+                        options={[
+                          { value: "", label: "Inherit" },
+                          { value: "default", label: "Default" },
+                          { value: "accept_edits", label: "Accept edits" },
+                          { value: "auto", label: "Auto" },
+                          { value: "bypass", label: "Bypass" },
+                        ]}
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function HumanLayerThreadHeaderAction({ threadId }: { threadId: string; projectId: string; isCompactViewport: boolean }) {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
   const [session, setSession] = useState<SessionView | null>(null);
+  const [uiState, setUiState] = useState<TaskUiState>({});
 
   const refetch = () => {
-    rpc.call("getSession", { threadId }).then(({ session: next }) => setSession(next));
+    rpc.call("getSession", { threadId }).then(({ session: next }) => {
+      setSession(next);
+      if (next) rpc.call("getTaskUiState", { taskId: next.taskId }).then(setUiState);
+    });
   };
 
   useEffect(() => {
@@ -2058,15 +2472,56 @@ export function HumanLayerThreadHeaderAction({ threadId }: { threadId: string; p
     };
   }, [threadId]);
   useRealtime("hl:sessions", refetch);
+  useRealtime("hl:ui-state", refetch);
+
+  // Archive-current-task hotkey (⌘E). Scoped to this thread's own header instance so it only
+  // fires while a HumanLayer task session is the visible thread; reuses `shouldHandleHotkey`'s
+  // not-in-editable guard rather than a bespoke check.
+  useEffect(() => {
+    if (!session) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!shouldHandleHotkey(event, "mod+e")) return;
+      event.preventDefault();
+      if (!window.confirm("Archive this task? Sessions stay but the task leaves the active list.")) return;
+      void rpc.call("archiveTask", { taskId: session.taskId }).then(() => navigate.toPluginPanel("humanlayer", { subPath: "" }));
+    };
+    document.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => document.removeEventListener("keydown", onKeyDown, { capture: true });
+  }, [session, rpc, navigate]);
 
   if (!session) return null;
   const extracted = nextStep(session);
+  const gauge = contextGaugeText(session.contextUsage);
+  const contextWarningDismissed = Boolean(uiState.contextWarningDismissed?.[threadId]);
 
   return (
     <div className="flex items-center gap-2">
       <HumanLayerNotificationBridge />
       <span className={pillClassName(session.label ? "step" : "ghost")}>{session.label ?? "freeform"}</span>
       <SessionStatus status={session.hlStatus} />
+      <ContextGauge usage={session.contextUsage} />
+      {gauge?.warn && !contextWarningDismissed ? (
+        <span className="inline-flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning">
+          Context high
+          <button
+            type="button"
+            className="font-semibold underline"
+            onClick={async () => {
+              const result = await rpc.call("iterateInFreshSession", { threadId });
+              navigate.toThread(result.threadId);
+            }}
+          >
+            Iterate in fresh session
+          </button>
+          <button
+            type="button"
+            aria-label="Dismiss context warning"
+            onClick={async () => setUiState(await rpc.call("dismissContextWarning", { taskId: session.taskId, threadId }))}
+          >
+            <Icon name="X" className="size-3" />
+          </button>
+        </span>
+      ) : null}
       <Button
         type="button"
         variant={extracted ? "default" : "outline"}
@@ -2201,6 +2656,43 @@ export function HumanLayerPanel({ subPath }: { subPath: string }) {
     }
     navigate.toPluginPanel("humanlayer", { subPath: next === "tasks" ? "" : "drafts" });
   };
+
+  // T (new task) and the g-then-t chord (go to tasks) while this panel is focused. Scoped to this
+  // component instance (the nav panel mounts once), reusing `shouldHandleHotkey`'s not-in-editable
+  // guard so typing in the composer textarea elsewhere on the panel never triggers either one.
+  useEffect(() => {
+    let awaitingT = false;
+    let awaitingTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearChord = () => {
+      awaitingT = false;
+      if (awaitingTimer) clearTimeout(awaitingTimer);
+      awaitingTimer = null;
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (awaitingT) {
+        clearChord();
+        if (shouldHandleHotkey(event, "t")) {
+          event.preventDefault();
+          onSwitch("tasks");
+        }
+        return;
+      }
+      if (shouldHandleHotkey(event, "g")) {
+        awaitingT = true;
+        awaitingTimer = setTimeout(clearChord, 800);
+        return;
+      }
+      if (shouldHandleHotkey(event, "t")) {
+        event.preventDefault();
+        onSwitch("new");
+      }
+    };
+    document.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => {
+      document.removeEventListener("keydown", onKeyDown, { capture: true });
+      clearChord();
+    };
+  }, [navigate]);
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 overflow-hidden p-4">

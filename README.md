@@ -1,122 +1,179 @@
 # bb-plugin-humanlayer
 
-A BB plugin that keeps a todo list. It shows every surface a plugin can own:
+HumanLayer's task/session/artifact research-plan-implement (RPI) workflow,
+rebuilt as a bb plugin. bb owns threads, environments/worktrees, providers,
+permissions, and diffs; this plugin owns tasks, artifacts, versions, comments,
+auto-advance, notifications, and the RPI skills that drive the loop.
 
-- `server.ts` — the backend: a todo store in `bb.storage.kv`, RPC methods
-  for the page, a `bb humanlayer` CLI command, a setting, and a realtime signal
-  that keeps every open page current.
-- `app.tsx` — the frontend: an **Example todos** page in the left sidebar
-  (`app.slots.navPanel`) built from the vendored components.
-- `skills/example-todos/SKILL.md` — a skill that tells agents how to keep the list
-  with `bb humanlayer`. BB imports it into agent threads automatically.
-
-Try it: install the plugin, open **Example todos** in the sidebar, then run
-`bb humanlayer add "Ship it"` in a terminal. The page updates at once.
-
-## UI components
-
-`components/ui/` is vendored source you own (the shadcn model): edit the
-files freely — they never update out from under you. Add more from the BB
-component registry (the full shadcn set, version-matched to your BB install
-via the pinned ref in `components.json`):
-
-```
-npx shadcn add @bb/select @bb/table
-```
-
-Run `npm install` once before `bb plugin build` — the vendored components'
-npm deps bundle into your dist. React, and BB-shimmed packages like the
-radix portal primitives and `sonner` (`import { toast } from "sonner"`
-reaches BB's own toaster), are provided by the BB app at runtime and never
-bundled. Every shimmed package is declared in `devDependencies` at the
-host's version so those imports typecheck; keep them there (never in
-`dependencies`, which would bundle a second copy), and `bb plugin types`
-repins them alongside the SDK. Ship `dist/` (npm tarball or committed for
-git installs) so people installing your plugin never need npm.
-
-## Manifest
-
-`package.json` is the plugin manifest. Notable fields:
-
-- `bb.server` — backend entry (required).
-- `bb.app` — frontend entry. Delete it, `app.tsx`, `components/`,
-  `hooks/`, and `lib/` for a headless plugin.
-- `bb.skills` — skill roots; omitted here, so BB reads `skills/`. Each
-  directory with a `SKILL.md` is one skill, named after the directory.
-- `bb.name` and `bb.description` — required human-facing identity.
-- `bb.branding` — required; declare `icon` as a BB icon name or a
-  plugin-relative compact SVG, or declare `logo.light` (with optional
-  `logo.dark`). Logo assets must be relative `.svg`, `.png`, or
-  `.webp` files.
-- `engines.bb` — supported bb app version range.
-- `engines.bbPluginSdk` — the lowest plugin SDK you need (scaffold:
-  `>=0.4.34`). BB reads this as a floor, not a ceiling: a later
-  SDK in the same major still loads your plugin.
-- `dependencies` — every package your source imports that BB does not provide.
-  `bb plugin build` inlines them into `dist/`, and git installs resolve this
-  list alone, so a build-required package here rather than in
-  `devDependencies` is what keeps your plugin installable. `devDependencies`
-  is for types and tooling only (BB shims React, the portal primitives, and
-  `@get-bb/plugin-sdk` at runtime — never bundle them).
-
-Run `bb plugin build` before publishing git/npm installs. It writes
-`dist/server.js` + `server.meta.json` and `app.js` / `app.css` /
-`app.meta.json`. Each `*.meta.json` stamps SDK major/version,
-`artifactFormatVersion`, `pluginId`, `pluginVersion`, and
-`builtWith` so managed installs can verify the artifacts.
+See [`PARITY.md`](./PARITY.md) for the exact feature-by-feature comparison
+against HumanLayer, including everything that is partial, omitted, or N/A and
+why.
 
 ## Install
-
-From this directory (`bb plugin new` already ran the install; a fresh clone
-needs it):
 
 ```
 npm install
 bb plugin install .
-```
-
-After editing sources, reload:
-
-```
 bb plugin reload humanlayer
 ```
 
-Or let `bb plugin dev` rebuild and reload on every save.
+Or install a published release: `bb plugin install npm:bb-plugin-humanlayer`
+or `bb plugin install git:https://github.com/<org>/bb-plugin-humanlayer.git@<tag>`.
 
-## Configure
+## The RPI loop
 
-```
-bb plugin config humanlayer
-bb plugin config humanlayer set showDone false
-bb plugin reload humanlayer
-```
+A task moves through **questions → research → design → plan → worktree setup
+→ implementation → describe-pr**, one bb thread ("session") per phase. Each
+phase is a `rpi-<skill>` skill invoked as `/rpi-create-research` etc.; the
+task's artifacts (`task.md`, numbered research/design/plan docs,
+`pr-description.md`, ...) live in the plugin's SQLite database and mirror out
+to `.humanlayer/tasks/<slug>/` in the workspace so a fresh session can `Read`
+them.
 
-## Types & API reference
+### From the UI
 
-The plugin API ships as the npm package `@get-bb/plugin-sdk`, pinned to an
-exact version in `devDependencies` (`0.4.34` — the SDK of the BB
-that scaffolded this plugin). After `npm install`, the full surface is on disk
-at:
+Open **HumanLayer** in the sidebar, **Create task** (or press `T`), describe
+the work, pick a workflow type (`rpi`, `outline_only`, `prd_tdd`, `oneshot`,
+`freeform`), worktree timing (`now`/`later`/`never`), and permission mode, then
+**Create** to launch immediately or **Save draft** to launch later. The task
+detail page has tabs for Sessions, Artifacts, Workspace, Auto-advance, Scratch,
+Minimap, and Tips. Each phase session's header shows its phase pill, status,
+context-window gauge, and Proceed / Iterate / Fork / Interrupt controls.
 
-```
-node_modules/@get-bb/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts      # backend
-node_modules/@get-bb/plugin-sdk/bundled-types/bb-plugin-sdk-app.d.ts  # frontend
-```
-
-Your editor and `tsc` resolve `@get-bb/plugin-sdk` there through ordinary node
-resolution — no path mapping. These are readable declarations: open them for an
-exact signature.
-
-The SDK surface grows with every BB release, so the pin has to track the BB you
-actually run:
+### From the CLI
 
 ```
-bb plugin types          # sync this plugin's SDK surface to the running BB
-bb plugin types --check  # CI: fail when it does not match
+# Create and launch a task
+bb humanlayer tasks create --name "Add rate limiting" --project <projectId> \
+  --prompt "Add a token-bucket rate limiter to the API gateway" --launch
+
+# List tasks and sessions
+bb humanlayer tasks list
+bb humanlayer sessions list --task <taskId>
+
+# Drive a session by hand once its next step is parsed
+bb humanlayer proceed --thread <threadId>
+
+# Launch a specific RPI skill directly
+bb humanlayer launch-skill --task <taskId> --skill create-research --command-line "/rpi-create-research"
+
+# Artifacts and comments
+bb humanlayer artifacts list --task <taskId>
+bb humanlayer artifacts get --task <taskId> --file 02-research-*.md
+bb humanlayer comments list --task <taskId> --file 02-research-*.md
+
+# Recovery, notifications, workspace
+bb humanlayer launch-attempts --task <taskId>
+bb humanlayer notifications list
+bb humanlayer workspace --task <taskId>
 ```
 
-Ask BB to write plugins for you: the `bb-plugin-authoring` skill documents
-the whole surface with examples.
+Every command accepts `--json` for scripting. Run `bb humanlayer` with no
+arguments (or an unknown subcommand) to print the full usage list.
 
-Confused by the API, or need something the types don't explain? Clone the BB
-repo and read the source: <https://github.com/get-bb/bb>.
+## Settings
+
+**Settings → HumanLayer → Notifications**: enable/disable, per-kind sound and
+toast toggles (ready sessions, approvals, comments), volume, and the jump
+hotkey (`⌘⇧U` by default; not `⌘⇧J`, which Chromium reserves).
+
+**Settings → HumanLayer → Defaults**: global provider/model/reasoning-effort
+defaults for new tasks, plus a per-workflow-type override table (provider,
+model, reasoning, permission mode) so `rpi` tasks can default to a different
+model than a quick `oneshot`.
+
+**Settings → HumanLayer** (host-registered scalar settings): default workflow
+type, default worktree timing, default permission mode, auto-advance default,
+show task phase labels, diff style, default editor, phase tips and other tip
+toggles, confirm-before-interrupting-subagents, batch queue delivery
+(default off; see `PARITY.md`).
+
+## Notifications
+
+A toast (8s) and/or a chime fires when a session becomes `ready_for_input`,
+gets a pending approval, or receives an inbound artifact comment — unless
+you're already viewing that session (sound only), auto-advance is about to
+launch the next phase for that transition (no toast, still launches), or the
+notification already fired for that exact event. `⌘⇧U` jumps to the oldest
+outstanding one; a synthetic `bb humanlayer notifications test --thread <id>`
+command exists for manually verifying delivery without touching real
+dedupe/suppression state.
+
+## Hotkeys
+
+| Key | Action |
+|---|---|
+| `T` | New task (while the HumanLayer panel is focused, not while typing) |
+| `g` then `t` | Go to the tasks list |
+| `⌘E` | Archive the current task (confirms first) |
+| `⌘⇧U` | Jump to the oldest outstanding notified session (configurable) |
+| `⌘⇧P` | bb's command palette — lists "HumanLayer: Open Artifacts / Open Scratch pad / Archive current task" |
+
+`T`, `g t`, and `⌘E` are owned by the same keydown listener pattern as the
+jump hotkey (see `ui/humanlayer.tsx`): they no-op while focus is in an
+editable field, and `⌘E` and the palette's archive action both ask for
+confirmation before archiving.
+
+## Licensing
+
+This repository's code and skills (`skills/rpi-*`) are original rewrites of
+HumanLayer's workflow shape (step order, "read fully", "do not leak intent",
+final-answer template rules) in this project's own words — see
+`docs/research/01-research-humanlayer-system.md` and the plan docs for the
+research this was built from. `docs/hl-reference/` holds HumanLayer's actual
+skill/agent/hook source, kept only as local reference material; it is **All
+Rights Reserved** and is never copied into `skills/`, and `package.json`'s
+`files` allowlist excludes `docs/` (along with `tests/`) from every published
+package — verify with `npm pack --dry-run` after changes to either. The
+notification chime (`assets/notification.mp3`) is synthesized for this
+project, not HumanLayer's asset.
+
+## Troubleshooting
+
+**"Notification sound is blocked"** — browsers require a user gesture before
+`new Audio().play()` succeeds. The bridge tries to unlock on the first click
+or keypress; until then it shows this toast. Settings → Notifications → **Test
+sound** always works (it's triggered by that same click) and clears the
+warning once playback succeeds.
+
+**Worktree provisioning is stuck / the Workspace tab shows an error** — bb
+creates a worktree environment only as a side effect of the first thread
+spawned into it (there is no standalone `environments.create`), so a failed
+provisioning surfaces as a `failed` session with the hook's log in the
+Workspace tab, not a separate retry step. Use **Rerun workspace setup** on the
+Workspace tab, which spawns a fresh `rpi-setup-worktree` session into the same
+environment.
+
+**A launch attempt is stuck "pending" or shows "uncertain"** — the task
+refuses to launch again while a `pending`/`uncertain` attempt is unresolved
+(bb has no idempotency key for `threads.spawn`, so elapsed time alone can't
+prove whether a thread was created). Resolve it from the Sessions tab's
+Recover-launch row:
+- **Adopt** — pick a matching thread bb already created for this task after
+  the attempt started (candidates come from `threads.list` filtered to
+  `originPluginId`/`parentThreadId`).
+- **Retry** — start a fresh attempt with the same command.
+- **Dismiss** — mark it `failed` without adopting or retrying (a failed
+  attempt without a retry stays visible so a recovery toast's "Retry it from
+  Launch Attempts" instruction stays actionable).
+
+**A skill's Proceed button is disabled** — next-step extraction is
+deterministic (Fable §7): the final-answer block must be an exact
+`/rpi-<skill> [args]` (or legacy `/rpi:<skill>`) fenced `text` block. A
+freeform reply, a missing/renamed artifact reference, or a template the
+model altered will not parse; the session still finished, it just has no
+machine-readable next step (`no_next_step`) — start the next phase manually
+with `bb humanlayer launch-skill`.
+
+## Development
+
+```
+npm install
+npm test            # node:test on the pure modules + plugin harness tests
+npx tsc --noEmit
+bb plugin build      # dist/server.js, dist/app.js, dist/app.css
+bb plugin dev        # rebuild + reload on every save
+```
+
+`AGENTS.md` has the phase conventions this repo was built under; each
+`docs/phases/NN-*.md` records what shipped and how it was verified.
