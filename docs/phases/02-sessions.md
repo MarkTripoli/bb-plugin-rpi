@@ -196,3 +196,37 @@ Thread thr_628nfms6n4 archived
 bb plugin remove humanlayer
 Removed humanlayer.
 ```
+
+## Review fixes round 2
+
+Commit: `65f2074549133b97f6e6cc3b41af52e1ece94fe5`
+
+- Seeded runtime reconcile sequencing from persisted `MAX(last_reconcile_seq) + 1` so reloads cannot reject fresh snapshots as stale.
+- Serialized buffered active/idle/failed/changed replay through the per-thread chain, and dropped idle chains after commit.
+- Checked interrupted idle events before writing summaries or `completed_turn_key`.
+- Cleared dismissed/retried/adopted launch bindings and made late spawn binding conditional on winning `pending|uncertain -> spawned`.
+- Evicted runtime mirrors, buffers, pending thread bindings, and chains on `thread.archived` and `thread.deleted` while retaining the DB row.
+
+Verification:
+
+```text
+npm test
+tests 29
+pass 29
+fail 0
+```
+
+```text
+npx tsc --noEmit
+TypeScript: No errors found
+```
+
+```text
+bb plugin build
+dist/server.js
+dist/server.js.map
+dist/server.meta.json
+dist/app.js
+dist/app.css
+dist/app.meta.json
+```
