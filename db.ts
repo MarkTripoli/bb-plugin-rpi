@@ -249,6 +249,20 @@ export const MIGRATIONS: string[] = [
     created_at INTEGER NOT NULL
   )
   `,
+  `
+  CREATE TABLE notifications (
+    id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    reason TEXT NOT NULL,
+    sound INTEGER NOT NULL DEFAULT 0,
+    toast_title TEXT,
+    toast_body TEXT,
+    created_at INTEGER NOT NULL,
+    delivered_at INTEGER
+  )
+  `,
 ];
 
 export function openPluginDatabase(bb: BbPluginApi): Database {

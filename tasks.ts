@@ -135,7 +135,15 @@ function readLatestLabel(db: Database, taskId: string) {
   return row?.label ?? null;
 }
 
-function taskRowFromRecord(record: TaskRecord, sessionCount: number, latestLabel: string | null): TaskRow {
+function readAttentionCount(db: Database, taskId: string) {
+  return readRow<{ count: number }>(
+    db,
+    "SELECT COUNT(*) AS count FROM sessions WHERE task_id = ? AND hl_status IN ('ready_for_input', 'needs_approval')",
+    taskId,
+  )?.count ?? 0;
+}
+
+function taskRowFromRecord(record: TaskRecord, sessionCount: number, latestLabel: string | null, attentionCount: number): TaskRow {
   return {
     id: record.id,
     projectId: record.projectId,
@@ -163,6 +171,7 @@ function taskRowFromRecord(record: TaskRecord, sessionCount: number, latestLabel
     aa_implementation_to_pr: record.aa_implementation_to_pr,
     currentLabel: latestLabel,
     stepLabel: record.isDraft ? "Draft" : latestLabel ? labelToStepLabel(latestLabel, false) : record.workflowType,
+    attentionCount,
     boardColumn: record.isDraft || latestLabel ? deriveBoardColumn(latestLabel, record.isDraft) : "implementation",
     sessionCount,
     createdAt: record.createdAt,
@@ -230,7 +239,7 @@ export function listTasks(
     ORDER BY updated_at DESC, created_at DESC
   `;
   const records = readRows<RawTaskRecord>(db, sql, ...params).map(normalizeTaskRecord);
-  return records.map((record) => taskRowFromRecord(record, readSessionCount(db, record.id), readLatestLabel(db, record.id)));
+  return records.map((record) => taskRowFromRecord(record, readSessionCount(db, record.id), readLatestLabel(db, record.id), readAttentionCount(db, record.id)));
 }
 
 export function getTask(db: Database, taskId: string) {
@@ -545,6 +554,13 @@ export function defaultTaskPrefs(input: {
       researchModel: input.researchModel ?? null,
       reasoningLevel: input.reasoningLevel ?? null,
       serviceTier: input.serviceTier ?? null,
+    },
+    notifications: {
+      enabled: true,
+      sound: { ready_for_input: true, needs_approval: true, comment: true },
+      toast: { ready_for_input: true, needs_approval: true, comment: true },
+      volume: 0.2,
+      jumpHotkey: "mod+shift+u",
     },
   };
 }

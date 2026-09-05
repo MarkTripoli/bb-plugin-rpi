@@ -500,7 +500,7 @@ export function applyStatusDerivation(
   const row = readSession(db, thread.id);
   if (!row) return null;
   if (sequence !== undefined && sequence < row.lastReconcileSeq) {
-    return { row: mirror.get(thread.id) ?? row, changed: false, stale: true };
+    return { row: mirror.get(thread.id) ?? row, previous: row, changed: false, stale: true };
   }
   const derived = deriveStatus(thread, interactions, row);
   const timestamp = nowMs();
@@ -521,7 +521,7 @@ export function applyStatusDerivation(
       thread.id,
     );
   }
-  return { row: mirrorSession(db, mirror, thread.id), changed, stale: false };
+  return { row: mirrorSession(db, mirror, thread.id), previous: row, changed, stale: false };
 }
 
 function turnKey(thread: ThreadLike) {
@@ -715,6 +715,7 @@ export function registerSessionRuntime(
   bindings: LaunchBindingMirror,
   onCompletedTurn?: (row: SessionMirrorRow) => Promise<unknown>,
   childThreads?: Map<string, ChildThreadMirrorRow>,
+  onStatusTransition?: (previous: SessionRow, next: SessionRow, interactions: readonly unknown[]) => Promise<unknown>,
 ) {
   const maxSeq = readRow<{ maxSeq: number }>(db, "SELECT COALESCE(MAX(last_reconcile_seq), 0) + 1 AS maxSeq FROM sessions")?.maxSeq ?? 1;
   let nextSeq = maxSeq;
@@ -753,6 +754,7 @@ export function registerSessionRuntime(
       const interactions = await bb.sdk.threads.interactions.list({ threadId });
       if (!mirror.has(threadId) || retiredThreads.has(threadId)) return;
       const result = applyStatusDerivation(db, mirror, thread as ThreadLike, interactions as InteractionLike[], sequence);
+      if (result?.changed && result.row) await onStatusTransition?.(result.previous, result.row, interactions);
       if (result?.changed) publish(threadId);
     });
   };
@@ -800,6 +802,7 @@ export function registerSessionRuntime(
       const sequence = nextSeq;
       nextSeq += 1;
       const result = applyStatusDerivation(db, mirror, thread, interactions as InteractionLike[], sequence);
+      if (result?.changed && result.row) await onStatusTransition?.(result.previous, result.row, interactions);
       if (result?.changed) publish(thread.id);
     });
   };
@@ -838,6 +841,7 @@ export function registerSessionRuntime(
       if (completedNewTurn && completed?.hlStatus === "ready_for_input" && !completed.blockedReason) {
         await onCompletedTurn?.(completed);
       }
+      if (result?.changed && result.row) await onStatusTransition?.(result.previous, result.row, interactions);
       publish(thread.id);
     });
   };

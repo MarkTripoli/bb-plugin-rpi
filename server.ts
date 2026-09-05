@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { prefsSchema, prefsUpdateSchema, proceedInputSchema, rpcContract, taskUiStateSchema, taskUpdateInputSchema } from "./contract";
 import { openPluginDatabase, parseJson, readRow, writeRow } from "./db";
@@ -53,6 +54,14 @@ import {
   taskInstructions,
 } from "./sessions";
 import {
+  approvalFromInteractions,
+  decideAndPublishNotification,
+  listNotificationRecords,
+  normalizeNotificationPrefs,
+  notificationSummaryFromSession,
+  sweepOldNotifications,
+} from "./notify";
+import {
   archiveTask,
   createDraftTask,
   defaultTaskPrefs,
@@ -67,6 +76,7 @@ import { getWorkspaceView, rerunWorkspaceSetup, validateWorkspaceForWorktreeLaun
 const PREFS_KEY = "prefs:structured-defaults";
 const RPI_SKILL_NAMES = SKILLS.map(([, skillId]) => `rpi-${skillId}`);
 const RPI_AGENT_SKILL_NAMES = RPI_AGENT_SKILL_IDS.map((skillId) => `rpi-agent-${skillId}`);
+const NOTIFICATION_SOUND = readFileSync(new URL("./assets/notification.mp3", import.meta.url));
 const SECURITY_HEADERS = {
   "x-content-type-options": "nosniff",
   "cache-control": "no-store",
@@ -160,8 +170,10 @@ export default async function plugin(bb: BbPluginApi) {
   const sessionMirror = loadSessionMirror(db);
   const childThreadMirror = loadChildThreadMirror(db);
   const launchBindings = createLaunchBindingMirror();
+  const viewingSessions = new Set<string>();
   const initialPrefs = prefsSchema.safeParse(await bb.storage.kv.get<unknown>(PREFS_KEY));
   let researchModelPreference = initialPrefs.success ? initialPrefs.data.defaults.researchModel ?? null : null;
+  let notificationPrefs = normalizeNotificationPrefs(initialPrefs.success ? initialPrefs.data.notifications : null);
   for (const taskId of promoteStalePendingLaunchAttempts(db)) {
     bb.realtime.publish("tasks", { taskId });
     bb.realtime.publish("hl:sessions", { taskId, threadId: null });
@@ -170,6 +182,16 @@ export default async function plugin(bb: BbPluginApi) {
     notificationSoundsEnabled: {
       type: "boolean",
       label: "Notification sounds",
+      default: true,
+    },
+    notificationToastsEnabled: {
+      type: "boolean",
+      label: "Notification toasts",
+      default: true,
+    },
+    notificationsEnabled: {
+      type: "boolean",
+      label: "Notifications",
       default: true,
     },
     notificationVolume: {
@@ -257,6 +279,36 @@ export default async function plugin(bb: BbPluginApi) {
       label: "Jump hotkey",
       default: "mod+shift+u",
     },
+    notificationSoundReady: {
+      type: "boolean",
+      label: "Sound for ready sessions",
+      default: true,
+    },
+    notificationToastReady: {
+      type: "boolean",
+      label: "Toast for ready sessions",
+      default: true,
+    },
+    notificationSoundApproval: {
+      type: "boolean",
+      label: "Sound for approvals",
+      default: true,
+    },
+    notificationToastApproval: {
+      type: "boolean",
+      label: "Toast for approvals",
+      default: true,
+    },
+    notificationSoundComment: {
+      type: "boolean",
+      label: "Sound for comments",
+      default: true,
+    },
+    notificationToastComment: {
+      type: "boolean",
+      label: "Toast for comments",
+      default: true,
+    },
     sendCommentsMode: {
       type: "select",
       label: "Send comments mode",
@@ -264,6 +316,66 @@ export default async function plugin(bb: BbPluginApi) {
       default: "send-and-resolve",
     },
   });
+
+  async function currentNotificationPrefs() {
+    const storedPrefs = prefsSchema.safeParse(await bb.storage.kv.get<unknown>(PREFS_KEY));
+    if (storedPrefs.success) {
+      notificationPrefs = normalizeNotificationPrefs(storedPrefs.data.notifications);
+      return notificationPrefs;
+    }
+    const hostSettings = await settings.get();
+    notificationPrefs = normalizeNotificationPrefs({
+      enabled: Boolean(hostSettings.notificationsEnabled),
+      sound: {
+        ready_for_input: Boolean(hostSettings.notificationSoundsEnabled) && Boolean(hostSettings.notificationSoundReady),
+        needs_approval: Boolean(hostSettings.notificationSoundsEnabled) && Boolean(hostSettings.notificationSoundApproval),
+        comment: Boolean(hostSettings.notificationSoundsEnabled) && Boolean(hostSettings.notificationSoundComment),
+      },
+      toast: {
+        ready_for_input: Boolean(hostSettings.notificationToastsEnabled) && Boolean(hostSettings.notificationToastReady),
+        needs_approval: Boolean(hostSettings.notificationToastsEnabled) && Boolean(hostSettings.notificationToastApproval),
+        comment: Boolean(hostSettings.notificationToastsEnabled) && Boolean(hostSettings.notificationToastComment),
+      },
+      volume: Number.parseFloat(String(hostSettings.notificationVolume ?? "0.2")),
+      jumpHotkey: String(hostSettings.jumpHotkey ?? "mod+shift+u"),
+    });
+    return notificationPrefs;
+  }
+
+  async function notifyStatusTransition(previous: NonNullable<ReturnType<typeof readSession>>, next: NonNullable<ReturnType<typeof readSession>>, interactions: readonly unknown[]) {
+    await decideAndPublishNotification(bb, db, {
+      type: "status_transition",
+      threadId: next.threadId,
+      previousStatus: previous.hlStatus,
+      nextStatus: next.hlStatus,
+      completedTurnKey: next.completedTurnKey,
+      title: "taskName" in next ? String(next.taskName) : null,
+      summary: notificationSummaryFromSession(next),
+      approval: approvalFromInteractions(interactions),
+    }, {
+      prefs: await currentNotificationPrefs(),
+      owner: "unknown",
+      viewing: viewingSessions.has(next.threadId),
+    });
+  }
+
+  async function notifyHumanComment(taskId: string, artifactId: string, commentId: string, commentText: string, createdByAgent: boolean) {
+    const threadId = latestTaskThread(db, taskId);
+    if (!threadId) return;
+    await decideAndPublishNotification(bb, db, {
+      type: "comment",
+      threadId,
+      taskId,
+      artifactId,
+      commentId,
+      commentText,
+      createdByAgent,
+    }, {
+      prefs: await currentNotificationPrefs(),
+      owner: "unknown",
+      viewing: viewingSessions.has(threadId),
+    });
+  }
 
   bb.rpc.register(rpcContract, {
     listTasks: async (input) => ({
@@ -286,6 +398,11 @@ export default async function plugin(bb: BbPluginApi) {
       writeTaskUiState(db, taskId, next);
       bb.realtime.publish("hl:ui-state", { taskId });
       return next;
+    },
+    setViewingSession: async ({ threadId, viewing }) => {
+      if (viewing) viewingSessions.add(threadId);
+      else viewingSessions.delete(threadId);
+      return { ok: true as const };
     },
     createTask: async ({ request, name, draft }) => {
       const storedPrefs = await bb.storage.kv.get<unknown>(PREFS_KEY);
@@ -418,6 +535,7 @@ export default async function plugin(bb: BbPluginApi) {
         createdByAgent: false,
       });
       publishComments(bb, artifact.taskId, input.artifactId, comment.id, false, input.replyToId ? "replied" : "created");
+      await notifyHumanComment(artifact.taskId, input.artifactId, comment.id, comment.contentText, comment.createdByAgent);
       return { comment };
     },
     replyComment: async ({ artifactId, commentId, content }) => {
@@ -426,6 +544,7 @@ export default async function plugin(bb: BbPluginApi) {
       const comment = replyToComment(db, artifactId, commentId, content, { createdByAgent: false });
       if (!comment) throw new Error("comment not found");
       publishComments(bb, artifact.taskId, artifactId, comment.id, false, "replied");
+      await notifyHumanComment(artifact.taskId, artifactId, comment.id, comment.contentText, comment.createdByAgent);
       return { comment };
     },
     editComment: async ({ commentId, content }) => {
@@ -509,8 +628,15 @@ export default async function plugin(bb: BbPluginApi) {
           reasoningLevel: patch.defaults?.reasoningLevel ?? current.defaults.reasoningLevel ?? null,
           serviceTier: patch.defaults?.serviceTier ?? current.defaults.serviceTier ?? null,
         },
+        notifications: normalizeNotificationPrefs({
+          ...current.notifications,
+          ...patch.notifications,
+          sound: { ...current.notifications.sound, ...(patch.notifications?.sound ?? {}) },
+          toast: { ...current.notifications.toast, ...(patch.notifications?.toast ?? {}) },
+        }),
       };
       researchModelPreference = next.defaults.researchModel;
+      notificationPrefs = next.notifications;
       await bb.storage.kv.set(PREFS_KEY, next);
       bb.realtime.publish("prefs", { changed: true });
       return prefsSchema.parse(next);
@@ -595,6 +721,16 @@ export default async function plugin(bb: BbPluginApi) {
         name: "suppressions",
         summary: "List HumanLayer notification suppressions for a thread",
         usage: "bb humanlayer suppressions --thread <threadId> [--json]",
+      },
+      {
+        name: "notifications-list",
+        summary: "List recent HumanLayer notification decisions",
+        usage: "bb humanlayer notifications list [--limit N] [--json]",
+      },
+      {
+        name: "notifications-test",
+        summary: "Publish a synthetic ready-for-input notification decision",
+        usage: "bb humanlayer notifications test --thread <threadId> [--json]",
       },
       {
         name: "workspace",
@@ -694,6 +830,32 @@ export default async function plugin(bb: BbPluginApi) {
           if (!opts.thread) return { exitCode: 2, stderr: "usage: bb humanlayer suppressions --thread <threadId>\n" };
           const rows = db.prepare("SELECT thread_id AS threadId, completed_turn_key AS completedTurnKey, reason, created_at AS createdAt, consumed_at AS consumedAt FROM notification_suppressions WHERE thread_id = ? ORDER BY created_at DESC").all(opts.thread) as Array<{ threadId: string; completedTurnKey: string; reason: string; createdAt: number; consumedAt: number | null }>;
           return { exitCode: 0, stdout: json ? `${JSON.stringify({ suppressions: rows })}\n` : rows.map((row) => `${row.threadId}\t${row.completedTurnKey}\t${row.reason}`).join("\n") + (rows.length ? "\n" : "") };
+        }
+        if (argv[0] === "notifications" && argv[1] === "list") {
+          const opts = parseArgs(argv.slice(2));
+          const limit = parseBoundedInt(opts.limit, 20, 1, 200);
+          const notifications = listNotificationRecords(db, limit);
+          return { exitCode: 0, stdout: json ? `${JSON.stringify({ notifications, limit })}\n` : notifications.map((row) => `${row.createdAt}\t${row.kind}\t${row.threadId}\t${row.reason}`).join("\n") + (notifications.length ? "\n" : "") };
+        }
+        if (argv[0] === "notifications" && argv[1] === "test") {
+          const opts = parseArgs(argv.slice(2));
+          if (!opts.thread) return { exitCode: 2, stderr: "usage: bb humanlayer notifications test --thread <threadId> [--json]\n" };
+          const session = readSession(db, opts.thread);
+          if (!session) return { exitCode: 1, stderr: "session not found\n" };
+          const decision = await decideAndPublishNotification(bb, db, {
+            type: "status_transition",
+            threadId: session.threadId,
+            previousStatus: "running",
+            nextStatus: "ready_for_input",
+            completedTurnKey: session.completedTurnKey ?? "cli-test",
+            title: notificationSummaryFromSession(session) ?? `Session ${session.threadId.slice(0, 8)}`,
+            summary: notificationSummaryFromSession(session),
+          }, {
+            prefs: await currentNotificationPrefs(),
+            owner: "unknown",
+            viewing: viewingSessions.has(session.threadId),
+          });
+          return { exitCode: 0, stdout: json ? `${JSON.stringify({ decision })}\n` : `${decision.reason}\tsound=${decision.sound}\ttoast=${decision.toast ? "yes" : "no"}\n` };
         }
         if (argv[0] === "workspace") {
           const opts = parseArgs(argv.slice(1));
@@ -797,6 +959,7 @@ export default async function plugin(bb: BbPluginApi) {
             createdByAgent: false,
           });
           publishComments(bb, opts.task, result.artifact.id, comment.id, false, "created");
+          await notifyHumanComment(opts.task, result.artifact.id, comment.id, comment.contentText, comment.createdByAgent);
           return { exitCode: 0, stdout: json ? `${JSON.stringify({ comment })}\n` : `${comment.id.slice(0, 8)}\tblock ${block.index}\n` };
         }
         if (argv[0] === "comments" && argv[1] === "resolve") {
@@ -812,7 +975,7 @@ export default async function plugin(bb: BbPluginApi) {
           publishComments(bb, opts.task, artifact.id, match.id, false, "resolved");
           return { exitCode: 0, stdout: json ? `${JSON.stringify({ id: match.id, resolved: true })}\n` : `${match.id.slice(0, 8)}\tresolved\n` };
         }
-        return { exitCode: 2, stderr: "usage: bb humanlayer {tasks|sessions|artifacts|comments|launch-skill|launch-attempts|suppressions|workspace} ...\n" };
+        return { exitCode: 2, stderr: "usage: bb humanlayer {tasks|sessions|artifacts|comments|launch-skill|launch-attempts|suppressions|notifications|workspace} ...\n" };
       } catch (error) {
         return { exitCode: 1, stderr: `${String(error instanceof Error ? error.message : error)}\n` };
       }
@@ -838,6 +1001,21 @@ export default async function plugin(bb: BbPluginApi) {
     });
   }, { auth: "local" });
 
+  bb.http.route("GET", "/sound/notification.mp3", () => new Response(new Uint8Array(NOTIFICATION_SOUND), {
+    headers: {
+      ...SECURITY_HEADERS,
+      "content-type": "audio/mpeg",
+      "content-length": String(NOTIFICATION_SOUND.byteLength),
+    },
+  }), { auth: "local" });
+  bb.http.route("HEAD", "/sound/notification.mp3", () => new Response(null, {
+    headers: {
+      ...SECURITY_HEADERS,
+      "content-type": "audio/mpeg",
+      "content-length": String(NOTIFICATION_SOUND.byteLength),
+    },
+  }), { auth: "local" });
+
   registerArtifactTools(bb, db, sessionMirror, childThreadMirror, { getResearchModel: () => researchModelPreference });
 
   bb.agents.configure((context) => {
@@ -851,12 +1029,21 @@ export default async function plugin(bb: BbPluginApi) {
     return row ? taskInstructions(row, { researchModel: researchModelPreference }) : null;
   });
 
-  registerSessionRuntime(bb, db, sessionMirror, launchBindings, (row) => onCompletedTurn(bb, db, sessionMirror, launchBindings, row), childThreadMirror);
+  registerSessionRuntime(
+    bb,
+    db,
+    sessionMirror,
+    launchBindings,
+    (row) => onCompletedTurn(bb, db, sessionMirror, launchBindings, row),
+    childThreadMirror,
+    notifyStatusTransition,
+  );
 
   bb.background.service("launch-attempt-sweep", {
     async start(signal) {
       while (!signal.aborted) {
         sweepOldSendReceipts(db);
+        sweepOldNotifications(db);
         for (const taskId of promoteStalePendingLaunchAttempts(db)) {
           bb.realtime.publish("tasks", { taskId });
           bb.realtime.publish("hl:sessions", { taskId, threadId: null });

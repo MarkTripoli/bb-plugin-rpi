@@ -38,6 +38,7 @@ export const taskRowSchema = z
     aa_implementation_to_pr: z.boolean(),
     currentLabel: z.string().nullable(),
     stepLabel: z.string(),
+    attentionCount: z.number().int().nonnegative(),
     boardColumn: z.enum(["todo_draft", "research_design", "planning", "implementation"]),
     sessionCount: z.number().int().nonnegative(),
     createdAt: z.number().int(),
@@ -373,9 +374,33 @@ const prefsDefaultsSchema = z
   })
   .strict();
 
+export const notificationPrefsSchema = z.object({
+  enabled: z.boolean().default(true),
+  sound: z.object({
+    ready_for_input: z.boolean().default(true),
+    needs_approval: z.boolean().default(true),
+    comment: z.boolean().default(true),
+  }).strict().default({ ready_for_input: true, needs_approval: true, comment: true }),
+  toast: z.object({
+    ready_for_input: z.boolean().default(true),
+    needs_approval: z.boolean().default(true),
+    comment: z.boolean().default(true),
+  }).strict().default({ ready_for_input: true, needs_approval: true, comment: true }),
+  volume: z.number().min(0).max(1).default(0.2),
+  jumpHotkey: z.string().trim().min(1).default("mod+shift+u"),
+}).strict();
+export type NotificationPrefsRecord = z.infer<typeof notificationPrefsSchema>;
+
 export const prefsSchema = z
   .object({
     defaults: prefsDefaultsSchema,
+    notifications: notificationPrefsSchema.default({
+      enabled: true,
+      sound: { ready_for_input: true, needs_approval: true, comment: true },
+      toast: { ready_for_input: true, needs_approval: true, comment: true },
+      volume: 0.2,
+      jumpHotkey: "mod+shift+u",
+    }),
   })
   .strict();
 export type Prefs = z.infer<typeof prefsSchema>;
@@ -383,6 +408,7 @@ export type Prefs = z.infer<typeof prefsSchema>;
 export const prefsUpdateSchema = z
   .object({
     defaults: prefsDefaultsSchema.partial().optional(),
+    notifications: notificationPrefsSchema.partial().optional(),
   })
   .strict();
 
@@ -468,6 +494,7 @@ export const taskUiStateSchema = z.object({
 }).strict();
 export type TaskUiState = z.infer<typeof taskUiStateSchema>;
 export const dismissTaskTipInputSchema = z.object({ taskId: z.string().min(1), label: z.string().min(1) }).strict();
+export const viewingSessionInputSchema = z.object({ threadId: z.string().min(1), viewing: z.boolean() }).strict();
 
 export const rpcContract = defineRpcContract({
   listTasks: {
@@ -485,6 +512,10 @@ export const rpcContract = defineRpcContract({
   dismissTaskTip: {
     input: dismissTaskTipInputSchema,
     output: taskUiStateSchema,
+  },
+  setViewingSession: {
+    input: viewingSessionInputSchema,
+    output: z.object({ ok: z.literal(true) }).strict(),
   },
   createTask: {
     input: taskCreateInputSchema,
