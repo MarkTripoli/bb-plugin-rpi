@@ -16,6 +16,7 @@ test("migrations are idempotent", async () => {
   assert.ok(tables.includes("launch_attempts"));
   assert.ok(tables.includes("mirror_state"));
   assert.ok(tables.includes("task_ui_state"));
+  assert.ok(tables.includes("child_threads"));
   assert.ok(tables.includes("notification_suppressions"));
   const taskColumns = db.prepare("PRAGMA table_info(tasks)").all().map((row) => (row as { name: string }).name);
   const sessionColumns = db.prepare("PRAGMA table_info(sessions)").all().map((row) => (row as { name: string }).name);

@@ -374,6 +374,41 @@ test("comment tool errors outside HumanLayer task sessions", async () => {
   await harness.lifecycle.dispose();
 });
 
+test("comment tools inherit the parent task for recorded agent children", async () => {
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "humanlayer",
+    sdk: { subscribe: () => () => undefined },
+  });
+  await plugin(bb);
+  const created = await harness.behavior.callRpc("createTask", {
+    request: { text: "prompt", projectId: "proj_1", workflowType: "freeform", worktreeTiming: "never", permissionMode: "default", autoAdvance: false },
+    name: "Task",
+    draft: true,
+  }) as { taskId: string };
+  bb.storage.database().prepare(`
+    INSERT INTO sessions (
+      thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
+      hl_status, hl_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at
+    ) VALUES ('thr_parent', ?, 'research', 'create-research', 'user', NULL, 'running', 1, 1, 0, NULL, 1, 1)
+  `).run(created.taskId);
+  await harness.inspection.registrations.hooks["message.dispatch"]?.({
+    thread: { id: "thr_child", parentThreadId: "thr_parent" },
+    input: { text: "/rpi-agent-codebase-locator find files", blocks: [] },
+    parentThreadId: "thr_parent",
+    originPluginId: null,
+  } as never);
+  await harness.behavior.callRpc("saveArtifact", {
+    taskId: created.taskId,
+    fileName: "notes.md",
+    content: "A\n\nB",
+  });
+  const result = await harness.behavior.callAgentTool("hl_get_artifact_comments", {
+    artifact_filename: "notes.md",
+  }, { threadId: "thr_child" });
+  assert.equal(typeof result === "string" && result.includes("not a HumanLayer task session"), false);
+  await harness.lifecycle.dispose();
+});
+
 test("send-and-resolve resolves only after threads.send succeeds", async () => {
   const { bb, harness } = createFakePluginHost({
     pluginId: "humanlayer",

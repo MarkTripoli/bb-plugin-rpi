@@ -513,6 +513,61 @@ test("agent callbacks return non-Promise values", async () => {
   await harness.lifecycle.dispose();
 });
 
+test("agent child skills require a task parent and survive reload", async () => {
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "humanlayer",
+    sdk: { subscribe: () => () => undefined },
+  });
+  await plugin(bb);
+  const configure = () => harness.inspection.registrations.agentConfigurationProvider;
+  const context = (threadId: string) => ({
+    thread: { id: threadId, title: null, parentThreadId: null, sourceThreadId: null },
+    project: { id: "proj_1", kind: "standard", name: "Project", gitRemoteUrl: null },
+    environment: { id: "env_1", name: null, path: "/repo", workspaceProvisionType: "unmanaged", branchName: null },
+    host: { id: "host_1", name: "Host" },
+    provider: { id: "codex", model: "gpt-5.4-mini", capabilities: { supportsNativeUserQuestion: true } },
+    origin: { kind: null, pluginId: null },
+  } as never);
+  const hook = harness.inspection.registrations.hooks["message.dispatch"];
+  assert.ok(hook);
+
+  await hook({
+    thread: { id: "thr_plain_child", parentThreadId: "thr_plain_parent" },
+    input: { text: "/rpi-agent-codebase-locator find files", blocks: [] },
+    parentThreadId: "thr_plain_parent",
+    originPluginId: null,
+  } as never);
+  assert.deepEqual(configure()?.(context("thr_plain_child")), { tools: [], skills: [] });
+
+  const created = await harness.behavior.callRpc("createTask", {
+    request: { text: "prompt", projectId: "proj_1", workflowType: "freeform", worktreeTiming: "never", permissionMode: "default", autoAdvance: false },
+    name: "Task",
+    draft: true,
+  }) as { taskId: string };
+  bb.storage.database().prepare(`
+    INSERT INTO sessions (
+      thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
+      hl_status, hl_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at
+    ) VALUES ('thr_parent', ?, 'research', 'create-research', 'user', NULL, 'running', 1, 1, 0, NULL, 1, 1)
+  `).run(created.taskId);
+
+  await hook({
+    thread: { id: "thr_child", parentThreadId: "thr_parent" },
+    input: { text: "/rpi-agent-codebase-locator find files", blocks: [] },
+    parentThreadId: "thr_parent",
+    originPluginId: null,
+  } as never);
+  let childConfig = configure()?.(context("thr_child"));
+  assert.ok(childConfig?.skills.includes("rpi-agent-codebase-locator"));
+  assert.equal(childConfig?.skills.includes("rpi-create-research"), false);
+
+  await harness.lifecycle.reload(plugin);
+  childConfig = configure()?.(context("thr_child"));
+  assert.ok(childConfig?.skills.includes("rpi-agent-codebase-locator"));
+  assert.equal(childConfig?.skills.includes("rpi-create-research"), false);
+  await harness.lifecycle.dispose();
+});
+
 test("launch marker binds dispatch before spawn returns", async () => {
   let resolveSpawn: (thread: ReturnType<typeof makeThreadResponse>) => void = () => undefined;
   const spawnWait = new Promise<ReturnType<typeof makeThreadResponse>>((resolve) => {

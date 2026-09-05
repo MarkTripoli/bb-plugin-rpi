@@ -240,6 +240,15 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE launch_attempts_v3 RENAME TO launch_attempts`,
   `ALTER TABLE sessions ADD COLUMN advanced_attempt_id TEXT`,
   `ALTER TABLE sessions ADD COLUMN ingest_error TEXT`,
+  `
+  CREATE TABLE child_threads (
+    thread_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    parent_thread_id TEXT NOT NULL REFERENCES sessions(thread_id),
+    role TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )
+  `,
 ];
 
 export function openPluginDatabase(bb: BbPluginApi): Database {

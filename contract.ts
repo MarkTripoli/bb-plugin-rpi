@@ -367,6 +367,7 @@ const prefsDefaultsSchema = z
   .object({
     providerId: z.string().nullable().optional(),
     model: z.string().nullable().optional(),
+    researchModel: z.string().nullable().optional(),
     reasoningLevel: z.string().nullable().optional(),
     serviceTier: z.string().nullable().optional(),
   })

@@ -21,7 +21,20 @@ export const SKILLS = [
   ["/rpi-describe-pr", "describe-pr", "describe-pr", "create pull request"],
   ["/rpi-ci-commit", "ci-commit", "implementation", "commit changes"],
   ["/rpi-review-artifact-comments", "review-artifact-comments", "review", "review comments"],
-  ["/rpi-show-me", "show-me", "review", "show me"],
+] as const;
+
+export const HELPERS = [
+  ["/rpi-show-me", "show-me", "show me"],
+] as const;
+
+export const RPI_AGENT_SKILL_IDS = [
+  "codebase-locator",
+  "codebase-analyzer",
+  "codebase-pattern-finder",
+  "web-search-researcher",
+  "implementer",
+  "outline-implementer",
+  "implementation-reviewer",
 ] as const;
 
 export const ALIASES = {
@@ -35,19 +48,19 @@ export const ALIASES = {
 export const AUTO_ADVANCE = {
   "research-questions": { flag: "aa_questions_to_research", next: "create-research", to: "research" },
   research: { flag: "aa_research_to_design", next: "create-design-discussion", to: "design" },
-  design: { flag: null, next: "create-structure-outline", to: "structure" },
+  design: { flag: null, next: "create-plan", to: "plan" },
   "design-prd": { flag: null, next: "create-tdd", to: "design-tdd" },
-  "design-tdd": { flag: null, next: "create-structure-outline", to: "structure" },
-  structure: { flag: null, next: "create-plan", to: "plan" },
+  "design-tdd": { flag: null, next: "create-plan", to: "plan" },
+  structure: { flag: null, next: "implement-outline", to: "implementation" },
   plan: { flag: "aa_plan_to_worktree", next: "setup-worktree", to: "worktree-setup" },
   "worktree-setup": { flag: "aa_worktree_to_implementation", next: "implement-plan", to: "implementation" },
   implementation: { flag: "aa_implementation_to_pr", next: "describe-pr", to: "describe-pr" },
 } as const;
 
 export const WORKFLOW_GRAPHS = {
-  rpi: ["worktree", "questions", "research", "design", "outline", "implement", "PR"],
-  outline_only: ["questions", "research", "design", "outline", "implement", "PR"],
-  prd_tdd: ["research", "PRD", "TDD", "outline", "implement", "PR"],
+  rpi: ["questions", "research", "design", "plan", "worktree", "implementation", "PR"],
+  outline_only: ["questions", "research", "structure", "implementation", "PR"],
+  prd_tdd: ["research", "PRD", "TDD", "plan", "worktree", "implementation", "PR"],
   oneshot: ["single session"],
   freeform: ["single session"],
 } as const;
@@ -66,6 +79,10 @@ export type PhaseLabel = (typeof SKILLS)[number][2];
 export const SKILL_BY_ID = Object.fromEntries(
   SKILLS.map(([command, skillId, label, buttonText]) => [skillId, { command, skillId, label, buttonText }]),
 ) as Record<SkillId, { command: string; skillId: SkillId; label: PhaseLabel; buttonText: string }>;
+
+export const HELPER_BY_ID = Object.fromEntries(
+  HELPERS.map(([command, helperId, buttonText]) => [helperId, { command, helperId, kind: "helper" as const, buttonText }]),
+) as Record<(typeof HELPERS)[number][1], { command: string; helperId: (typeof HELPERS)[number][1]; kind: "helper"; buttonText: string }>;
 
 export const SKILL_BY_LABEL = Object.fromEntries(
   SKILLS.map(([, skillId, label, buttonText]) => [label, { skillId, label, buttonText }]),
@@ -96,6 +113,10 @@ export function normalizeSkillId(input: string) {
 
 export function skillInfo(skillId: string) {
   return SKILL_BY_ID[skillId as SkillId] ?? null;
+}
+
+export function helperInfo(skillId: string) {
+  return HELPER_BY_ID[skillId as keyof typeof HELPER_BY_ID] ?? null;
 }
 
 export function normalizePhaseLabel(currentLabel: string | null | undefined) {

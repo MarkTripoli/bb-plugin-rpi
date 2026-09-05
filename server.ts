@@ -1,5 +1,5 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { prefsSchema, prefsUpdateSchema, rpcContract } from "./contract";
+import { prefsSchema, prefsUpdateSchema, proceedInputSchema, rpcContract, taskUiStateSchema, taskUpdateInputSchema } from "./contract";
 import { openPluginDatabase, parseJson, readRow, writeRow } from "./db";
 import {
   artifactPermalink,
@@ -45,6 +45,7 @@ import { hydrate, ingest, latestTaskThread, mirrorDeletedArtifact, mirrorRestore
 import {
   bindPendingThread,
   createLaunchBindingMirror,
+  loadChildThreadMirror,
   listSessions,
   loadSessionMirror,
   readSession,
@@ -60,22 +61,12 @@ import {
   updateTask,
 } from "./tasks";
 import { ARTIFACT_TOOL_NAMES, registerArtifactTools } from "./tools";
-import { ITERATE_SKILL_BY_LABEL, normalizePhaseLabel, SKILLS, skillInfo, type PhaseLabel } from "./transitions";
+import { RPI_AGENT_SKILL_IDS, SKILLS } from "./transitions";
 import { getWorkspaceView, rerunWorkspaceSetup, validateWorkspaceForWorktreeLaunch } from "./workspace";
 
 const PREFS_KEY = "prefs:structured-defaults";
-const RPI_SKILLS_AVAILABLE = true;
-const RPI_LAUNCH_NOTE = "Sessions launch in a later release.";
 const RPI_SKILL_NAMES = SKILLS.map(([, skillId]) => `rpi-${skillId}`);
-const RPI_AGENT_SKILL_NAMES = [
-  "rpi-agent-codebase-locator",
-  "rpi-agent-codebase-analyzer",
-  "rpi-agent-codebase-pattern-finder",
-  "rpi-agent-web-search-researcher",
-  "rpi-agent-implementer",
-  "rpi-agent-outline-implementer",
-  "rpi-agent-implementation-reviewer",
-];
+const RPI_AGENT_SKILL_NAMES = RPI_AGENT_SKILL_IDS.map((skillId) => `rpi-agent-${skillId}`);
 const SECURITY_HEADERS = {
   "x-content-type-options": "nosniff",
   "cache-control": "no-store",
@@ -140,9 +131,8 @@ function stripCommentPage(page: ReturnType<typeof listComments>) {
 
 function readTaskUiState(db: ReturnType<typeof openPluginDatabase>, taskId: string) {
   const row = readRow<{ json: string }>(db, "SELECT json FROM task_ui_state WHERE task_id = ?", taskId);
-  const parsed = parseJson<{ dismissedTips?: Record<string, boolean> }>(row?.json, {});
-  const dismissedTips = parsed.dismissedTips && typeof parsed.dismissedTips === "object" ? parsed.dismissedTips : {};
-  return { dismissedTips };
+  const parsed = taskUiStateSchema.safeParse(parseJson<unknown>(row?.json, {}));
+  return parsed.success ? parsed.data : {};
 }
 
 function writeTaskUiState(db: ReturnType<typeof openPluginDatabase>, taskId: string, state: { dismissedTips?: Record<string, boolean> }) {
@@ -168,7 +158,10 @@ function truncateCliComment(value: string) {
 export default async function plugin(bb: BbPluginApi) {
   const db = openPluginDatabase(bb);
   const sessionMirror = loadSessionMirror(db);
+  const childThreadMirror = loadChildThreadMirror(db);
   const launchBindings = createLaunchBindingMirror();
+  const initialPrefs = prefsSchema.safeParse(await bb.storage.kv.get<unknown>(PREFS_KEY));
+  let researchModelPreference = initialPrefs.success ? initialPrefs.data.defaults.researchModel ?? null : null;
   for (const taskId of promoteStalePendingLaunchAttempts(db)) {
     bb.realtime.publish("tasks", { taskId });
     bb.realtime.publish("hl:sessions", { taskId, threadId: null });
@@ -319,8 +312,6 @@ export default async function plugin(bb: BbPluginApi) {
       });
       bb.realtime.publish("tasks", { taskId: result.taskId });
       if (!draft) {
-        const task = getTask(db, result.taskId)?.task;
-        if (task && isGatedWorkflow(task.workflowType)) return { ...result, note: RPI_LAUNCH_NOTE };
         const launched = await launchDraft(bb, db, sessionMirror, launchBindings, result.taskId);
         return { ...result, threadId: launched.threadId };
       }
@@ -337,20 +328,15 @@ export default async function plugin(bb: BbPluginApi) {
       return { task };
     },
     launchDraft: async ({ taskId }) => {
-      const task = getTask(db, taskId)?.task;
-      if (task && isGatedWorkflow(task.workflowType)) throw new Error(RPI_LAUNCH_NOTE);
       return launchDraft(bb, db, sessionMirror, launchBindings, taskId);
     },
 	    proceed: async ({ threadId }) => {
-	      rejectUnavailableRpiProceed(db, threadId);
 	      return proceed(bb, db, sessionMirror, launchBindings, threadId);
 	    },
 	    launchSkill: async ({ taskId, skillId, commandLine }) => {
-	      rejectUnavailableRpiSkill(skillId);
 	      return launchSkill(bb, db, sessionMirror, launchBindings, taskId, skillId, commandLine ?? null);
 	    },
 	    iterateInFreshSession: async ({ threadId }) => {
-	      rejectUnavailableRpiIterate(db, threadId);
 	      return iterateInFreshSession(bb, db, sessionMirror, launchBindings, threadId);
 	    },
     listSessions: async ({ taskId }) => ({
@@ -519,10 +505,12 @@ export default async function plugin(bb: BbPluginApi) {
         defaults: {
           providerId: patch.defaults?.providerId ?? current.defaults.providerId ?? null,
           model: patch.defaults?.model ?? current.defaults.model ?? null,
+          researchModel: patch.defaults?.researchModel ?? current.defaults.researchModel ?? null,
           reasoningLevel: patch.defaults?.reasoningLevel ?? current.defaults.reasoningLevel ?? null,
           serviceTier: patch.defaults?.serviceTier ?? current.defaults.serviceTier ?? null,
         },
       };
+      researchModelPreference = next.defaults.researchModel;
       await bb.storage.kv.set(PREFS_KEY, next);
       bb.realtime.publish("prefs", { changed: true });
       return prefsSchema.parse(next);
@@ -645,42 +633,39 @@ export default async function plugin(bb: BbPluginApi) {
             reasoningLevel: opts.effort ?? null,
             serviceTier: null,
           });
-          const task = getTask(db, result.taskId)?.task;
-          const launched = opts.launch === "true" && task && !isGatedWorkflow(task.workflowType) ? await launchDraft(bb, db, sessionMirror, launchBindings, result.taskId) : null;
-          const note = opts.launch === "true" && task && isGatedWorkflow(task.workflowType) ? RPI_LAUNCH_NOTE : undefined;
+          const launched = opts.launch === "true" ? await launchDraft(bb, db, sessionMirror, launchBindings, result.taskId) : null;
           const body = { ...result, ...(launched ?? {}) };
-          return { exitCode: 0, stdout: json ? `${JSON.stringify({ ...body, ...(note ? { note } : {}) })}\n` : `${body.taskId}${launched ? ` ${launched.threadId}` : ""}${note ? ` ${note}` : ""}\n` };
+          return { exitCode: 0, stdout: json ? `${JSON.stringify(body)}\n` : `${body.taskId}${launched ? ` ${launched.threadId}` : ""}\n` };
         }
         if (argv[0] === "tasks" && argv[1] === "update") {
           const opts = parseArgs(argv.slice(2));
           if (!opts.task) return { exitCode: 2, stderr: "usage: bb humanlayer tasks update --task <taskId> [--auto true|false] [--aa-research-to-design true|false]\n" };
-          const task = updateTask(db, opts.task, {
-            autoAdvance: optionalBool(opts.auto ?? opts.autoAdvance),
-            aa_questions_to_research: optionalBool(opts.aaQuestionsToResearch ?? opts["aa-questions-to-research"]),
-            aa_research_to_design: optionalBool(opts.aaResearchToDesign ?? opts["aa-research-to-design"]),
-            aa_plan_to_worktree: optionalBool(opts.aaPlanToWorktree ?? opts["aa-plan-to-worktree"]),
-            aa_worktree_to_implementation: optionalBool(opts.aaWorktreeToImplementation ?? opts["aa-worktree-to-implementation"]),
-            aa_implementation_to_pr: optionalBool(opts.aaImplementationToPr ?? opts["aa-implementation-to-pr"]),
+          const input = taskUpdateInputSchema.parse({
+            taskId: opts.task,
+            patch: {
+              autoAdvance: optionalBool(opts.auto ?? opts.autoAdvance),
+              aa_questions_to_research: optionalBool(opts.aaQuestionsToResearch ?? opts["aa-questions-to-research"]),
+              aa_research_to_design: optionalBool(opts.aaResearchToDesign ?? opts["aa-research-to-design"]),
+              aa_plan_to_worktree: optionalBool(opts.aaPlanToWorktree ?? opts["aa-plan-to-worktree"]),
+              aa_worktree_to_implementation: optionalBool(opts.aaWorktreeToImplementation ?? opts["aa-worktree-to-implementation"]),
+              aa_implementation_to_pr: optionalBool(opts.aaImplementationToPr ?? opts["aa-implementation-to-pr"]),
+            },
           });
-          bb.realtime.publish("tasks", { taskId: opts.task });
+          const task = updateTask(db, input.taskId, input.patch);
+          if (!task) return { exitCode: 1, stderr: "task not found\n" };
+          bb.realtime.publish("tasks", { taskId: input.taskId });
           return { exitCode: 0, stdout: json ? `${JSON.stringify({ task })}\n` : "updated\n" };
         }
         if (argv[0] === "proceed") {
           const opts = parseArgs(argv.slice(1));
           if (!opts.thread) return { exitCode: 2, stderr: "usage: bb humanlayer proceed --thread <threadId> [--json]\n" };
-          const result = await proceed(bb, db, sessionMirror, launchBindings, opts.thread);
+          const input = proceedInputSchema.parse({ threadId: opts.thread });
+          const result = await proceed(bb, db, sessionMirror, launchBindings, input.threadId);
           return { exitCode: 0, stdout: json ? `${JSON.stringify(result)}\n` : `${result.threadId ?? ""}\n` };
         }
         if (argv[0] === "launch-skill") {
           const opts = parseArgs(argv.slice(1));
           if (!opts.task || !opts.skill) return { exitCode: 2, stderr: "usage: bb humanlayer launch-skill --task <taskId> --skill <skillId> [--command-line <text>] [--provider <id>] [--model <id>]\n" };
-          if (opts.internal !== "true") {
-            try {
-              rejectUnavailableRpiSkill(opts.skill);
-            } catch (error) {
-              return { exitCode: 1, stderr: `${String(error instanceof Error ? error.message : error)}\n` };
-            }
-          }
           if (opts.provider || opts.model || opts.effort) {
             updateTask(db, opts.task, {
               providerId: opts.provider ?? undefined,
@@ -853,23 +838,20 @@ export default async function plugin(bb: BbPluginApi) {
     });
   }, { auth: "local" });
 
-  registerArtifactTools(bb, db, sessionMirror);
-  const agentSkillThreads = new Set<string>();
+  registerArtifactTools(bb, db, sessionMirror, childThreadMirror);
 
   bb.agents.configure((context) => {
     bindPendingThread(db, sessionMirror, launchBindings, context.thread.id);
     if (sessionMirror.has(context.thread.id)) return { tools: [...ARTIFACT_TOOL_NAMES], skills: RPI_SKILL_NAMES };
-    if (agentSkillThreads.has(context.thread.id)) return { tools: [], skills: RPI_AGENT_SKILL_NAMES };
+    if (childThreadMirror.has(context.thread.id)) return { tools: [...ARTIFACT_TOOL_NAMES], skills: RPI_AGENT_SKILL_NAMES };
     return { tools: [], skills: [] };
   });
   bb.agents.contributeInstructions(({ threadId }) => {
     const row = sessionMirror.get(threadId) ?? bindPendingThread(db, sessionMirror, launchBindings, threadId);
-    return row ? taskInstructions(row) : null;
+    return row ? taskInstructions(row, { researchModel: researchModelPreference }) : null;
   });
 
-  registerSessionRuntime(bb, db, sessionMirror, launchBindings, (row) => onCompletedTurn(bb, db, sessionMirror, launchBindings, row), (threadId) => {
-    agentSkillThreads.add(threadId);
-  });
+  registerSessionRuntime(bb, db, sessionMirror, launchBindings, (row) => onCompletedTurn(bb, db, sessionMirror, launchBindings, row), childThreadMirror);
 
   bb.background.service("launch-attempt-sweep", {
     async start(signal) {
@@ -914,10 +896,6 @@ function parseArgs(argv: string[]) {
       result.launch = "true";
       continue;
     }
-    if (arg === "--internal") {
-      result.internal = "true";
-      continue;
-    }
     if (arg === "--resolved") {
       result.resolved = "true";
       continue;
@@ -942,7 +920,9 @@ function parseBoundedInt(input: string | undefined, fallback: number, min: numbe
 
 function optionalBool(input: string | undefined) {
   if (input === undefined) return undefined;
-  return input === "true" || input === "1" || input === "yes";
+  if (input === "true" || input === "1" || input === "yes") return true;
+  if (input === "false" || input === "0" || input === "no") return false;
+  throw new Error(`invalid boolean: ${input}`);
 }
 
 function workflowTypeOption(input: string | undefined) {
@@ -954,26 +934,6 @@ async function attemptsWithCandidates(bb: BbPluginApi, db: ReturnType<typeof ope
     if (attempt.status !== "pending" && attempt.status !== "uncertain" && attempt.status !== "retrying") return attempt;
     return { ...attempt, adoptionCandidates: await listLaunchAdoptionCandidates(bb, db, attempt).catch(() => []) };
   }));
-}
-
-function rejectUnavailableRpiSkill(skillId: string | null | undefined) {
-  if (!RPI_SKILLS_AVAILABLE && skillId && skillInfo(skillId)) throw new Error(RPI_LAUNCH_NOTE);
-}
-
-function rejectUnavailableRpiProceed(db: ReturnType<typeof openPluginDatabase>, threadId: string) {
-  const session = readSession(db, threadId);
-  const nextStep = parseJson<{ extraction?: { type?: string; nextStepType?: string } } | null>(session?.nextStepJson, null);
-  if (nextStep?.extraction?.type === "next_step_found") rejectUnavailableRpiSkill(nextStep.extraction.nextStepType);
-}
-
-function rejectUnavailableRpiIterate(db: ReturnType<typeof openPluginDatabase>, threadId: string) {
-  const session = readSession(db, threadId);
-  const label = normalizePhaseLabel(session?.label ?? null) as PhaseLabel | null;
-  rejectUnavailableRpiSkill(label ? ITERATE_SKILL_BY_LABEL[label] ?? null : null);
-}
-
-function isGatedWorkflow(workflowType: string) {
-  return !RPI_SKILLS_AVAILABLE && (workflowType === "rpi" || workflowType === "outline_only" || workflowType === "prd_tdd");
 }
 
 function worktreeTimingOption(input: string | undefined) {

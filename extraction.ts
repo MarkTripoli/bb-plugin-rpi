@@ -1,4 +1,4 @@
-import { normalizeSkillId, skillInfo } from "./transitions";
+import { helperInfo, normalizeSkillId, skillInfo } from "./transitions";
 
 export type NextStepExtraction =
   | {
@@ -43,9 +43,10 @@ export function extractNextStep(
   if (!command) return noNextStep("no command block", parsedAt);
   const skillId = normalizeSkillId(command[1]!);
   const info = skillInfo(skillId);
+  if (!info && helperInfo(skillId)) return noNextStep(`helper command ${skillId}`, parsedAt);
   if (!info) return noNextStep(`unknown skill ${command[1]}`, parsedAt);
 
-  const args = command[2] ?? "";
+  const args = normalizeArtifactArgs(command[2] ?? "", options.taskSlug ?? null);
   for (const artifact of artifactMentions(args)) {
     if (!liveArtifacts.has(artifact)) return noNextStep(`unknown artifact ${artifact}`, parsedAt);
   }
@@ -63,6 +64,15 @@ export function extractNextStep(
   };
 }
 
+function normalizeArtifactArgs(args: string, taskSlug: string | null) {
+  if (!taskSlug) return args;
+  return args.replaceAll(new RegExp(`@\\.humanlayer/tasks/${escapeRegExp(taskSlug)}/([^\\s),.;:]+)`, "g"), "@$1");
+}
+
 function artifactMentions(args: string) {
   return [...args.matchAll(/@([^\s]+)/g)].map((match) => match[1]!.replace(/[),.;:]+$/, ""));
+}
+
+function escapeRegExp(input: string) {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

@@ -19,7 +19,7 @@ import {
   softDeleteComments,
 } from "./comments";
 import { ingest, hydrate } from "./mirror";
-import { mirrorSession, type SessionMirrorRow } from "./sessions";
+import { mirrorSession, type ChildThreadMirrorRow, type SessionMirrorRow } from "./sessions";
 
 type Database = BetterSqlite3.Database;
 
@@ -32,10 +32,18 @@ export const ARTIFACT_TOOL_NAMES = [
   "hl_reply_to_artifact_comment",
 ] as const;
 
-function taskSession(mirror: Map<string, SessionMirrorRow>, threadId: string | null | undefined) {
+function taskSession(
+  mirror: Map<string, SessionMirrorRow>,
+  childThreads: Map<string, ChildThreadMirrorRow>,
+  threadId: string | null | undefined,
+) {
+  if (!threadId) throw new Error("not a HumanLayer task session");
   const row = threadId ? mirror.get(threadId) : null;
-  if (!row) throw new Error("not a HumanLayer task session");
-  return row;
+  if (row) return { row, sessionThreadId: threadId };
+  const child = threadId ? childThreads.get(threadId) : null;
+  const parent = child ? mirror.get(child.parentThreadId) : null;
+  if (child && parent && child.taskId === parent.taskId) return { row: parent, sessionThreadId: child.parentThreadId };
+  throw new Error("not a HumanLayer task session");
 }
 
 function trimToolContent(value: string) {
@@ -56,7 +64,12 @@ function toolJson(value: unknown, isError = false) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }], isError };
 }
 
-export function registerArtifactTools(bb: BbPluginApi, db: Database, mirror: Map<string, SessionMirrorRow>) {
+export function registerArtifactTools(
+  bb: BbPluginApi,
+  db: Database,
+  mirror: Map<string, SessionMirrorRow>,
+  childThreads = new Map<string, ChildThreadMirrorRow>(),
+) {
   const hydrationByTask = new Map<string, Promise<void>>();
 
   bb.agents.registerTool({
@@ -68,13 +81,13 @@ export function registerArtifactTools(bb: BbPluginApi, db: Database, mirror: Map
     },
     parameters: z.object({}).strict(),
     async execute(_input, { threadId }) {
-      const row = taskSession(mirror, threadId);
+      const { row, sessionThreadId } = taskSession(mirror, childThreads, threadId);
       if (row.hydratedAt === null) {
         let hydration = hydrationByTask.get(row.taskId);
         if (!hydration) {
           hydration = hydrate(bb, db, row.taskId, threadId)
             .then(() => {
-              mirrorSession(db, mirror, threadId);
+              mirrorSession(db, mirror, sessionThreadId);
             })
             .finally(() => {
               hydrationByTask.delete(row.taskId);
@@ -82,7 +95,7 @@ export function registerArtifactTools(bb: BbPluginApi, db: Database, mirror: Map
           hydrationByTask.set(row.taskId, hydration);
         }
         await hydration;
-        mirrorSession(db, mirror, threadId);
+        mirrorSession(db, mirror, sessionThreadId);
       }
       const allArtifacts = listArtifacts(db, row.taskId);
       const artifacts = allArtifacts.slice(0, 200).map((artifact) => ({
@@ -123,7 +136,7 @@ export function registerArtifactTools(bb: BbPluginApi, db: Database, mirror: Map
     },
     parameters: z.object({ file_name: z.string().min(1) }).strict(),
     async execute({ file_name }, { threadId }) {
-      const row = taskSession(mirror, threadId);
+      const { row } = taskSession(mirror, childThreads, threadId);
       let fileName = file_name;
       let result = await ingest(bb, db, row.taskId, threadId, { threadId, fileName, operation: "ingest" });
       let artifact = getArtifact(db, row.taskId, fileName);
@@ -151,7 +164,7 @@ export function registerArtifactTools(bb: BbPluginApi, db: Database, mirror: Map
     },
     parameters: z.object({}).strict(),
     async execute(_input, { threadId }) {
-      const row = taskSession(mirror, threadId);
+      const { row } = taskSession(mirror, childThreads, threadId);
       return JSON.stringify({ next: nextArtifactNumber(db, row.taskId) });
     },
   });
@@ -171,7 +184,7 @@ export function registerArtifactTools(bb: BbPluginApi, db: Database, mirror: Map
     }).strict(),
     async execute({ artifact_filename, include_resolved, limit, offset }, { threadId }) {
       try {
-        const row = taskSession(mirror, threadId);
+        const { row } = taskSession(mirror, childThreads, threadId);
         const artifact = artifactForTool(db, row.taskId, artifact_filename);
         return boundedAgentXml(listComments(db, artifact.id, { includeResolved: include_resolved, limit, offset }));
       } catch (error) {
@@ -195,7 +208,7 @@ export function registerArtifactTools(bb: BbPluginApi, db: Database, mirror: Map
     }).strict(),
     async execute({ artifact_filename, comment_ids, resolved, deleted }, { threadId }) {
       try {
-        const row = taskSession(mirror, threadId);
+        const { row } = taskSession(mirror, childThreads, threadId);
         const artifact = artifactForTool(db, row.taskId, artifact_filename);
         if (resolved === undefined && deleted === undefined) throw new Error("resolved or deleted is required");
         const results = comment_ids.map((input) => {
@@ -243,7 +256,7 @@ export function registerArtifactTools(bb: BbPluginApi, db: Database, mirror: Map
     }).strict(),
     async execute({ artifact_filename, comment_id, content }, { threadId }) {
       try {
-        const row = taskSession(mirror, threadId);
+        const { row } = taskSession(mirror, childThreads, threadId);
         const artifact = artifactForTool(db, row.taskId, artifact_filename);
         const match = resolveTruncatedId(db, artifact.id, comment_id);
         if (!match.ok) return toolJson({ ok: false, code: match.code }, true);

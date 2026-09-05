@@ -261,17 +261,17 @@ function WorkflowStrip({
 }) {
   const baseSteps =
     workflowType === "rpi"
-      ? ["questions", "research", "design", "outline", "implement", "PR"]
+      ? ["questions", "research", "design", "plan", "implementation", "PR"]
       : workflowType === "outline_only"
-        ? ["questions", "research", "design", "outline", "implement", "PR"]
+        ? ["questions", "research", "structure", "implementation", "PR"]
       : workflowType === "prd_tdd"
-        ? ["research", "PRD", "TDD", "outline", "implement", "PR"]
+        ? ["research", "PRD", "TDD", "plan", "implementation", "PR"]
         : ["single session"];
   const steps = worktreeTiming === "never" || baseSteps[0] === "single session"
     ? baseSteps
     : worktreeTiming === "now"
       ? ["worktree", ...baseSteps]
-      : [...baseSteps.slice(0, Math.max(0, baseSteps.indexOf("implement"))), "worktree", ...baseSteps.slice(Math.max(0, baseSteps.indexOf("implement")))];
+      : [...baseSteps.slice(0, Math.max(0, baseSteps.indexOf("implementation"))), "worktree", ...baseSteps.slice(Math.max(0, baseSteps.indexOf("implementation")))];
   const currentStep = labelStep(currentLabel);
   const currentIndex = steps.findIndex((step) => step === currentStep);
   return (
@@ -310,8 +310,8 @@ function labelStep(label: string | null | undefined) {
   const normalized = label?.startsWith("rpi:") ? label.slice(4) : label;
   if (normalized === "research-questions") return "questions";
   if (normalized === "worktree-setup") return "worktree";
-  if (normalized === "structure") return "outline";
-  if (normalized === "implementation") return "implement";
+  if (normalized === "structure") return "structure";
+  if (normalized === "implementation") return "implementation";
   if (normalized === "describe-pr") return "PR";
   if (normalized === "design-prd") return "PRD";
   if (normalized === "design-tdd") return "TDD";

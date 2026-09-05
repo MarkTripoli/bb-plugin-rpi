@@ -5,7 +5,7 @@ import { extractNextStep } from "./extraction";
 import { hydrate, ingest } from "./mirror";
 import type { SessionRow } from "./contract";
 import { TASK_CONTEXT_FIRST_ACTION } from "./instructions";
-import { skillInfo } from "./transitions";
+import { RPI_AGENT_SKILL_IDS, skillInfo } from "./transitions";
 
 type Database = BetterSqlite3.Database;
 type ThreadLike = {
@@ -47,6 +47,13 @@ export type SessionMirrorRow = SessionRow & {
   workflowType: string;
   providerId: string | null;
   model: string | null;
+};
+
+export type ChildThreadMirrorRow = {
+  threadId: string;
+  taskId: string;
+  parentThreadId: string;
+  role: string;
 };
 
 export const HYDRATION_ENABLED = true;
@@ -332,6 +339,46 @@ export function loadSessionMirror(db: Database) {
   const mirror = new Map<string, SessionMirrorRow>();
   refreshSessionMirror(db, mirror);
   return mirror;
+}
+
+export function loadChildThreadMirror(db: Database) {
+  const mirror = new Map<string, ChildThreadMirrorRow>();
+  for (const row of readRows<ChildThreadMirrorRow>(
+    db,
+    "SELECT thread_id AS threadId, task_id AS taskId, parent_thread_id AS parentThreadId, role FROM child_threads",
+  )) {
+    mirror.set(row.threadId, row);
+  }
+  return mirror;
+}
+
+function parseAgentRole(text: string | null | undefined) {
+  const role = /^\s*\/rpi-agent-([a-z0-9-]+)(?:\s|$)/.exec(text ?? "")?.[1] ?? null;
+  return role && (RPI_AGENT_SKILL_IDS as readonly string[]).includes(role) ? role : null;
+}
+
+function recordChildThread(db: Database, mirror: Map<string, ChildThreadMirrorRow>, threadId: string, parentThreadId: string, role: string) {
+  const parent = readRow<{ taskId: string }>(db, "SELECT task_id AS taskId FROM sessions WHERE thread_id = ?", parentThreadId);
+  if (!parent) return null;
+  writeRow(
+    db,
+    `
+    INSERT OR IGNORE INTO child_threads (thread_id, task_id, parent_thread_id, role, created_at)
+    VALUES (?, ?, ?, ?, ?)
+    `,
+    threadId,
+    parent.taskId,
+    parentThreadId,
+    role,
+    nowMs(),
+  );
+  const row = readRow<ChildThreadMirrorRow>(
+    db,
+    "SELECT thread_id AS threadId, task_id AS taskId, parent_thread_id AS parentThreadId, role FROM child_threads WHERE thread_id = ?",
+    threadId,
+  );
+  if (row) mirror.set(threadId, row);
+  return row ?? null;
 }
 
 export function refreshSessionMirror(db: Database, mirror: Map<string, SessionMirrorRow>) {
@@ -662,7 +709,7 @@ export function registerSessionRuntime(
   mirror: Map<string, SessionMirrorRow>,
   bindings: LaunchBindingMirror,
   onCompletedTurn?: (row: SessionMirrorRow) => Promise<unknown>,
-  onAgentThread?: (threadId: string) => void,
+  childThreads?: Map<string, ChildThreadMirrorRow>,
 ) {
   const maxSeq = readRow<{ maxSeq: number }>(db, "SELECT COALESCE(MAX(last_reconcile_seq), 0) + 1 AS maxSeq FROM sessions")?.maxSeq ?? 1;
   let nextSeq = maxSeq;
@@ -848,7 +895,9 @@ export function registerSessionRuntime(
   });
 
   bb.experimental_hooks.on("message.dispatch", (ctx) => {
-    if (/^\s*\/rpi-agent-[a-z0-9-]+(?:\s|$)/.test(ctx.input.text ?? "")) onAgentThread?.(ctx.thread.id);
+    const agentRole = parseAgentRole(ctx.input.text ?? "");
+    const parentThreadId = (ctx as { parentThreadId?: string | null }).parentThreadId ?? (ctx.thread as { parentThreadId?: string | null }).parentThreadId ?? null;
+    if (agentRole && parentThreadId && childThreads) recordChildThread(db, childThreads, ctx.thread.id, parentThreadId, agentRole);
     let row = mirror.get(ctx.thread.id);
     if (!row && ctx.originPluginId === bb.pluginId) {
       const token = extractLaunchToken(ctx.input.text);
@@ -881,12 +930,14 @@ export function registerSessionRuntime(
   for (const threadId of mirror.keys()) reconcileAndPublish(threadId);
 }
 
-export function taskInstructions(row: SessionMirrorRow) {
+export function taskInstructions(row: SessionMirrorRow, options: { researchModel?: string | null } = {}) {
+  const taskModel = row.providerId && row.model ? `${row.providerId} ${row.model}` : null;
+  const researchModel = options.researchModel ?? taskModel ?? "use the task's current provider/model unless hl_task_context says otherwise";
   return [
     TASK_CONTEXT_FIRST_ACTION,
     `HumanLayer task: ${row.taskName} (slug ${row.taskSlug}). Task artifact directory: .humanlayer/tasks/${row.taskSlug} (relative to the workspace root; a real directory, not a symlink).`,
-    `Current phase: ${row.label ?? "none"}. Workflow: ${row.workflowType}.`,
+    `Current phase: ${row.label ?? "none"}. Current skill command: ${row.skillId ? skillInfo(row.skillId)?.command ?? `/rpi-${row.skillId}` : "none"}. Workflow: ${row.workflowType}.`,
     "After writing or editing any file in the task artifact directory, call hl_artifact_save with its file name and include the returned permalink line in your final answer.",
-    `Faster research subagents model hint: ${row.providerId && row.model ? `${row.providerId} ${row.model}` : "use the task's current provider/model unless hl_task_context says otherwise"}.`,
+    `Research subagents model hint: ${researchModel}.`,
   ].join("\n");
 }

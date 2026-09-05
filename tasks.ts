@@ -534,6 +534,7 @@ export function listRecentDrafts(db: Database, limit = 5) {
 export function defaultTaskPrefs(input: {
   providerId?: string | null;
   model?: string | null;
+  researchModel?: string | null;
   reasoningLevel?: string | null;
   serviceTier?: string | null;
 }): Prefs {
@@ -541,6 +542,7 @@ export function defaultTaskPrefs(input: {
     defaults: {
       providerId: input.providerId ?? null,
       model: input.model ?? null,
+      researchModel: input.researchModel ?? null,
       reasoningLevel: input.reasoningLevel ?? null,
       serviceTier: input.serviceTier ?? null,
     },
