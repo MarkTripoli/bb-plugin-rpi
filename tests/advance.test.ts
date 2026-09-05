@@ -159,7 +159,7 @@ test("proceed and auto-advance racing create one launch", async () => {
   db.close();
 });
 
-test("preflight failure resets advanced_at and fails the attempt", async () => {
+test("preflight failure resets only its advanced_at stamp, fails the attempt, and removes suppression", async () => {
   const db = makeDb();
   const { session } = seed(db, "plan", "setup-worktree", { worktree_timing: "now", host_id: null });
   const bb = {
@@ -169,22 +169,38 @@ test("preflight failure resets advanced_at and fails the attempt", async () => {
     sdk: { threads: { interactions: { list: async () => [] } } },
   };
   await assert.rejects(() => onCompletedTurn(bb as never, db, new Map(), createLaunchBindingMirror(), session), /hostId is required/);
-  const row = db.prepare("SELECT advanced_at AS advancedAt FROM sessions WHERE thread_id = 'thr_source'").get() as { advancedAt: number | null };
-  const attempt = db.prepare("SELECT status FROM launch_attempts WHERE from_thread_id = 'thr_source'").get() as { status: string };
+  const row = db.prepare("SELECT advanced_at AS advancedAt, advanced_attempt_id AS advancedAttemptId FROM sessions WHERE thread_id = 'thr_source'").get() as { advancedAt: number | null; advancedAttemptId: string | null };
+  const attempt = db.prepare("SELECT id, status FROM launch_attempts WHERE from_thread_id = 'thr_source'").get() as { id: string; status: string };
+  const suppression = db.prepare("SELECT COUNT(*) AS count FROM notification_suppressions WHERE thread_id = 'thr_source'").get() as { count: number };
   assert.equal(row.advancedAt, null);
+  assert.equal(row.advancedAttemptId, null);
   assert.equal(attempt.status, "failed");
+  assert.equal(suppression.count, 0);
   db.close();
 });
 
-test("reload with pending attempt promotes uncertain and keeps launch blocked", async () => {
+test("stale completion makes Proceed reject stale extraction", async () => {
+  const db = makeDb();
+  seed(db, "research-questions", "create-research");
+  db.prepare("UPDATE sessions SET completed_turn_key = 'turn_new', next_step_turn_key = 'turn_old' WHERE thread_id = 'thr_source'").run();
+  const { bb, spawns } = fakeBb();
+  await assert.rejects(() => proceed(bb as never, db, new Map(), createLaunchBindingMirror(), "thr_source"), /stale extraction/);
+  db.close();
+});
+
+test("reload with pending attempt and stamped advance keeps launch blocked without duplicate spawn", async () => {
   const db = makeDb();
   const { taskId } = seed(db, "research-questions", "create-research");
   db.prepare("INSERT INTO launch_attempts (id, task_id, from_thread_id, skill_id, status, thread_id, created_at) VALUES ('attempt_old', ?, 'thr_source', 'create-research', 'pending', NULL, ?)").run(taskId, Date.now() - 180_000);
+  db.prepare("UPDATE sessions SET advanced_at = ?, advanced_attempt_id = 'attempt_old' WHERE thread_id = 'thr_source'").run(Date.now());
   const { promoteStalePendingLaunchAttempts } = await import("../launch");
   assert.deepEqual(promoteStalePendingLaunchAttempts(db), [taskId]);
-  const bb = fakeBb().bb;
-  await assert.rejects(() => proceed(bb as never, db, new Map(), createLaunchBindingMirror(), "thr_source"), /pending/);
+  const { bb, spawns } = fakeBb();
+  const mirror = new Map<string, SessionMirrorRow>();
+  mirrorSession(db, mirror, "thr_source");
+  await assert.rejects(() => proceed(bb as never, db, mirror, createLaunchBindingMirror(), "thr_source"), /pending/);
   const attempt = db.prepare("SELECT status FROM launch_attempts WHERE id = 'attempt_old'").get() as { status: string };
   assert.equal(attempt.status, "uncertain");
+  assert.equal(spawns.length, 0);
   db.close();
 });

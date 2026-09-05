@@ -25,6 +25,8 @@ test("migrations are idempotent", async () => {
   assert.ok(sessionColumns.includes("last_reconcile_seq"));
   assert.ok(sessionColumns.includes("last_summarized_turn_key"));
   assert.ok(sessionColumns.includes("completed_turn_key"));
+  assert.ok(sessionColumns.includes("advanced_attempt_id"));
+  assert.ok(sessionColumns.includes("ingest_error"));
   const launchAttemptColumns = db
     .prepare("PRAGMA table_info(launch_attempts)")
     .all()
@@ -32,6 +34,10 @@ test("migrations are idempotent", async () => {
   assert.equal(launchAttemptColumns.find((row) => row.name === "from_thread_id")?.notnull, 0);
   assert.ok(launchAttemptColumns.some((row) => row.name === "command_line"));
   assert.ok(launchAttemptColumns.some((row) => row.name === "environment_role"));
+  assert.ok(launchAttemptColumns.some((row) => row.name === "retried_from"));
+  assert.ok(launchAttemptColumns.some((row) => row.name === "retry_marker"));
+  db.prepare("INSERT INTO tasks (id, project_id, name, slug, draft_prompt, created_at, updated_at) VALUES ('task_1', 'proj_1', 'Task', 'task', '', 1, 1)").run();
+  db.prepare("INSERT INTO launch_attempts (id, task_id, status, created_at) VALUES ('attempt_1', 'task_1', 'retrying', 1)").run();
   await harness.lifecycle.dispose();
 });
 

@@ -9,6 +9,7 @@ import { workspaceBaseBranch, workspaceDisabled } from "./workspace";
 import {
   bindPendingLaunch,
   clearPendingLaunch,
+  extractLaunchToken,
   launchMarker,
   mirrorSession,
   notePendingLaunchThread,
@@ -21,7 +22,7 @@ import { TASK_CONTEXT_FIRST_ACTION } from "./instructions";
 
 type Database = BetterSqlite3.Database;
 
-export type LaunchAttemptStatus = "pending" | "spawned" | "uncertain" | "failed";
+export type LaunchAttemptStatus = "pending" | "spawned" | "uncertain" | "failed" | "retrying";
 export type LaunchAttemptRow = {
   id: string;
   taskId: string;
@@ -33,8 +34,29 @@ export type LaunchAttemptRow = {
   launchedBy: string;
   status: LaunchAttemptStatus;
   threadId: string | null;
+  retriedFrom: string | null;
+  retryMarker: string | null;
   createdAt: number;
+  adoptionCandidates?: LaunchAdoptionCandidate[];
 };
+export type LaunchAdoptionCandidate = {
+  threadId: string;
+  title: string | null;
+  createdAt: number;
+  strong: boolean;
+};
+
+const taskLocks = new Map<string, Promise<unknown>>();
+
+export function withTaskLock<T>(taskId: string, fn: () => Promise<T>) {
+  const previous = taskLocks.get(taskId) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(fn);
+  const cleanup = next.then(() => undefined, () => undefined).then(() => {
+    if (taskLocks.get(taskId) === cleanup) taskLocks.delete(taskId);
+  });
+  taskLocks.set(taskId, cleanup);
+  return next;
+}
 
 function readTaskOrThrow(db: Database, taskId: string) {
   const result = getTask(db, taskId);
@@ -54,16 +76,43 @@ export function activeLaunchAttempt(db: Database, taskId: string) {
       command_line AS commandLine,
       label,
       environment_role AS environmentRole,
-      launched_by AS launchedBy,
-      status,
-      thread_id AS threadId,
-      created_at AS createdAt
-    FROM launch_attempts
-    WHERE task_id = ? AND status IN ('pending', 'uncertain')
+	      launched_by AS launchedBy,
+	      status,
+	      thread_id AS threadId,
+	      retried_from AS retriedFrom,
+	      retry_marker AS retryMarker,
+	      created_at AS createdAt
+	    FROM launch_attempts
+	    WHERE task_id = ? AND status IN ('pending', 'uncertain', 'retrying')
     ORDER BY created_at DESC
     LIMIT 1
     `,
     taskId,
+  );
+}
+
+function readLaunchAttempt(db: Database, id: string) {
+  return readRow<LaunchAttemptRow>(
+    db,
+    `
+    SELECT
+      id,
+      task_id AS taskId,
+      from_thread_id AS fromThreadId,
+      skill_id AS skillId,
+      command_line AS commandLine,
+      label,
+      environment_role AS environmentRole,
+      launched_by AS launchedBy,
+      status,
+      thread_id AS threadId,
+      retried_from AS retriedFrom,
+      retry_marker AS retryMarker,
+      created_at AS createdAt
+    FROM launch_attempts
+    WHERE id = ?
+    `,
+    id,
   );
 }
 
@@ -78,16 +127,25 @@ export function environmentRoleForAttempt(task: TaskRecord, skillId: string | nu
 export function insertAttempt(
   db: Database,
   task: TaskRecord,
-  input: { fromThreadId: string | null; skillId: string | null; commandLine: string | null; label: string | null; environmentRole: "base" | "worktree"; launchedBy: string },
+  input: {
+    id?: string;
+    fromThreadId: string | null;
+    skillId: string | null;
+    commandLine: string | null;
+    label: string | null;
+    environmentRole: "base" | "worktree";
+    launchedBy: string;
+    retriedFrom?: string | null;
+  },
 ) {
-  const id = randomUUID();
+  const id = input.id ?? randomUUID();
   writeRow(
     db,
     `
     INSERT INTO launch_attempts (
       id, task_id, from_thread_id, skill_id, command_line, label,
-      environment_role, launched_by, status, thread_id, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?)
+      environment_role, launched_by, status, thread_id, retried_from, retry_marker, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, NULL, ?)
     `,
     id,
     task.id,
@@ -97,6 +155,7 @@ export function insertAttempt(
     input.label,
     input.environmentRole,
     input.launchedBy,
+    input.retriedFrom ?? null,
     nowMs(),
   );
   return id;
@@ -166,23 +225,25 @@ function shouldCreateWorktree(task: TaskRecord, skillId: string | null, disabled
 }
 
 async function selectEnvironment(bb: BbPluginApi, task: TaskRecord, skillId: string | null, role: "base" | "worktree") {
-  const disabled = await workspaceDisabled(bb, task);
-  if (role === "worktree" && disabled) throw new Error("Workspace config disables worktree launch.");
-  if (task.worktreeEnvironmentId && !disabled && task.worktreeTiming !== "never") {
-    return { environment: { type: "reuse" as const, environmentId: task.worktreeEnvironmentId }, stores: "none" as const, role: "worktree" as const };
-  }
-  if (shouldCreateWorktree(task, skillId, disabled)) {
-    const hostId = task.hostId ?? await hostIdFromBaseEnvironment(bb, task);
-    if (!hostId) throw new Error("hostId is required to create a managed worktree");
-    return {
-      environment: {
-        type: "host" as const,
-        hostId,
-        workspace: { type: "managed-worktree" as const, baseBranch: await workspaceBaseBranch(bb, task) },
-      },
-      stores: "worktree" as const,
-      role: "worktree" as const,
-    };
+  if (role === "worktree") {
+    const disabled = await workspaceDisabled(bb, task);
+    if (disabled) throw new Error("Workspace config disables worktree launch.");
+    if (task.worktreeEnvironmentId && task.worktreeTiming !== "never") {
+      return { environment: { type: "reuse" as const, environmentId: task.worktreeEnvironmentId }, stores: "none" as const, role: "worktree" as const };
+    }
+    if (shouldCreateWorktree(task, skillId, disabled)) {
+      const hostId = task.hostId ?? await hostIdFromBaseEnvironment(bb, task);
+      if (!hostId) throw new Error("hostId is required to create a managed worktree");
+      return {
+        environment: {
+          type: "host" as const,
+          hostId,
+          workspace: { type: "managed-worktree" as const, baseBranch: await workspaceBaseBranch(bb, task) },
+        },
+        stores: "worktree" as const,
+        role: "worktree" as const,
+      };
+    }
   }
   if (task.baseEnvironmentId) return { environment: { type: "reuse" as const, environmentId: task.baseEnvironmentId }, stores: "none" as const, role: "base" as const };
   if (task.hostId && task.defaultDirectory) {
@@ -223,16 +284,51 @@ export function listLaunchAttempts(db: Database, taskId: string) {
       command_line AS commandLine,
       label,
       environment_role AS environmentRole,
-      launched_by AS launchedBy,
-      status,
-      thread_id AS threadId,
-      created_at AS createdAt
-    FROM launch_attempts
+	      launched_by AS launchedBy,
+	      status,
+	      thread_id AS threadId,
+	      retried_from AS retriedFrom,
+	      retry_marker AS retryMarker,
+	      created_at AS createdAt
+	    FROM launch_attempts
     WHERE task_id = ?
     ORDER BY created_at DESC
     `,
     taskId,
   );
+}
+
+export async function listLaunchAdoptionCandidates(bb: BbPluginApi, db: Database, attempt: LaunchAttemptRow) {
+  const task = readTaskOrThrow(db, attempt.taskId);
+  const listed = await bb.sdk.threads.list({ originPluginId: bb.pluginId, limit: 100 });
+  const threads = Array.isArray(listed) ? listed : ((listed as { threads?: unknown[] }).threads ?? []);
+  const candidates: LaunchAdoptionCandidate[] = [];
+  for (const thread of threads as Array<{ id: string; title?: string | null; titleFallback?: string | null; createdAt: number; projectId: string; originPluginId?: string | null }>) {
+    if (thread.originPluginId !== bb.pluginId) continue;
+    if (thread.projectId !== task.projectId) continue;
+    if (thread.createdAt <= attempt.createdAt) continue;
+    const marker = await firstUserLaunchMarker(bb, thread.id);
+    if (marker && marker !== attempt.id) continue;
+    candidates.push({
+      threadId: thread.id,
+      title: thread.title ?? thread.titleFallback ?? null,
+      createdAt: thread.createdAt,
+      strong: marker === attempt.id,
+    });
+  }
+  return candidates;
+}
+
+async function firstUserLaunchMarker(bb: BbPluginApi, threadId: string) {
+  try {
+    const timeline = await bb.sdk.threads.timeline({ threadId, segmentLimit: "20", summaryOnly: "false" });
+    const rows = [...((timeline.rows ?? []) as Array<{ kind?: string; role?: string; text?: string; sourceSeqStart?: number }>)]
+      .sort((a, b) => (a.sourceSeqStart ?? 0) - (b.sourceSeqStart ?? 0));
+    const firstUser = rows.find((row) => row.kind === "conversation" && row.role === "user");
+    return extractLaunchToken(firstUser?.text);
+  } catch {
+    return null;
+  }
 }
 
 export async function launchPhase(
@@ -247,7 +343,7 @@ export async function launchPhase(
   if (task.archived) throw new Error("Task is archived.");
   const commandLine = commandFor(input.skillId, input.commandLine);
   const label = labelTitle(input.skillId);
-  const environmentRole = environmentRoleForAttempt(task, input.skillId);
+  let environmentRole = environmentRoleForAttempt(task, input.skillId);
   const attemptId = input.attemptId ?? (() => {
     const existing = activeLaunchAttempt(db, task.id);
     if (existing) throw new Error(`Resolve launch attempt ${existing.id} before launching again.`);
@@ -260,6 +356,11 @@ export async function launchPhase(
       launchedBy: input.launchedBy,
     });
   })();
+  if (input.attemptId) {
+    const attempt = readLaunchAttempt(db, input.attemptId);
+    if (!attempt) throw new Error(`No launch attempt found for id ${input.attemptId}`);
+    environmentRole = attempt.environmentRole;
+  }
 
   registerPendingLaunch(bindings, {
     token: attemptId,
@@ -337,7 +438,11 @@ export async function launchDraft(bb: BbPluginApi, db: Database, mirror: Map<str
 function failPreSpawnAttempt(db: Database, attemptId: string, fromThreadId: string | null) {
   db.transaction(() => {
     claimAttempt(db, attemptId, "failed", null);
-    if (fromThreadId) writeRow(db, "UPDATE sessions SET advanced_at = NULL, updated_at = ? WHERE thread_id = ?", nowMs(), fromThreadId);
+    if (fromThreadId) {
+      const timestamp = nowMs();
+      writeRow(db, "UPDATE sessions SET advanced_at = NULL, advanced_attempt_id = NULL, updated_at = ? WHERE thread_id = ? AND advanced_attempt_id = ?", timestamp, fromThreadId, attemptId);
+      writeRow(db, "DELETE FROM notification_suppressions WHERE thread_id = ? AND reason = 'auto_advance'", fromThreadId);
+    }
   })();
 }
 
@@ -399,95 +504,98 @@ export async function resolveLaunchAttempt(
   id: string,
   action: { type: "adopt"; threadId: string } | { type: "retry" } | { type: "dismiss" },
 ) {
-  const attempt = readRow<LaunchAttemptRow>(
-    db,
-    `
-    SELECT
-      id,
-      task_id AS taskId,
-      from_thread_id AS fromThreadId,
-      skill_id AS skillId,
-      command_line AS commandLine,
-      label,
-      environment_role AS environmentRole,
-      launched_by AS launchedBy,
-      status,
-      thread_id AS threadId,
-      created_at AS createdAt
-    FROM launch_attempts
-    WHERE id = ?
-    `,
-    id,
-  );
+  const attempt = readLaunchAttempt(db, id);
   if (!attempt) throw new Error(`No launch attempt found for id ${id}`);
-  if (attempt.status !== "pending" && attempt.status !== "uncertain") return { threadId: attempt.threadId };
-  if (action.type === "dismiss") {
-    claimAttempt(db, id, "failed", attempt.threadId);
-    clearPendingLaunch(bindings, id);
-    return { threadId: attempt.threadId };
-  }
-  if (action.type === "adopt") {
-    const candidates = await bb.sdk.threads.list({
-      originPluginId: bb.pluginId,
-      limit: 100,
-    });
-    const found = candidates.find((thread) => thread.id === action.threadId && thread.createdAt >= attempt.createdAt);
-    if (!found) throw new Error("Thread is not an adopt candidate for this attempt.");
-    const task = readTaskOrThrow(db, attempt.taskId);
-    const hydratedThread = await bb.sdk.threads.get({ threadId: action.threadId, include: "environment" });
-    const environmentId = hydratedThread.environmentId ?? null;
-    const timestamp = nowMs();
-    const result = db.transaction(() => {
-      if (!claimAttempt(db, id, "spawned", action.threadId)) {
-        const current = readRow<{ threadId: string | null }>(db, "SELECT thread_id AS threadId FROM launch_attempts WHERE id = ?", id);
-        return { claimed: false, threadId: current?.threadId ?? null };
-      }
-      const existing = readRow<{ threadId: string }>(db, "SELECT thread_id AS threadId FROM sessions WHERE thread_id = ?", action.threadId);
-      if (existing) throw new Error("Thread is already bound to a HumanLayer session.");
-      writeRow(
-        db,
-        `
-        INSERT INTO sessions (
-          thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
-          hl_status, hl_status_at, had_turn, interrupted, blocked_reason,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'launching', ?, 0, 0, NULL, ?, ?)
-        `,
-        action.threadId,
-        task.id,
-        attempt.label,
-        attempt.skillId,
-        attempt.launchedBy,
-        attempt.fromThreadId,
-        timestamp,
-        timestamp,
-        timestamp,
-      );
-      return { claimed: true, threadId: action.threadId };
-    })();
-    clearPendingLaunch(bindings, id);
-    if (!result.claimed) return { threadId: result.threadId };
-    if (attempt.environmentRole === "worktree" && environmentId) {
-      writeRow(db, "UPDATE tasks SET worktree_environment_id = ?, updated_at = ? WHERE id = ?", environmentId, timestamp, task.id);
-    } else if (attempt.environmentRole === "base" && !task.baseEnvironmentId && environmentId) {
-      writeRow(db, "UPDATE tasks SET base_environment_id = ?, updated_at = ? WHERE id = ?", environmentId, timestamp, task.id);
+  return withTaskLock(attempt.taskId, async () => {
+    const fresh = readLaunchAttempt(db, id);
+    if (!fresh) throw new Error(`No launch attempt found for id ${id}`);
+    if (fresh.status !== "pending" && fresh.status !== "uncertain") return currentAttemptResult(db, fresh);
+    if (action.type === "dismiss") {
+      const claimed = writeRow(db, "UPDATE launch_attempts SET status = 'failed' WHERE id = ? AND status IN ('pending', 'uncertain')", id).changes === 1;
+      clearPendingLaunch(bindings, id);
+      return claimed ? { threadId: fresh.threadId } : currentAttemptResult(db, fresh);
     }
-    mirrorSession(db, mirror, action.threadId);
-    await reconcileSession(bb, db, mirror, action.threadId);
-    return { threadId: action.threadId };
-  }
-  if (!writeRow(db, "UPDATE launch_attempts SET status = 'pending', thread_id = NULL WHERE id = ? AND status IN ('pending', 'uncertain')", id).changes) {
-    const current = readRow<{ threadId: string | null }>(db, "SELECT thread_id AS threadId FROM launch_attempts WHERE id = ?", id);
+    if (action.type === "adopt") {
+      const task = readTaskOrThrow(db, fresh.taskId);
+      const candidates = await listLaunchAdoptionCandidates(bb, db, fresh);
+      const found = candidates.find((candidate) => candidate.threadId === action.threadId);
+      if (!found) throw new Error("Thread is not an adopt candidate for this attempt.");
+      const hydratedThread = await bb.sdk.threads.get({ threadId: action.threadId, include: "environment" });
+      const environmentId = hydratedThread.environmentId ?? null;
+      const timestamp = nowMs();
+      const result = db.transaction(() => {
+        const existing = readRow<{ threadId: string }>(db, "SELECT thread_id AS threadId FROM sessions WHERE thread_id = ?", action.threadId);
+        if (existing) throw new Error("Thread is already bound to a HumanLayer session.");
+        const claim = writeRow(db, "UPDATE launch_attempts SET status = 'spawned', thread_id = ? WHERE id = ? AND status IN ('pending', 'uncertain')", action.threadId, id);
+        if (claim.changes !== 1) return currentAttemptResult(db, fresh);
+        writeRow(
+          db,
+          `
+          INSERT INTO sessions (
+            thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
+            hl_status, hl_status_at, had_turn, interrupted, blocked_reason,
+            created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, 'launching', ?, 0, 0, NULL, ?, ?)
+          `,
+          action.threadId,
+          task.id,
+          fresh.label,
+          fresh.skillId,
+          fresh.launchedBy,
+          fresh.fromThreadId,
+          timestamp,
+          timestamp,
+          timestamp,
+        );
+        return { threadId: action.threadId };
+      })();
+      clearPendingLaunch(bindings, id);
+      if (result.threadId !== action.threadId) return result;
+      if (fresh.environmentRole === "worktree" && environmentId) {
+        writeRow(db, "UPDATE tasks SET worktree_environment_id = ?, updated_at = ? WHERE id = ?", environmentId, timestamp, task.id);
+      } else if (fresh.environmentRole === "base" && !task.baseEnvironmentId && environmentId) {
+        writeRow(db, "UPDATE tasks SET base_environment_id = ?, updated_at = ? WHERE id = ?", environmentId, timestamp, task.id);
+      }
+      mirrorSession(db, mirror, action.threadId);
+      await reconcileSession(bb, db, mirror, action.threadId);
+      return { threadId: action.threadId };
+    }
+    const task = readTaskOrThrow(db, fresh.taskId);
+    const retryMarker = randomUUID();
+    const claimed = db.transaction(() => {
+      const claim = writeRow(
+        db,
+        "UPDATE launch_attempts SET status = 'retrying', retry_marker = ? WHERE id = ? AND status IN ('pending', 'uncertain')",
+        retryMarker,
+        id,
+      );
+      if (claim.changes !== 1) return false;
+      insertAttempt(db, task, {
+        id: retryMarker,
+        fromThreadId: fresh.fromThreadId,
+        skillId: fresh.skillId,
+        commandLine: fresh.commandLine,
+        label: fresh.label,
+        environmentRole: fresh.environmentRole,
+        launchedBy: fresh.launchedBy,
+        retriedFrom: id,
+      });
+      writeRow(db, "UPDATE launch_attempts SET status = 'failed' WHERE id = ? AND status = 'retrying' AND retry_marker = ?", id, retryMarker);
+      return true;
+    })();
+    if (!claimed) return currentAttemptResult(db, fresh);
     clearPendingLaunch(bindings, id);
-    return { threadId: current?.threadId ?? null };
-  }
-  clearPendingLaunch(bindings, id);
-  const task = readTaskOrThrow(db, attempt.taskId);
-  return launchPhase(bb, db, mirror, bindings, task, {
-    skillId: attempt.skillId,
-    commandLine: attempt.commandLine,
-    launchedBy: attempt.launchedBy,
-    fromThreadId: attempt.fromThreadId,
-    attemptId: id,
+    return launchPhase(bb, db, mirror, bindings, task, {
+      skillId: fresh.skillId,
+      commandLine: fresh.commandLine,
+      launchedBy: fresh.launchedBy,
+      fromThreadId: fresh.fromThreadId,
+      attemptId: retryMarker,
+    });
   });
+}
+
+function currentAttemptResult(db: Database, attempt: LaunchAttemptRow) {
+  const retry = attempt.retryMarker ? readLaunchAttempt(db, attempt.retryMarker) : null;
+  return { threadId: retry?.threadId ?? attempt.threadId };
 }

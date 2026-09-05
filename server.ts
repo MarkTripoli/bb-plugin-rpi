@@ -36,6 +36,7 @@ import {
   forkSession,
   interruptSession,
   launchDraft,
+  listLaunchAdoptionCandidates,
   listLaunchAttempts,
   promoteStalePendingLaunchAttempts,
   resolveLaunchAttempt,
@@ -59,6 +60,7 @@ import {
   updateTask,
 } from "./tasks";
 import { ARTIFACT_TOOL_NAMES, registerArtifactTools } from "./tools";
+import { ITERATE_SKILL_BY_LABEL, normalizePhaseLabel, skillInfo, type PhaseLabel } from "./transitions";
 import { getWorkspaceView, rerunWorkspaceSetup, validateWorkspaceForWorktreeLaunch } from "./workspace";
 
 const PREFS_KEY = "prefs:structured-defaults";
@@ -226,13 +228,13 @@ export default async function plugin(bb: BbPluginApi) {
         archived: input.archived ?? false,
       }),
     }),
-    getTask: async ({ taskId }) => {
-      const result = getTask(db, taskId);
-      if (result === null) {
-        throw new Error(`No task found for id ${taskId}`);
-      }
-      return result;
-    },
+	    getTask: async ({ taskId }) => {
+	      const result = getTask(db, taskId);
+	      if (result === null) {
+	        throw new Error(`No task found for id ${taskId}`);
+	      }
+	      return { ...result, workspace: { ...result.workspace, launchAttempts: await attemptsWithCandidates(bb, db, result.workspace.launchAttempts) } };
+	    },
     createTask: async ({ request, name, draft }) => {
       const storedPrefs = await bb.storage.kv.get<unknown>(PREFS_KEY);
       const prefs = prefsSchema.parse(storedPrefs ?? defaultTaskPrefs({}));
@@ -280,9 +282,18 @@ export default async function plugin(bb: BbPluginApi) {
       if (task && isGatedWorkflow(task.workflowType)) throw new Error(RPI_LAUNCH_NOTE);
       return launchDraft(bb, db, sessionMirror, launchBindings, taskId);
     },
-    proceed: async ({ threadId }) => proceed(bb, db, sessionMirror, launchBindings, threadId),
-    launchSkill: async ({ taskId, skillId, commandLine }) => launchSkill(bb, db, sessionMirror, launchBindings, taskId, skillId, commandLine ?? null),
-    iterateInFreshSession: async ({ threadId }) => iterateInFreshSession(bb, db, sessionMirror, launchBindings, threadId),
+	    proceed: async ({ threadId }) => {
+	      rejectUnavailableRpiProceed(db, threadId);
+	      return proceed(bb, db, sessionMirror, launchBindings, threadId);
+	    },
+	    launchSkill: async ({ taskId, skillId, commandLine }) => {
+	      rejectUnavailableRpiSkill(skillId);
+	      return launchSkill(bb, db, sessionMirror, launchBindings, taskId, skillId, commandLine ?? null);
+	    },
+	    iterateInFreshSession: async ({ threadId }) => {
+	      rejectUnavailableRpiIterate(db, threadId);
+	      return iterateInFreshSession(bb, db, sessionMirror, launchBindings, threadId);
+	    },
     listSessions: async ({ taskId }) => ({
       sessions: await Promise.all(listSessions(db, taskId ?? null).map((session) => sessionView(bb, session))),
     }),
@@ -292,7 +303,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
     forkSession: async ({ threadId, text }) => forkSession(bb, db, sessionMirror, threadId, text),
     interruptSession: async ({ threadId }) => interruptSession(bb, db, sessionMirror, threadId),
-    listLaunchAttempts: async ({ taskId }) => ({ attempts: listLaunchAttempts(db, taskId) }),
+	    listLaunchAttempts: async ({ taskId }) => ({ attempts: await attemptsWithCandidates(bb, db, listLaunchAttempts(db, taskId)) }),
     resolveLaunchAttempt: async ({ id, action }) => resolveLaunchAttempt(bb, db, sessionMirror, launchBindings, id, action),
     listArtifacts: async ({ taskId, includeDeleted }) => ({ artifacts: listArtifacts(db, taskId, { includeDeleted }) }),
     getArtifact: async ({ taskId, fileName, version }) => {
@@ -521,7 +532,7 @@ export default async function plugin(bb: BbPluginApi) {
       {
         name: "launch-skill",
         summary: "Internal: launch a HumanLayer task session with an RPI skill",
-        usage: "bb humanlayer launch-skill --task <taskId> --skill <skillId> [--prompt <text>] [--command-line <text>] [--provider <id>] [--model <id>] [--json] (internal testing)",
+        usage: "bb humanlayer launch-skill --task <taskId> --skill <skillId> --internal [--prompt <text>] [--command-line <text>] [--provider <id>] [--model <id>] [--json]",
       },
       {
         name: "launch-attempts",
@@ -578,7 +589,14 @@ export default async function plugin(bb: BbPluginApi) {
         }
         if (argv[0] === "launch-skill") {
           const opts = parseArgs(argv.slice(1));
-          if (!opts.task || !opts.skill) return { exitCode: 2, stderr: "usage: bb humanlayer launch-skill --task <taskId> --skill <skillId> [--prompt <text>] [--command-line <text>] [--provider <id>] [--model <id>]\n" };
+          if (!opts.task || !opts.skill) return { exitCode: 2, stderr: "usage: bb humanlayer launch-skill --task <taskId> --skill <skillId> --internal [--prompt <text>] [--command-line <text>] [--provider <id>] [--model <id>]\n" };
+          if (opts.internal !== "true") {
+            try {
+              rejectUnavailableRpiSkill(opts.skill);
+            } catch (error) {
+              return { exitCode: 1, stderr: `${String(error instanceof Error ? error.message : error)}\n` };
+            }
+          }
           if (opts.provider || opts.model || opts.effort) {
             updateTask(db, opts.task, {
               providerId: opts.provider ?? undefined,
@@ -807,6 +825,10 @@ function parseArgs(argv: string[]) {
       result.launch = "true";
       continue;
     }
+    if (arg === "--internal") {
+      result.internal = "true";
+      continue;
+    }
     if (arg === "--resolved") {
       result.resolved = "true";
       continue;
@@ -831,6 +853,29 @@ function parseBoundedInt(input: string | undefined, fallback: number, min: numbe
 
 function workflowTypeOption(input: string | undefined) {
   return input === "rpi" || input === "outline_only" || input === "prd_tdd" || input === "oneshot" || input === "freeform" ? input : "freeform";
+}
+
+async function attemptsWithCandidates(bb: BbPluginApi, db: ReturnType<typeof openPluginDatabase>, attempts: ReturnType<typeof listLaunchAttempts>) {
+  return Promise.all(attempts.map(async (attempt) => {
+    if (attempt.status !== "pending" && attempt.status !== "uncertain" && attempt.status !== "retrying") return attempt;
+    return { ...attempt, adoptionCandidates: await listLaunchAdoptionCandidates(bb, db, attempt).catch(() => []) };
+  }));
+}
+
+function rejectUnavailableRpiSkill(skillId: string | null | undefined) {
+  if (!RPI_SKILLS_AVAILABLE && skillId && skillInfo(skillId)) throw new Error(RPI_LAUNCH_NOTE);
+}
+
+function rejectUnavailableRpiProceed(db: ReturnType<typeof openPluginDatabase>, threadId: string) {
+  const session = readSession(db, threadId);
+  const nextStep = parseJson<{ extraction?: { type?: string; nextStepType?: string } } | null>(session?.nextStepJson, null);
+  if (nextStep?.extraction?.type === "next_step_found") rejectUnavailableRpiSkill(nextStep.extraction.nextStepType);
+}
+
+function rejectUnavailableRpiIterate(db: ReturnType<typeof openPluginDatabase>, threadId: string) {
+  const session = readSession(db, threadId);
+  const label = normalizePhaseLabel(session?.label ?? null) as PhaseLabel | null;
+  rejectUnavailableRpiSkill(label ? ITERATE_SKILL_BY_LABEL[label] ?? null : null);
 }
 
 function isGatedWorkflow(workflowType: string) {

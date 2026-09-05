@@ -4,7 +4,7 @@ import Database from "better-sqlite3";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { MIGRATIONS } from "../db";
 import { createDraftTask } from "../tasks";
-import { launchPhase, promoteStalePendingLaunchAttempts, resolveLaunchAttempt } from "../launch";
+import { launchPhase, listLaunchAdoptionCandidates, promoteStalePendingLaunchAttempts, resolveLaunchAttempt } from "../launch";
 import { TASK_CONTEXT_FIRST_ACTION } from "../instructions";
 import { bindPendingLaunch, createLaunchBindingMirror, registerPendingLaunch, type SessionMirrorRow } from "../sessions";
 
@@ -173,7 +173,44 @@ test("adopt stores worktree environment when the attempt role is worktree", asyn
   db.close();
 });
 
-test("retry reuses the same attempt command and role", async () => {
+test("adoption candidates match plugin, project, time, and mark weak without marker", async () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  db.prepare("INSERT INTO launch_attempts (id, task_id, from_thread_id, skill_id, status, thread_id, created_at) VALUES (?, ?, NULL, NULL, 'uncertain', NULL, ?)")
+    .run("attempt_1", taskId, 10);
+  const threads = [
+    makeThreadResponse({ id: "thr_strong", title: "Strong", projectId: "proj_1", createdAt: 11, originPluginId: "humanlayer" }),
+    makeThreadResponse({ id: "thr_weak", title: "Weak", projectId: "proj_1", createdAt: 12, originPluginId: "humanlayer" }),
+    makeThreadResponse({ id: "thr_wrong_project", projectId: "proj_2", createdAt: 13, originPluginId: "humanlayer" }),
+    makeThreadResponse({ id: "thr_old", projectId: "proj_1", createdAt: 10, originPluginId: "humanlayer" }),
+    makeThreadResponse({ id: "thr_other_plugin", projectId: "proj_1", createdAt: 14, originPluginId: "other" }),
+    makeThreadResponse({ id: "thr_other_marker", projectId: "proj_1", createdAt: 15, originPluginId: "humanlayer" }),
+  ];
+  const bb = {
+    pluginId: "humanlayer",
+    sdk: {
+      threads: {
+        list: async () => threads,
+        timeline: async ({ threadId }: { threadId: string }) => ({
+          rows: threadId === "thr_strong"
+            ? [{ kind: "conversation", role: "user", text: "<!-- hl:launch:attempt_1 -->", sourceSeqStart: 1 }]
+            : threadId === "thr_other_marker"
+              ? [{ kind: "conversation", role: "user", text: "<!-- hl:launch:other_attempt -->", sourceSeqStart: 1 }]
+              : [{ kind: "conversation", role: "user", text: "manual start", sourceSeqStart: 1 }],
+        }),
+      },
+    },
+  };
+  const attempt = db.prepare("SELECT id, task_id AS taskId, from_thread_id AS fromThreadId, skill_id AS skillId, command_line AS commandLine, label, environment_role AS environmentRole, launched_by AS launchedBy, status, thread_id AS threadId, retried_from AS retriedFrom, retry_marker AS retryMarker, created_at AS createdAt FROM launch_attempts WHERE id = 'attempt_1'").get() as never;
+  const candidates = await listLaunchAdoptionCandidates(bb as never, db, attempt);
+  assert.deepEqual(candidates.map((candidate) => ({ threadId: candidate.threadId, strong: candidate.strong })), [
+    { threadId: "thr_strong", strong: true },
+    { threadId: "thr_weak", strong: false },
+  ]);
+  db.close();
+});
+
+test("retry creates a new marked attempt with the same command and role", async () => {
   const db = makeDb();
   const taskId = seedTask(db);
   db.prepare("INSERT INTO launch_attempts (id, task_id, from_thread_id, skill_id, command_line, label, environment_role, launched_by, status, thread_id, created_at) VALUES (?, ?, 'thr_source', 'create-research', '/rpi-create-research @x.md', 'research', 'base', 'proceed', 'uncertain', NULL, ?)")
@@ -193,10 +230,72 @@ test("retry reuses the same attempt command and role", async () => {
     log: { warn: () => undefined },
   };
   await resolveLaunchAttempt(bb as never, db, new Map(), createLaunchBindingMirror(), "attempt_1", { type: "retry" });
-  assert.match(prompt, /^<!-- hl:launch:attempt_1 -->/);
+  assert.match(prompt, /^<!-- hl:launch:(?!attempt_1)/);
   assert.match(prompt, /\/rpi-create-research @x\.md/);
-  const attempts = db.prepare("SELECT COUNT(*) AS count FROM launch_attempts").get() as { count: number };
-  assert.equal(attempts.count, 1);
+  const attempts = db.prepare("SELECT id, status, retried_from AS retriedFrom, environment_role AS environmentRole, thread_id AS threadId FROM launch_attempts ORDER BY created_at, id").all() as Array<{ id: string; status: string; retriedFrom: string | null; environmentRole: string; threadId: string | null }>;
+  assert.equal(attempts.length, 2);
+  assert.equal(attempts[0]?.status, "failed");
+  assert.equal(attempts[1]?.status, "spawned");
+  assert.equal(attempts[1]?.retriedFrom, "attempt_1");
+  assert.equal(attempts[1]?.environmentRole, "base");
+  assert.equal(attempts[1]?.threadId, "thr_retry");
+  db.close();
+});
+
+test("concurrent retries claim the old attempt once and spawn once", async () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  db.prepare("INSERT INTO launch_attempts (id, task_id, from_thread_id, skill_id, command_line, label, environment_role, launched_by, status, thread_id, created_at) VALUES (?, ?, 'thr_source', 'create-research', '/rpi-create-research', 'research', 'base', 'proceed', 'uncertain', NULL, ?)")
+    .run("attempt_1", taskId, 1);
+  let spawns = 0;
+  const bb = {
+    realtime: { publish: () => undefined },
+    sdk: {
+      threads: {
+        spawn: async () => {
+          spawns += 1;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          return makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" });
+        },
+        get: async () => makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }),
+      },
+    },
+    log: { warn: () => undefined },
+  };
+  const bindings = createLaunchBindingMirror();
+  await Promise.all([
+    resolveLaunchAttempt(bb as never, db, new Map(), bindings, "attempt_1", { type: "retry" }),
+    resolveLaunchAttempt(bb as never, db, new Map(), bindings, "attempt_1", { type: "retry" }),
+  ]);
+  assert.equal(spawns, 1);
+  const attempts = db.prepare("SELECT status, retried_from AS retriedFrom FROM launch_attempts ORDER BY created_at, id").all() as Array<{ status: string; retriedFrom: string | null }>;
+  assert.deepEqual(attempts.map((attempt) => attempt.status), ["failed", "spawned"]);
+  assert.equal(attempts[1]?.retriedFrom, "attempt_1");
+  db.close();
+});
+
+test("retry honors the stored base environment role", async () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  db.prepare("UPDATE tasks SET worktree_timing = 'later', base_environment_id = 'env_base', worktree_environment_id = 'env_worktree' WHERE id = ?").run(taskId);
+  db.prepare("INSERT INTO launch_attempts (id, task_id, from_thread_id, skill_id, command_line, label, environment_role, launched_by, status, thread_id, created_at) VALUES (?, ?, 'thr_source', 'create-research', '/rpi-create-research', 'research', 'base', 'proceed', 'uncertain', NULL, ?)")
+    .run("attempt_1", taskId, 1);
+  let environment: unknown;
+  const bb = {
+    realtime: { publish: () => undefined },
+    sdk: {
+      threads: {
+        spawn: async (input: { environment: unknown }) => {
+          environment = input.environment;
+          return makeThreadResponse({ id: "thr_retry", environmentId: "env_base", projectId: "proj_1", originPluginId: "humanlayer" });
+        },
+        get: async () => makeThreadResponse({ id: "thr_retry", environmentId: "env_base", projectId: "proj_1", originPluginId: "humanlayer" }),
+      },
+    },
+    log: { warn: () => undefined },
+  };
+  await resolveLaunchAttempt(bb as never, db, new Map(), createLaunchBindingMirror(), "attempt_1", { type: "retry" });
+  assert.deepEqual(environment, { type: "reuse", environmentId: "env_base" });
   db.close();
 });
 

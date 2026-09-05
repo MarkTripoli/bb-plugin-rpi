@@ -94,11 +94,13 @@ export const sessionRowSchema = z
     nextStepJson: z.string().nullable(),
     summaryJson: z.string().nullable(),
     advancedAt: z.number().int().nullable(),
+    advancedAttemptId: z.string().nullable(),
     hydratedAt: z.number().int().nullable(),
     lastReconcileSeq: z.number().int(),
     lastSummarizedTurnKey: z.string().nullable(),
     completedTurnKey: z.string().nullable(),
     nextStepTurnKey: z.string().nullable(),
+    ingestError: z.string().nullable(),
     createdAt: z.number().int(),
     updatedAt: z.number().int(),
   })
@@ -115,9 +117,17 @@ export const launchAttemptRowSchema = z
     label: z.string().nullable(),
     environmentRole: z.enum(["base", "worktree"]),
     launchedBy: z.string(),
-    status: z.enum(["pending", "spawned", "uncertain", "failed"]),
+    status: z.enum(["pending", "spawned", "uncertain", "failed", "retrying"]),
     threadId: z.string().nullable(),
+    retriedFrom: z.string().nullable(),
+    retryMarker: z.string().nullable(),
     createdAt: z.number().int(),
+    adoptionCandidates: z.array(z.object({
+      threadId: z.string(),
+      title: z.string().nullable(),
+      createdAt: z.number().int(),
+      strong: z.boolean(),
+    }).strict()).optional(),
   })
   .strict();
 export type LaunchAttemptRecord = z.infer<typeof launchAttemptRowSchema>;

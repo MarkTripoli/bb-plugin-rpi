@@ -1,16 +1,16 @@
+import { randomUUID } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type * as BetterSqlite3 from "better-sqlite3";
 import { parseJson, readRow, writeRow } from "./db";
 import type { SessionRow, TaskRecord } from "./contract";
 import type { NextStepSuggestions } from "./extraction";
-import { activeLaunchAttempt, environmentRoleForAttempt, insertAttempt, launchPhase } from "./launch";
+import { activeLaunchAttempt, environmentRoleForAttempt, insertAttempt, launchPhase, withTaskLock } from "./launch";
 import { getTask } from "./tasks";
 import { AUTO_ADVANCE, ITERATE_SKILL_BY_LABEL, normalizePhaseLabel, skillInfo, type PhaseLabel } from "./transitions";
 import type { LaunchBindingMirror, SessionMirrorRow } from "./sessions";
 
 type Database = BetterSqlite3.Database;
 type AdvanceMode = "auto_advance" | "proceed";
-const taskLocks = new Map<string, Promise<unknown>>();
 
 export class AdvanceRejectedError extends Error {
   constructor(
@@ -53,9 +53,9 @@ export async function proceed(
     SELECT thread_id AS threadId, task_id AS taskId, label, skill_id AS skillId, launched_by AS launchedBy,
       forked_from_thread_id AS forkedFromThreadId, hl_status AS hlStatus, hl_status_at AS hlStatusAt,
       had_turn AS hadTurn, interrupted, blocked_reason AS blockedReason, next_step_json AS nextStepJson,
-      summary_json AS summaryJson, advanced_at AS advancedAt, hydrated_at AS hydratedAt,
+      summary_json AS summaryJson, advanced_at AS advancedAt, advanced_attempt_id AS advancedAttemptId, hydrated_at AS hydratedAt,
       last_reconcile_seq AS lastReconcileSeq, last_summarized_turn_key AS lastSummarizedTurnKey,
-      completed_turn_key AS completedTurnKey, next_step_turn_key AS nextStepTurnKey,
+      completed_turn_key AS completedTurnKey, next_step_turn_key AS nextStepTurnKey, ingest_error AS ingestError,
       created_at AS createdAt, updated_at AS updatedAt
     FROM sessions WHERE thread_id = ?
     `,
@@ -102,9 +102,9 @@ export async function iterateInFreshSession(
       sessions.launched_by AS launchedBy, sessions.forked_from_thread_id AS forkedFromThreadId,
       sessions.hl_status AS hlStatus, sessions.hl_status_at AS hlStatusAt, sessions.had_turn AS hadTurn,
       sessions.interrupted, sessions.blocked_reason AS blockedReason, sessions.next_step_json AS nextStepJson,
-      sessions.summary_json AS summaryJson, sessions.advanced_at AS advancedAt, sessions.hydrated_at AS hydratedAt,
+      sessions.summary_json AS summaryJson, sessions.advanced_at AS advancedAt, sessions.advanced_attempt_id AS advancedAttemptId, sessions.hydrated_at AS hydratedAt,
       sessions.last_reconcile_seq AS lastReconcileSeq, sessions.last_summarized_turn_key AS lastSummarizedTurnKey,
-      sessions.completed_turn_key AS completedTurnKey, sessions.next_step_turn_key AS nextStepTurnKey,
+      sessions.completed_turn_key AS completedTurnKey, sessions.next_step_turn_key AS nextStepTurnKey, sessions.ingest_error AS ingestError,
       sessions.created_at AS createdAt, sessions.updated_at AS updatedAt,
       tasks.slug AS taskSlug, tasks.name AS taskName, tasks.workflow_type AS workflowType
     FROM sessions JOIN tasks ON tasks.id = sessions.task_id WHERE sessions.thread_id = ?
@@ -204,15 +204,18 @@ function claimAdvanceAndAttempt(
 ) {
   const timestamp = Date.now();
   return db.transaction(() => {
+    const attemptId = randomUUID();
     const claim = writeRow(
       db,
-      "UPDATE sessions SET advanced_at = ?, updated_at = ? WHERE thread_id = ? AND advanced_at IS NULL",
+      "UPDATE sessions SET advanced_at = ?, advanced_attempt_id = ?, updated_at = ? WHERE thread_id = ? AND advanced_at IS NULL",
       timestamp,
+      attemptId,
       timestamp,
       session.threadId,
     );
     if (claim.changes !== 1) return null;
-    const attemptId = insertAttempt(db, task, {
+    insertAttempt(db, task, {
+      id: attemptId,
       fromThreadId: session.threadId,
       skillId: nextStep.extraction.nextStepType,
       commandLine: nextStep.extraction.nextStepPrompt,
@@ -236,16 +239,6 @@ function claimAdvanceAndAttempt(
   })();
 }
 
-function withTaskLock<T>(taskId: string, fn: () => Promise<T>) {
-  const previous = taskLocks.get(taskId) ?? Promise.resolve();
-  const next = previous.catch(() => undefined).then(fn);
-  const cleanup = next.then(() => undefined, () => undefined).then(() => {
-    if (taskLocks.get(taskId) === cleanup) taskLocks.delete(taskId);
-  });
-  taskLocks.set(taskId, cleanup);
-  return next;
-}
-
 function readSessionForAdvance(db: Database, threadId: string) {
   const row = readRow<SessionRow & { hadTurn: number | boolean; interrupted: number | boolean }>(
     db,
@@ -253,9 +246,9 @@ function readSessionForAdvance(db: Database, threadId: string) {
     SELECT thread_id AS threadId, task_id AS taskId, label, skill_id AS skillId, launched_by AS launchedBy,
       forked_from_thread_id AS forkedFromThreadId, hl_status AS hlStatus, hl_status_at AS hlStatusAt,
       had_turn AS hadTurn, interrupted, blocked_reason AS blockedReason, next_step_json AS nextStepJson,
-      summary_json AS summaryJson, advanced_at AS advancedAt, hydrated_at AS hydratedAt,
+      summary_json AS summaryJson, advanced_at AS advancedAt, advanced_attempt_id AS advancedAttemptId, hydrated_at AS hydratedAt,
       last_reconcile_seq AS lastReconcileSeq, last_summarized_turn_key AS lastSummarizedTurnKey,
-      completed_turn_key AS completedTurnKey, next_step_turn_key AS nextStepTurnKey,
+      completed_turn_key AS completedTurnKey, next_step_turn_key AS nextStepTurnKey, ingest_error AS ingestError,
       created_at AS createdAt, updated_at AS updatedAt
     FROM sessions WHERE thread_id = ?
     `,

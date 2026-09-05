@@ -209,6 +209,37 @@ export const MIGRATIONS: string[] = [
   `,
   `DROP TABLE notification_suppressions`,
   `ALTER TABLE notification_suppressions_v2 RENAME TO notification_suppressions`,
+  `
+  CREATE TABLE launch_attempts_v3 (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    from_thread_id TEXT,
+    skill_id TEXT,
+    command_line TEXT,
+    label TEXT,
+    environment_role TEXT NOT NULL DEFAULT 'base' CHECK(environment_role IN ('base', 'worktree')),
+    launched_by TEXT NOT NULL DEFAULT 'user',
+    status TEXT NOT NULL CHECK(status IN ('pending', 'spawned', 'uncertain', 'failed', 'retrying')),
+    thread_id TEXT,
+    retried_from TEXT,
+    retry_marker TEXT,
+    created_at INTEGER NOT NULL
+  )
+  `,
+  `
+  INSERT INTO launch_attempts_v3 (
+    id, task_id, from_thread_id, skill_id, command_line, label, environment_role,
+    launched_by, status, thread_id, created_at
+  )
+  SELECT
+    id, task_id, from_thread_id, skill_id, command_line, label, environment_role,
+    launched_by, status, thread_id, created_at
+  FROM launch_attempts
+  `,
+  `DROP TABLE launch_attempts`,
+  `ALTER TABLE launch_attempts_v3 RENAME TO launch_attempts`,
+  `ALTER TABLE sessions ADD COLUMN advanced_attempt_id TEXT`,
+  `ALTER TABLE sessions ADD COLUMN ingest_error TEXT`,
 ];
 
 export function openPluginDatabase(bb: BbPluginApi): Database {

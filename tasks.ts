@@ -251,11 +251,13 @@ export function getTask(db: Database, taskId: string) {
     nextStepJson: string | null;
     summaryJson: string | null;
     advancedAt: number | null;
+    advancedAttemptId: string | null;
     hydratedAt: number | null;
     lastReconcileSeq: number;
     lastSummarizedTurnKey: string | null;
     completedTurnKey: string | null;
     nextStepTurnKey: string | null;
+    ingestError: string | null;
     createdAt: number;
     updatedAt: number;
   }>(
@@ -276,11 +278,13 @@ export function getTask(db: Database, taskId: string) {
       next_step_json AS nextStepJson,
       summary_json AS summaryJson,
       advanced_at AS advancedAt,
+      advanced_attempt_id AS advancedAttemptId,
       hydrated_at AS hydratedAt,
       last_reconcile_seq AS lastReconcileSeq,
       last_summarized_turn_key AS lastSummarizedTurnKey,
       completed_turn_key AS completedTurnKey,
       next_step_turn_key AS nextStepTurnKey,
+      ingest_error AS ingestError,
       created_at AS createdAt,
       updated_at AS updatedAt
     FROM sessions
@@ -304,8 +308,10 @@ export function getTask(db: Database, taskId: string) {
     label: string | null;
     environmentRole: "base" | "worktree";
     launchedBy: string;
-    status: "pending" | "spawned" | "uncertain" | "failed";
+    status: "pending" | "spawned" | "uncertain" | "failed" | "retrying";
     threadId: string | null;
+    retriedFrom: string | null;
+    retryMarker: string | null;
     createdAt: number;
   }>(
     db,
@@ -321,6 +327,8 @@ export function getTask(db: Database, taskId: string) {
       launched_by AS launchedBy,
       status,
       thread_id AS threadId,
+      retried_from AS retriedFrom,
+      retry_marker AS retryMarker,
       created_at AS createdAt
     FROM launch_attempts
     WHERE task_id = ?

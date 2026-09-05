@@ -267,3 +267,55 @@ bb thread count --parent thr_qv7feedyxd
 ```
 
 The live successor was stopped and both live-check threads were archived after evidence capture.
+
+## Review fixes round 2
+
+New blocker status:
+
+- Fixed: Retry, Adopt, and Dismiss now run under the same per-task mutex as Proceed and auto-advance. Retry atomically claims the old pending or uncertain attempt with `status = 'retrying'` and a `retry_marker`, inserts a new attempt row whose id is the new launch marker, stores `retried_from`, and fails the old row. Preflight cleanup now clears `advanced_at` only when `sessions.advanced_attempt_id` matches the failing attempt, and deletes the auto-advance suppression row in the same transaction.
+
+Astra 11-item status:
+
+- 1: Fixed and retained. Advance claim, attempt insert, and auto-advance suppression happen in one transaction.
+- 2: Fixed and extended. Launches and recovery actions share the task mutex.
+- 3: Fixed. Phase successors remain sibling threads with plugin metadata only.
+- 4: Fixed and extended. Retry and Adopt preserve attempt command, label, launch source, and stored environment role.
+- 5: Fixed and extended. Malformed workspace config is surfaced as `workspace.error`, worktree launches throw that error, and Workspace disables Re-run setup while the error is present.
+- 6: Fixed and extended. Idle ingest runs before extraction; ingest failure now stores `sessions.ingest_error` and leaves the turn unstamped for retry.
+- 7: Fixed and extended. System-origin follow-up turns append summary only and do not change `completed_turn_key`, `next_step_turn_key`, or next-step extraction.
+- 8: Fixed. Workflow strip and Workspace tab behavior from the prior round remains covered.
+- 9: Fixed and extended. `Proceed`, `launchSkill`, and `iterateInFreshSession` honor `RPI_SKILLS_AVAILABLE`; CLI `launch-skill` requires `--internal` to bypass the gate.
+- 10: Fixed. Setup rerun remains scoped to the stored worktree environment.
+- 11: Fixed. Reload and pending-attempt blocking now has node:test coverage with a stamped `advanced_at`.
+
+Additional coverage added:
+
+- Concurrent Retry produces one spawn and one replacement attempt.
+- Adoption candidates require matching origin plugin, task project, and created-after-attempt time; candidates with the attempt launch marker are marked strong, and markerless candidates are marked weak.
+- Preflight failure removes auto-advance suppression.
+- Ready-signal publish is observed only after the suppression row exists.
+- Stale-completion Proceed rejects stale extraction.
+
+Verification after round 2:
+
+```text
+npm test
+tests 99
+pass 99
+fail 0
+```
+
+```text
+npx tsc --noEmit
+passed
+```
+
+```text
+bb plugin build
+dist/server.js
+dist/server.js.map
+dist/server.meta.json
+dist/app.js
+dist/app.css
+dist/app.meta.json
+```

@@ -623,17 +623,35 @@ function RecoverLaunchRow({ attempt, onResolved }: { attempt: LaunchAttemptRecor
         <span className={pillClassName("ghost")}>{isPending ? "launching..." : "uncertain"}</span>
       </div>
       {isPending ? null : (
-        <div className="flex flex-wrap items-center gap-2">
-          <Input value={threadId} onChange={(event) => setThreadId(event.target.value)} placeholder="Thread id to adopt" className="h-9 max-w-[220px]" />
-          <Button type="button" disabled={busy || threadId.trim() === ""} onClick={() => resolve({ type: "adopt", threadId: threadId.trim() })}>
-            Adopt
-          </Button>
-          <Button type="button" disabled={busy} onClick={() => resolve({ type: "retry" })}>
-            Retry
-          </Button>
-          <Button type="button" disabled={busy} variant="outline" onClick={() => resolve({ type: "dismiss" })}>
-            Dismiss
-          </Button>
+        <div className="space-y-2">
+          {attempt.adoptionCandidates?.length ? (
+            <div className="space-y-1">
+              {attempt.adoptionCandidates.map((candidate) => (
+                <button
+                  key={candidate.threadId}
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setThreadId(candidate.threadId)}
+                  className="flex w-full items-center justify-between gap-2 rounded-md border border-border px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted disabled:opacity-60"
+                >
+                  <span className="truncate">{candidate.title ?? candidate.threadId}</span>
+                  <span className={pillClassName(candidate.strong ? "step" : "ghost")}>{candidate.strong ? "strong" : "weak"}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="flex flex-wrap items-center gap-2">
+            <Input value={threadId} onChange={(event) => setThreadId(event.target.value)} placeholder="Thread id to adopt" className="h-9 max-w-[220px]" />
+            <Button type="button" disabled={busy || threadId.trim() === ""} onClick={() => resolve({ type: "adopt", threadId: threadId.trim() })}>
+              Adopt
+            </Button>
+            <Button type="button" disabled={busy} onClick={() => resolve({ type: "retry" })}>
+              Retry
+            </Button>
+            <Button type="button" disabled={busy} variant="outline" onClick={() => resolve({ type: "dismiss" })}>
+              Dismiss
+            </Button>
+          </div>
         </div>
       )}
     </div>
@@ -741,6 +759,11 @@ function WorkspacePanel({ taskId }: { taskId: string }) {
         <WorkspaceStat label="Branch" value={workspace.environment.branch ?? "unresolved"} />
         <WorkspaceStat label="Base" value={workspace.environment.baseBranch ?? workspace.sourceRef ?? "default"} />
       </div>
+      {workspace.error ? (
+        <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm font-medium text-destructive">
+          {workspace.error}
+        </div>
+      ) : null}
       <div className="rounded-md border border-border bg-card p-3">
         <div className="mb-2 text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">Requested vs resolved</div>
         <div className="grid gap-2 text-sm lg:grid-cols-2">
@@ -771,7 +794,7 @@ function WorkspacePanel({ taskId }: { taskId: string }) {
         <div className="text-sm text-muted-foreground">
           Setup outcome: {workspace.provisioningEventKinds.length ? workspace.provisioningEventKinds.join(", ") : "no provisioning events"}
         </div>
-        <Button type="button" variant="outline" disabled={busy || !workspace.worktreeThreadId} onClick={async () => {
+        <Button type="button" variant="outline" disabled={busy || !workspace.worktreeThreadId || Boolean(workspace.error)} onClick={async () => {
           setBusy(true);
           try {
             await rpc.call("rerunWorkspaceSetup", { taskId });
@@ -1360,7 +1383,7 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
     return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
   }
 
-  const visibleAttempts = workspace.launchAttempts.filter((attempt) => attempt.status === "pending" || attempt.status === "uncertain");
+  const visibleAttempts = workspace.launchAttempts.filter((attempt) => attempt.status === "pending" || attempt.status === "uncertain" || attempt.status === "retrying");
 
   return (
     <div className="space-y-4">

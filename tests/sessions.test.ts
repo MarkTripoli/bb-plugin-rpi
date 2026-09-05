@@ -6,6 +6,10 @@ import plugin from "../server";
 import { MIGRATIONS, parseJson } from "../db";
 import { createDraftTask } from "../tasks";
 import {
+  onCompletedTurn,
+  proceed,
+} from "../advance";
+import {
   applyStatusDerivation,
   createLaunchBindingMirror,
   deriveStatus,
@@ -206,8 +210,10 @@ test("idle summary deduplicates by completed turn key", async () => {
     sdk: {
       threads: {
         interactions: { list: async () => [] },
+        get: async () => ({ environment: null }),
       },
     },
+    log: { info: () => undefined },
   };
   const idleThread = thread({ updatedAt: 2 });
   await recordIdleCompletion(bb as never, db, mirror, idleThread, "done");
@@ -232,7 +238,7 @@ test("idle completion stores next step and relevant RPI documents", async () => 
     ) VALUES ('artifact_1', ?, '01-research.md', '{}', 'text/markdown', 0, 1, 1, 1)
   `).run(taskId);
   mirrorSession(db, mirror, "thr_1");
-  const bb = { sdk: { threads: { interactions: { list: async () => [] } } } };
+  const bb = { sdk: { threads: { interactions: { list: async () => [] }, get: async () => ({ environment: null }) } }, log: { info: () => undefined } };
   await recordIdleCompletion(
     bb as never,
     db,
@@ -255,12 +261,21 @@ test("system-injected initiating messages append summary without overwriting an 
   const mirror = new Map();
   seedSession(db);
   const priorNext = JSON.stringify({ parsedAt: 1, extraction: { type: "next_step_found", nextStepPrompt: "/rpi-create-research", nextStepSummary: "next", nextStepType: "create-research", taskReference: null, suggestedDirectory: null } });
-  db.prepare("UPDATE sessions SET next_step_json = ?, next_step_turn_key = 'turn_old', completed_turn_key = 'turn_old', last_summarized_turn_key = 'turn_old' WHERE thread_id = 'thr_1'").run(priorNext);
+  db.prepare("UPDATE sessions SET label = 'research-questions', hl_status = 'ready_for_input', next_step_json = ?, next_step_turn_key = 'turn_old', completed_turn_key = 'turn_old', last_summarized_turn_key = 'turn_old' WHERE thread_id = 'thr_1'").run(priorNext);
   mirrorSession(db, mirror, "thr_1");
+  let spawns = 0;
   const bb = {
+    pluginId: "humanlayer",
+    realtime: { publish: () => undefined },
+    log: { warn: () => undefined },
     sdk: {
       threads: {
         interactions: { list: async () => [] },
+        spawn: async () => {
+          spawns += 1;
+          return makeThreadResponse({ id: "thr_next", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" });
+        },
+        get: async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }),
         timeline: async () => ({
           rows: [
             { kind: "conversation", role: "user", text: "child finished", turnId: "turn_new", sourceSeqStart: 10, senderThreadId: "thr_child", systemMessageKind: "child-completed" },
@@ -272,10 +287,13 @@ test("system-injected initiating messages append summary without overwriting an 
   };
   await recordIdleCompletion(bb as never, db, mirror, thread({ updatedAt: 2 }), "noted");
   const stored = db.prepare("SELECT completed_turn_key, next_step_turn_key, next_step_json, summary_json FROM sessions WHERE thread_id = ?").get("thr_1") as { completed_turn_key: string | null; next_step_turn_key: string | null; next_step_json: string | null; summary_json: string | null };
-  assert.equal(stored.completed_turn_key, "events:2");
+  assert.equal(stored.completed_turn_key, "turn_old");
   assert.equal(stored.next_step_turn_key, "turn_old");
   assert.equal(stored.next_step_json, priorNext);
   assert.deepEqual(parseJson<{ summaryHistory?: string[] }>(stored.summary_json, {}).summaryHistory, ["noted"]);
+  const result = await proceed(bb as never, db, new Map(), createLaunchBindingMirror(), "thr_1");
+  assert.deepEqual(result, { threadId: "thr_next" });
+  assert.equal(spawns, 1);
   db.close();
 });
 
@@ -289,6 +307,7 @@ test("unlabeled plugin-spawn messages still update next step extraction", async 
     sdk: {
       threads: {
         interactions: { list: async () => [] },
+        get: async () => ({ environment: null }),
         timeline: async () => ({
           rows: [
             { kind: "conversation", role: "user", text: "start", turnId: "turn_new", sourceSeqStart: 1, senderThreadId: null, systemMessageKind: "unlabeled" },
@@ -297,12 +316,91 @@ test("unlabeled plugin-spawn messages still update next step extraction", async 
         }),
       },
     },
-    log: { warn: () => undefined },
+    log: { warn: () => undefined, info: () => undefined },
   };
   await recordIdleCompletion(bb as never, db, mirror, thread({ updatedAt: 2 }), text);
   const stored = db.prepare("SELECT next_step_turn_key, next_step_json FROM sessions WHERE thread_id = ?").get("thr_1") as { next_step_turn_key: string | null; next_step_json: string | null };
   assert.equal(stored.next_step_turn_key, "events:2");
   assert.equal(parseJson<{ extraction?: { type?: string; nextStepType?: string } }>(stored.next_step_json, {}).extraction?.nextStepType, "create-research");
+  db.close();
+});
+
+test("ingest failure leaves the completed turn unrecorded for retry", async () => {
+  const db = makeDb();
+  const mirror = new Map();
+  seedSession(db);
+  mirrorSession(db, mirror, "thr_1");
+  let failIngest = true;
+  const warnings: string[] = [];
+  const bb = {
+    log: { warn: (message: string) => warnings.push(message), info: () => undefined },
+    realtime: { publish: () => undefined },
+    sdk: {
+      threads: {
+        interactions: { list: async () => [] },
+        timeline: async () => ({ rows: [] }),
+        get: async () => ({ environment: { path: "/repo", hostId: "host_1" } }),
+      },
+      files: {
+        listPaths: async () => {
+          if (failIngest) throw new Error("ingest failed");
+          return [];
+        },
+      },
+    },
+  };
+  const idleThread = thread({ updatedAt: 2 });
+  await recordIdleCompletion(bb as never, db, mirror, idleThread, "done");
+  let stored = db.prepare("SELECT completed_turn_key, ingest_error FROM sessions WHERE thread_id = ?").get("thr_1") as { completed_turn_key: string | null; ingest_error: string | null };
+  assert.equal(stored.completed_turn_key, null);
+  assert.equal(stored.ingest_error, "ingest failed");
+  assert.match(warnings[0] ?? "", /ingest failed/);
+
+  failIngest = false;
+  await recordIdleCompletion(bb as never, db, mirror, idleThread, "done");
+  stored = db.prepare("SELECT completed_turn_key, ingest_error FROM sessions WHERE thread_id = ?").get("thr_1") as { completed_turn_key: string | null; ingest_error: string | null };
+  assert.equal(stored.completed_turn_key, "events:2");
+  assert.equal(stored.ingest_error, null);
+  db.close();
+});
+
+test("idle publishes ready signal after auto-advance suppression exists", async () => {
+  const db = makeDb();
+  const mirror = new Map();
+  seedSession(db);
+  const taskId = (db.prepare("SELECT task_id AS taskId FROM sessions WHERE thread_id = 'thr_1'").get() as { taskId: string }).taskId;
+  db.prepare("UPDATE tasks SET workflow_type = 'rpi', auto_advance = 1, aa_questions_to_research = 1 WHERE id = ?").run(taskId);
+  db.prepare("UPDATE sessions SET label = 'research-questions' WHERE thread_id = 'thr_1'").run();
+  const text = "done\n```text\n/rpi-create-research\n```";
+  const publishChecks: boolean[] = [];
+  const { bb, handlers } = makeRuntimeBb({
+    get: async ({ threadId }) => ({ ...makeThreadResponse({ id: threadId, status: "idle", updatedAt: 2, environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }), numEvents: 2 }),
+    events: async () => [],
+  });
+  Object.assign(bb.realtime, {
+    publish: (_topic: string, payload: { threadId?: string | null }) => {
+      if (payload.threadId !== "thr_1") return;
+      const row = db.prepare("SELECT 1 FROM notification_suppressions WHERE thread_id = 'thr_1' AND completed_turn_key = '2:2'").get();
+      publishChecks.push(Boolean(row));
+    },
+  });
+  Object.assign(bb.sdk.threads, {
+    ...bb.sdk.threads,
+    interactions: { list: async () => [] },
+    timeline: async () => ({
+      rows: [
+        { kind: "conversation", role: "user", text: "start", turnId: "turn_1", sourceSeqStart: 1, senderThreadId: null, systemMessageKind: "unlabeled" },
+        { kind: "conversation", role: "assistant", text, turnId: "turn_1", sourceSeqStart: 2 },
+      ],
+    }),
+    spawn: async () => makeThreadResponse({ id: "thr_next", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }),
+  });
+  Object.assign(bb.sdk, { files: { listPaths: async () => [] } });
+  registerSessionRuntime(bb as never, db, mirror, createLaunchBindingMirror(), (row) => onCompletedTurn(bb as never, db, mirror, createLaunchBindingMirror(), row));
+  mirrorSession(db, mirror, "thr_1");
+  handlers.get("thread.idle")?.({ thread: thread({ numEvents: 2, updatedAt: 2 }), lastAssistantText: text } as never);
+  for (let i = 0; i < 10 && publishChecks.length === 0; i += 1) await delay();
+  assert.deepEqual(publishChecks, [true]);
   db.close();
 });
 

@@ -62,3 +62,45 @@ test("artifact route forces attachment for html and sets security headers", asyn
   assert.equal(response.headers.get("content-security-policy"), "sandbox; default-src 'none'");
   await harness.lifecycle.dispose();
 });
+
+test("RPI launch RPCs are gated while CLI launch-skill requires --internal", async () => {
+  let spawns = 0;
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "humanlayer",
+    sdk: {
+      subscribe: () => () => undefined,
+      threads: {
+        spawn: async () => {
+          spawns += 1;
+          return { id: "thr_internal", environmentId: "env_1" };
+        },
+        get: async () => ({ id: "thr_internal", environmentId: "env_1", title: "thread", titleFallback: null, updatedAt: 1, environment: { path: "/repo" } }),
+      },
+    },
+  });
+  await plugin(bb);
+  const created = await harness.behavior.callRpc("createTask", {
+    request: { text: "prompt", projectId: "proj_1", workflowType: "freeform", worktreeTiming: "never", permissionMode: "default", autoAdvance: false },
+    name: "Task",
+    draft: true,
+  }) as { taskId: string };
+  await assert.rejects(harness.behavior.callRpc("launchSkill", { taskId: created.taskId, skillId: "create-research" }), /later release/);
+  const db = bb.storage.database();
+  db.prepare(`
+    INSERT INTO sessions (
+      thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
+      hl_status, hl_status_at, had_turn, interrupted, blocked_reason,
+      next_step_json, completed_turn_key, next_step_turn_key, created_at, updated_at
+    ) VALUES ('thr_source', ?, 'research-questions', 'create-research-questions', 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, ?, 'turn_1', 'turn_1', 1, 1)
+  `).run(created.taskId, JSON.stringify({ parsedAt: 1, extraction: { type: "next_step_found", nextStepPrompt: "/rpi-create-research", nextStepSummary: "next", nextStepType: "create-research", taskReference: null, suggestedDirectory: null } }));
+  await assert.rejects(harness.behavior.callRpc("proceed", { threadId: "thr_source" }), /later release/);
+  await assert.rejects(harness.behavior.callRpc("iterateInFreshSession", { threadId: "thr_source" }), /later release/);
+  const rejected = await harness.behavior.runCli(["launch-skill", "--task", created.taskId, "--skill", "create-research"]);
+  assert.equal(rejected.exitCode, 1);
+  assert.match(rejected.stderr, /later release/);
+  const launched = await harness.behavior.runCli(["launch-skill", "--task", created.taskId, "--skill", "create-research", "--internal"]);
+  assert.equal(launched.exitCode, 0);
+  assert.equal(launched.stdout.trim(), "thr_internal");
+  assert.equal(spawns, 1);
+  await harness.lifecycle.dispose();
+});

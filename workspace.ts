@@ -180,7 +180,7 @@ export async function workspaceBaseBranch(bb: BbPluginApi, task: TaskRecord) {
   const rootPath = baseRoot(env, task);
   if (!rootPath) return { kind: "default" as const };
   const { config, error } = await readWorkspaceConfig(bb, rootPath, task.hostId);
-  if (error) return { kind: "default" as const };
+  if (error) throw new Error(error);
   if (config.disabled) return { kind: "default" as const };
   const repos = repoViews(config, rootPath);
   if (repos.length > 0 && repos.filter((repo) => repo.primary).length !== 1) throw new Error("Workspace config must mark exactly one primary repo.");
@@ -192,7 +192,8 @@ export async function workspaceDisabled(bb: BbPluginApi, task: TaskRecord) {
   const env = await currentEnvironment(bb, task);
   const rootPath = baseRoot(env, task);
   if (!rootPath) return false;
-  const { config } = await readWorkspaceConfig(bb, rootPath, task.hostId);
+  const { config, error } = await readWorkspaceConfig(bb, rootPath, task.hostId);
+  if (error) throw new Error(error);
   return Boolean(config.disabled);
 }
 
@@ -201,7 +202,7 @@ export async function validateWorkspaceForWorktreeLaunch(bb: BbPluginApi, task: 
   const rootPath = "defaultDirectory" in task ? task.defaultDirectory : null;
   if (!rootPath) return;
   const { config, error } = await readWorkspaceConfig(bb, rootPath, task.hostId);
-  if (error) return;
+  if (error) throw new Error(error);
   const repos = repoViews(config, rootPath);
   if (repos.length > 0 && repos.filter((repo) => repo.primary).length !== 1) throw new Error("Workspace config must mark exactly one primary repo.");
   for (const ref of [config.sourceRef, ...repos.map((repo) => repo.sourceRef)]) {

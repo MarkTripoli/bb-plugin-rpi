@@ -228,11 +228,13 @@ export function normalizeSessionRow(row: {
 	  nextStepJson: string | null;
 	  summaryJson: string | null;
 	  advancedAt: number | null;
+	  advancedAttemptId: string | null;
 	  hydratedAt: number | null;
 	  lastReconcileSeq: number;
 	  lastSummarizedTurnKey: string | null;
 	  completedTurnKey: string | null;
 	  nextStepTurnKey: string | null;
+	  ingestError: string | null;
 	  createdAt: number;
 	  updatedAt: number;
 	}): SessionRow {
@@ -263,11 +265,13 @@ export function readSession(db: Database, threadId: string) {
 	      next_step_json AS nextStepJson,
 	      summary_json AS summaryJson,
 	      advanced_at AS advancedAt,
+	      advanced_attempt_id AS advancedAttemptId,
 	      hydrated_at AS hydratedAt,
 	      last_reconcile_seq AS lastReconcileSeq,
 	      last_summarized_turn_key AS lastSummarizedTurnKey,
 	      completed_turn_key AS completedTurnKey,
 	      next_step_turn_key AS nextStepTurnKey,
+	      ingest_error AS ingestError,
 	      created_at AS createdAt,
 	      updated_at AS updatedAt
     FROM sessions
@@ -304,11 +308,13 @@ export function listSessions(db: Database, taskId?: string | null, page?: { limi
 	      next_step_json AS nextStepJson,
 	      summary_json AS summaryJson,
 	      advanced_at AS advancedAt,
+	      advanced_attempt_id AS advancedAttemptId,
 	      hydrated_at AS hydratedAt,
 	      last_reconcile_seq AS lastReconcileSeq,
 	      last_summarized_turn_key AS lastSummarizedTurnKey,
 	      completed_turn_key AS completedTurnKey,
 	      next_step_turn_key AS nextStepTurnKey,
+	      ingest_error AS ingestError,
 	      created_at AS createdAt,
 	      updated_at AS updatedAt
 	    FROM sessions
@@ -350,11 +356,13 @@ export function refreshSessionMirror(db: Database, mirror: Map<string, SessionMi
 	      sessions.next_step_json AS nextStepJson,
 	      sessions.summary_json AS summaryJson,
 	      sessions.advanced_at AS advancedAt,
+	      sessions.advanced_attempt_id AS advancedAttemptId,
 	      sessions.hydrated_at AS hydratedAt,
 	      sessions.last_reconcile_seq AS lastReconcileSeq,
 	      sessions.last_summarized_turn_key AS lastSummarizedTurnKey,
 	      sessions.completed_turn_key AS completedTurnKey,
 	      sessions.next_step_turn_key AS nextStepTurnKey,
+	      sessions.ingest_error AS ingestError,
 	      sessions.created_at AS createdAt,
 	      sessions.updated_at AS updatedAt,
       tasks.name AS taskName,
@@ -393,11 +401,13 @@ export function mirrorSession(db: Database, mirror: Map<string, SessionMirrorRow
 	      sessions.next_step_json AS nextStepJson,
 	      sessions.summary_json AS summaryJson,
 	      sessions.advanced_at AS advancedAt,
+	      sessions.advanced_attempt_id AS advancedAttemptId,
 	      sessions.hydrated_at AS hydratedAt,
 	      sessions.last_reconcile_seq AS lastReconcileSeq,
 	      sessions.last_summarized_turn_key AS lastSummarizedTurnKey,
 	      sessions.completed_turn_key AS completedTurnKey,
 	      sessions.next_step_turn_key AS nextStepTurnKey,
+	      sessions.ingest_error AS ingestError,
 	      sessions.created_at AS createdAt,
 	      sessions.updated_at AS updatedAt,
       tasks.name AS taskName,
@@ -476,7 +486,7 @@ export function appendSessionSummary(
   const relevantRPIDocuments = relevantDocuments(lastAssistantText, row.taskId, taskSlug, liveArtifactNames);
   writeRow(
     db,
-    "UPDATE sessions SET summary_json = ?, next_step_json = ?, last_summarized_turn_key = ?, completed_turn_key = ?, next_step_turn_key = ?, updated_at = ? WHERE thread_id = ?",
+    "UPDATE sessions SET summary_json = ?, next_step_json = ?, last_summarized_turn_key = ?, completed_turn_key = ?, next_step_turn_key = ?, ingest_error = NULL, updated_at = ? WHERE thread_id = ?",
     stringifyJson({ ...summary, summaryHistory, ...(relevantRPIDocuments.length > 0 ? { relevantRPIDocuments } : {}) }),
     stringifyJson(nextStep),
     key,
@@ -578,19 +588,26 @@ export async function recordIdleCompletion(
     summaryHistory.push(lastAssistantText.slice(0, 600));
     writeRow(
       db,
-      "UPDATE sessions SET summary_json = ?, last_summarized_turn_key = ?, completed_turn_key = ?, updated_at = ? WHERE thread_id = ?",
+      "UPDATE sessions SET summary_json = ?, last_summarized_turn_key = ?, updated_at = ? WHERE thread_id = ?",
       stringifyJson({ ...summary, summaryHistory }),
-      key,
       key,
       nowMs(),
       thread.id,
     );
     mirrorSession(db, mirror, thread.id);
-    return true;
+    return false;
   }
   const row = mirror.get(thread.id) ?? mirrorSession(db, mirror, thread.id);
   if (row) {
-    await ingest(bb, db, row.taskId, thread.id, { threadId: thread.id }).catch((error) => bb.log?.warn(`Failed to ingest HumanLayer artifacts for ${thread.id}: ${String(error)}`));
+    try {
+      await ingest(bb, db, row.taskId, thread.id, { threadId: thread.id });
+    } catch (error) {
+      const message = String(error instanceof Error ? error.message : error);
+      writeRow(db, "UPDATE sessions SET ingest_error = ?, updated_at = ? WHERE thread_id = ?", message, nowMs(), thread.id);
+      mirrorSession(db, mirror, thread.id);
+      bb.log?.warn(`Failed to ingest HumanLayer artifacts for ${thread.id}: ${message}`);
+      return false;
+    }
   }
   return appendSessionSummary(db, mirror, thread, lastAssistantText);
 }
@@ -754,11 +771,11 @@ export function registerSessionRuntime(
       const interactions = await bb.sdk.threads.interactions.list({ threadId: thread.id });
       if (!mirror.has(thread.id) || retiredThreads.has(thread.id)) return;
       const result = applyStatusDerivation(db, mirror, thread, interactions as InteractionLike[], sequence);
-      publish(thread.id);
       const completed = mirror.get(thread.id);
       if (completedNewTurn && completed?.hlStatus === "ready_for_input" && !completed.blockedReason) {
         await onCompletedTurn?.(completed);
       }
+      publish(thread.id);
     });
   };
 
