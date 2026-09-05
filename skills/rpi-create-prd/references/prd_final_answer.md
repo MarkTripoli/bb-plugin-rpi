@@ -1,11 +1,10 @@
 Artifact saved:
 {artifact_directive}
 
-Summary:
-{summary}
+The PRD is approved and ready to hand to technical design.
 
-The next session can start with:
+Auto-advance does not apply at this human gate. Continue manually with:
 
 ```text
-/rpi-create-tdd
+/rpi-create-tdd @{artifact_file}
 ```
