@@ -4,8 +4,10 @@ Artifact saved:
 Summary:
 {summary}
 
-The next session can start with:
+The research-questions artifact is ready to guide the next research pass. You do not need to answer the questions yourself.
+
+To continue, start the research session with:
 
 ```text
-/rpi-create-research @{artifact_file}
+/rpi-create-research
 ```
