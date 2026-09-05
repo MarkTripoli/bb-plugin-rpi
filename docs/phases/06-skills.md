@@ -326,3 +326,37 @@ task.md
 ```
 
 The live run first exposed stale static auto-advance routing from `research` to design for `outline_only`; 2cc93b3 fixed that with a workflow-aware transition resolver and regression test.
+
+## Review fixes round 2
+
+### Commit map
+
+| Review item | Commit(s) |
+|---|---|
+| 1. Child thread classification uses the actual `threads.get(threadId).parentThreadId`; spoofed dispatch parents do not grant task child access. | 99070b4 |
+| 2. `hl_task_context` returns `prefs.researchModel`, resolved from the structured preference with task model fallback, through a zod-checked output object. | 99070b4 |
+| 3. Research final answers branch by workflow: `rpi` to design discussion, `outline_only` to structure outline, and `prd_tdd` to PRD; extraction tests render all three variants and transition rows match ground truth flags. | 99070b4 |
+| 4. The skill rewrite guard only exempts all-syntax-token windows; mixed prose is never exempt. | 99070b4 |
+| 5. `rpi-create-research` restores conditional third-party library/dependency researcher guidance, with web-search fallback when no such researcher is exposed. | 99070b4 |
+| 6. `rpi-implement-plan` and `rpi-implement-outline` require the final commit before the `/rpi-describe-pr` handoff. | 99070b4 |
+| 7. Required verification and this phase-doc append. | this documentation commit |
+
+### Verification after round 2
+
+```text
+rtk npm test
+tests 111
+pass 111
+fail 0
+
+rtk npx tsc --noEmit
+TypeScript: No errors found
+
+rtk bb plugin build
+dist/server.js
+dist/server.js.map
+dist/server.meta.json
+dist/app.js
+dist/app.css
+dist/app.meta.json
+```
