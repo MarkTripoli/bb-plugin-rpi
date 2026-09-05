@@ -1,10 +1,10 @@
 Artifact saved:
 {artifact_directive}
 
-The PRD is updated and ready to hand to technical design.
+The PRD has been updated and still needs product review or another decision.
 
 Auto-advance does not apply at this human gate. Continue manually with:
 
 ```text
-/rpi-create-tdd @{artifact_file}
+/rpi-iterate-prd @{artifact_file}
 ```
