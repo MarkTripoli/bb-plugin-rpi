@@ -4,7 +4,9 @@ Artifact saved:
 Summary:
 {summary}
 
-The next session can start with:
+These questions are the query plan for the research phase. They are not questions for you to answer manually.
+
+To continue, start the research session with:
 
 ```text
 /rpi-create-research
