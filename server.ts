@@ -59,9 +59,11 @@ import {
   updateTask,
 } from "./tasks";
 import { ARTIFACT_TOOL_NAMES, registerArtifactTools } from "./tools";
-import { getWorkspaceView, rerunWorkspaceSetup } from "./workspace";
+import { getWorkspaceView, rerunWorkspaceSetup, validateWorkspaceForWorktreeLaunch } from "./workspace";
 
 const PREFS_KEY = "prefs:structured-defaults";
+const RPI_SKILLS_AVAILABLE = false;
+const RPI_LAUNCH_NOTE = "Sessions launch in a later release.";
 const SECURITY_HEADERS = {
   "x-content-type-options": "nosniff",
   "cache-control": "no-store",
@@ -234,6 +236,11 @@ export default async function plugin(bb: BbPluginApi) {
     createTask: async ({ request, name, draft }) => {
       const storedPrefs = await bb.storage.kv.get<unknown>(PREFS_KEY);
       const prefs = prefsSchema.parse(storedPrefs ?? defaultTaskPrefs({}));
+      await validateWorkspaceForWorktreeLaunch(bb, {
+        hostId: request.hostId ?? null,
+        defaultDirectory: request.defaultDirectory ?? null,
+        worktreeTiming: request.worktreeTiming,
+      });
       const result = createDraftTask(db, {
         projectId: request.projectId,
         prompt: request.text,
@@ -251,6 +258,8 @@ export default async function plugin(bb: BbPluginApi) {
       });
       bb.realtime.publish("tasks", { taskId: result.taskId });
       if (!draft) {
+        const task = getTask(db, result.taskId)?.task;
+        if (task && isGatedWorkflow(task.workflowType)) return { ...result, note: RPI_LAUNCH_NOTE };
         const launched = await launchDraft(bb, db, sessionMirror, launchBindings, result.taskId);
         return { ...result, threadId: launched.threadId };
       }
@@ -266,7 +275,11 @@ export default async function plugin(bb: BbPluginApi) {
       bb.realtime.publish("tasks", { taskId });
       return { task };
     },
-    launchDraft: async ({ taskId }) => launchDraft(bb, db, sessionMirror, launchBindings, taskId),
+    launchDraft: async ({ taskId }) => {
+      const task = getTask(db, taskId)?.task;
+      if (task && isGatedWorkflow(task.workflowType)) throw new Error(RPI_LAUNCH_NOTE);
+      return launchDraft(bb, db, sessionMirror, launchBindings, taskId);
+    },
     proceed: async ({ threadId }) => proceed(bb, db, sessionMirror, launchBindings, threadId),
     launchSkill: async ({ taskId, skillId, commandLine }) => launchSkill(bb, db, sessionMirror, launchBindings, taskId, skillId, commandLine ?? null),
     iterateInFreshSession: async ({ threadId }) => iterateInFreshSession(bb, db, sessionMirror, launchBindings, threadId),
@@ -507,8 +520,8 @@ export default async function plugin(bb: BbPluginApi) {
       },
       {
         name: "launch-skill",
-        summary: "Launch a HumanLayer task session with an RPI skill",
-        usage: "bb humanlayer launch-skill --task <taskId> --skill <skillId> [--prompt <text>] [--command-line <text>] [--provider <id>] [--model <id>] [--json]",
+        summary: "Internal: launch a HumanLayer task session with an RPI skill",
+        usage: "bb humanlayer launch-skill --task <taskId> --skill <skillId> [--prompt <text>] [--command-line <text>] [--provider <id>] [--model <id>] [--json] (internal testing)",
       },
       {
         name: "launch-attempts",
@@ -536,6 +549,12 @@ export default async function plugin(bb: BbPluginApi) {
           if (!projectId || !prompt) {
             return { exitCode: 2, stderr: "usage: bb humanlayer tasks create --name <name> --project <projectId> --prompt <text> [--launch]\n" };
           }
+          const worktreeTiming = worktreeTimingOption(opts.worktree ?? opts.worktreeTiming);
+          await validateWorkspaceForWorktreeLaunch(bb, {
+            hostId: opts.host ?? null,
+            defaultDirectory: opts.directory ?? null,
+            worktreeTiming,
+          });
           const result = createDraftTask(db, {
             projectId,
             prompt,
@@ -543,7 +562,7 @@ export default async function plugin(bb: BbPluginApi) {
             hostId: opts.host ?? null,
             defaultDirectory: opts.directory ?? null,
             workflowType: workflowTypeOption(opts.workflow ?? opts.workflowType),
-            worktreeTiming: worktreeTimingOption(opts.worktree ?? opts.worktreeTiming),
+            worktreeTiming,
             permissionMode: "default",
             autoAdvance: opts.autoAdvance === "true" || opts.auto === "true",
             providerId: opts.provider ?? null,
@@ -551,9 +570,11 @@ export default async function plugin(bb: BbPluginApi) {
             reasoningLevel: opts.effort ?? null,
             serviceTier: null,
           });
-          const launched = opts.launch === "true" ? await launchDraft(bb, db, sessionMirror, launchBindings, result.taskId) : null;
+          const task = getTask(db, result.taskId)?.task;
+          const launched = opts.launch === "true" && task && !isGatedWorkflow(task.workflowType) ? await launchDraft(bb, db, sessionMirror, launchBindings, result.taskId) : null;
+          const note = opts.launch === "true" && task && isGatedWorkflow(task.workflowType) ? RPI_LAUNCH_NOTE : undefined;
           const body = { ...result, ...(launched ?? {}) };
-          return { exitCode: 0, stdout: json ? `${JSON.stringify(body)}\n` : `${body.taskId}${launched ? ` ${launched.threadId}` : ""}\n` };
+          return { exitCode: 0, stdout: json ? `${JSON.stringify({ ...body, ...(note ? { note } : {}) })}\n` : `${body.taskId}${launched ? ` ${launched.threadId}` : ""}${note ? ` ${note}` : ""}\n` };
         }
         if (argv[0] === "launch-skill") {
           const opts = parseArgs(argv.slice(1));
@@ -584,12 +605,8 @@ export default async function plugin(bb: BbPluginApi) {
         if (argv[0] === "suppressions") {
           const opts = parseArgs(argv.slice(1));
           if (!opts.thread) return { exitCode: 2, stderr: "usage: bb humanlayer suppressions --thread <threadId>\n" };
-          const rows = readRow<{ threadId: string; reason: string; createdAt: number }>(
-            db,
-            "SELECT thread_id AS threadId, reason, created_at AS createdAt FROM notification_suppressions WHERE thread_id = ?",
-            opts.thread,
-          );
-          return { exitCode: 0, stdout: json ? `${JSON.stringify({ suppressions: rows ? [rows] : [] })}\n` : rows ? `${rows.threadId}\t${rows.reason}\n` : "" };
+          const rows = db.prepare("SELECT thread_id AS threadId, completed_turn_key AS completedTurnKey, reason, created_at AS createdAt, consumed_at AS consumedAt FROM notification_suppressions WHERE thread_id = ? ORDER BY created_at DESC").all(opts.thread) as Array<{ threadId: string; completedTurnKey: string; reason: string; createdAt: number; consumedAt: number | null }>;
+          return { exitCode: 0, stdout: json ? `${JSON.stringify({ suppressions: rows })}\n` : rows.map((row) => `${row.threadId}\t${row.completedTurnKey}\t${row.reason}`).join("\n") + (rows.length ? "\n" : "") };
         }
         if (argv[0] === "workspace") {
           const opts = parseArgs(argv.slice(1));
@@ -814,6 +831,10 @@ function parseBoundedInt(input: string | undefined, fallback: number, min: numbe
 
 function workflowTypeOption(input: string | undefined) {
   return input === "rpi" || input === "outline_only" || input === "prd_tdd" || input === "oneshot" || input === "freeform" ? input : "freeform";
+}
+
+function isGatedWorkflow(workflowType: string) {
+  return !RPI_SKILLS_AVAILABLE && (workflowType === "rpi" || workflowType === "outline_only" || workflowType === "prd_tdd");
 }
 
 function worktreeTimingOption(input: string | undefined) {

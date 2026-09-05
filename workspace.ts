@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type * as BetterSqlite3 from "better-sqlite3";
+import { z } from "zod";
 import { readRow, readRows } from "./db";
 import type { TaskRecord } from "./contract";
 
@@ -25,6 +26,30 @@ type WorkspaceConfig = {
   copyGlobs?: string[];
   repos?: WorkspaceRepoConfig[];
 };
+
+const boundedString = z.string().trim().min(1).max(512);
+const copyGlobsSchema = z.array(boundedString).max(64).optional();
+const sharedRepoSchema = z.object({
+  localPath: boundedString.optional(),
+  description: boundedString.optional(),
+  primary: z.boolean().optional(),
+  sourceRef: boundedString.optional(),
+  setupCommand: boundedString.optional(),
+  copyGlobs: copyGlobsSchema,
+}).strict();
+const localRepoSchema = sharedRepoSchema.extend({ $patch: z.literal("delete").optional() }).strict();
+const sharedConfigSchema = z.object({
+  disabled: z.boolean().optional(),
+  pathTemplate: boundedString.optional(),
+  branchTemplate: boundedString.optional(),
+  sourceRef: boundedString.optional(),
+  setupCommand: boundedString.optional(),
+  copyGlobs: copyGlobsSchema,
+  repos: z.array(sharedRepoSchema).max(32).optional(),
+}).strict();
+const localConfigSchema = sharedConfigSchema.extend({
+  repos: z.array(localRepoSchema).max(32).optional(),
+}).strict();
 
 export type WorkspaceRepoView = {
   localPath: string | null;
@@ -55,6 +80,7 @@ export type WorkspaceView = {
   copyGlobs: string[];
   disabled: boolean;
   warnings: string[];
+  error: string | null;
   provisioningEvents: Array<{
     seq: number;
     createdAt: number;
@@ -106,11 +132,13 @@ export function mergeWorkspaceConfigs(shared: WorkspaceConfig, local: WorkspaceC
 export async function getWorkspaceView(bb: BbPluginApi, db: Database, task: TaskRecord): Promise<WorkspaceView> {
   const env = await currentEnvironment(bb, task);
   const rootPath = baseRoot(env, task);
-  const { config, warnings } = rootPath ? await readWorkspaceConfig(bb, rootPath, task.hostId) : { config: {}, warnings: ["No workspace root is available yet."] };
+  const { config, warnings, error } = rootPath ? await readWorkspaceConfig(bb, rootPath, task.hostId) : { config: {} as WorkspaceConfig, warnings: ["No workspace root is available yet."], error: null };
   const disabled = Boolean(config.disabled);
   const repos = repoViews(config, rootPath);
   const primary = repos.find((repo) => repo.primary) ?? null;
-  if (repos.length > 0 && repos.filter((repo) => repo.primary).length !== 1) warnings.push("Workspace config must mark exactly one primary repo.");
+  const primaryCount = repos.filter((repo) => repo.primary).length;
+  const primaryError = repos.length > 0 && primaryCount !== 1 ? "Workspace config must mark exactly one primary repo." : null;
+  if (primaryError) warnings.push(primaryError);
   for (const ref of [config.sourceRef, ...repos.map((repo) => repo.sourceRef)]) {
     if (!ref) continue;
     try {
@@ -141,6 +169,7 @@ export async function getWorkspaceView(bb: BbPluginApi, db: Database, task: Task
     copyGlobs: config.copyGlobs ?? [],
     disabled,
     warnings,
+    error: error ?? primaryError,
     provisioningEvents: provisioning.events,
     provisioningEventKinds: provisioning.kinds,
   };
@@ -150,9 +179,12 @@ export async function workspaceBaseBranch(bb: BbPluginApi, task: TaskRecord) {
   const env = await currentEnvironment(bb, task);
   const rootPath = baseRoot(env, task);
   if (!rootPath) return { kind: "default" as const };
-  const { config } = await readWorkspaceConfig(bb, rootPath, task.hostId);
+  const { config, error } = await readWorkspaceConfig(bb, rootPath, task.hostId);
+  if (error) return { kind: "default" as const };
   if (config.disabled) return { kind: "default" as const };
-  const primary = repoViews(config, rootPath).find((repo) => repo.primary);
+  const repos = repoViews(config, rootPath);
+  if (repos.length > 0 && repos.filter((repo) => repo.primary).length !== 1) throw new Error("Workspace config must mark exactly one primary repo.");
+  const primary = repos.find((repo) => repo.primary);
   return mapSourceRefToBaseBranch(primary?.sourceRef ?? config.sourceRef);
 }
 
@@ -164,15 +196,35 @@ export async function workspaceDisabled(bb: BbPluginApi, task: TaskRecord) {
   return Boolean(config.disabled);
 }
 
+export async function validateWorkspaceForWorktreeLaunch(bb: BbPluginApi, task: TaskRecord | { hostId: string | null; defaultDirectory: string | null; worktreeTiming: "now" | "later" | "never" }) {
+  if (task.worktreeTiming === "never") return;
+  const rootPath = "defaultDirectory" in task ? task.defaultDirectory : null;
+  if (!rootPath) return;
+  const { config, error } = await readWorkspaceConfig(bb, rootPath, task.hostId);
+  if (error) return;
+  const repos = repoViews(config, rootPath);
+  if (repos.length > 0 && repos.filter((repo) => repo.primary).length !== 1) throw new Error("Workspace config must mark exactly one primary repo.");
+  for (const ref of [config.sourceRef, ...repos.map((repo) => repo.sourceRef)]) {
+    if (ref) mapSourceRefToBaseBranch(ref);
+  }
+}
+
 export async function rerunWorkspaceSetup(bb: BbPluginApi, db: Database, task: TaskRecord) {
   const view = await getWorkspaceView(bb, db, task);
   if (!view.worktreeThreadId) throw new Error("No worktree setup session is available.");
-  const copyGlobs = view.copyGlobs.length ? `Copy globs: ${view.copyGlobs.join(", ")}` : "Copy globs: none";
-  const setup = view.setupCommand ? `Setup command: ${view.setupCommand}` : "Setup command: none";
+  if (!task.worktreeEnvironmentId) throw new Error("No worktree environment is available.");
+  const thread = await bb.sdk.threads.get({ threadId: view.worktreeThreadId, include: "environment" });
+  if (thread.environmentId !== task.worktreeEnvironmentId) throw new Error("Workspace setup rerun must target the worktree session.");
+  const primary = view.primary;
+  if (!primary) throw new Error("No primary repo is available.");
   await bb.sdk.threads.send({
     threadId: view.worktreeThreadId,
     mode: "auto",
-    input: [{ type: "text", text: `Re-run HumanLayer workspace setup for ${task.slug}.\n${copyGlobs}\n${setup}\nReport each provisioning/setup event kind you observe.`, mentions: [] }],
+    input: [{
+      type: "text",
+      text: `Re-run HumanLayer workspace setup for ${task.slug}.\nPrimary repo config:\n${JSON.stringify(primary, null, 2)}\nReport each provisioning/setup event kind you observe.`,
+      mentions: [],
+    }],
   });
   return { threadId: view.worktreeThreadId };
 }
@@ -192,22 +244,29 @@ function baseRoot(env: Awaited<ReturnType<typeof currentEnvironment>>, task: Tas
 }
 
 async function readWorkspaceConfig(bb: BbPluginApi, rootPath: string, hostId: string | null) {
-  const shared = await readJsonFile(bb, path.posix.join(rootPath, ".humanlayer/workspace.json"), hostId);
-  const local = await readJsonFile(bb, path.posix.join(rootPath, ".humanlayer/workspace.local.json"), hostId)
-    ?? await readJsonFile(bb, path.posix.join(rootPath, ".local.json"), hostId);
+  const configRoot = path.posix.join(rootPath, ".humanlayer");
+  const shared = await readJsonFile(bb, configRoot, "workspace.json", hostId, sharedConfigSchema);
+  const local = await readJsonFile(bb, configRoot, ".local.json", hostId, localConfigSchema);
   const warnings: string[] = [];
-  if (!shared) warnings.push("No workspace config found.");
-  return { config: mergeWorkspaceConfigs(shared ?? {}, local ?? {}), warnings };
+  if (shared.status === "missing") warnings.push("No workspace config found.");
+  const malformed = [shared, local].find((result) => result.status === "invalid");
+  if (malformed) {
+    return { config: {} as WorkspaceConfig, warnings, error: `${malformed.path}: ${malformed.message}` };
+  }
+  return { config: mergeWorkspaceConfigs(shared.config ?? {}, local.config ?? {}), warnings, error: null };
 }
 
-async function readJsonFile(bb: BbPluginApi, filePath: string, hostId: string | null) {
+async function readJsonFile<T>(bb: BbPluginApi, rootPath: string, filePath: string, hostId: string | null, schema: z.ZodType<T>) {
   try {
-    const file = await bb.sdk.files.read({ path: filePath, ...(hostId ? { hostId } : {}) });
+    const file = await bb.sdk.files.read({ rootPath, path: filePath, ...(hostId ? { hostId } : {}) });
     const text = typeof file.content === "string" ? file.content : Buffer.from(file.content).toString("utf8");
     const parsed = JSON.parse(text) as unknown;
-    return isObject(parsed) ? parsed as WorkspaceConfig : null;
-  } catch {
-    return null;
+    const result = schema.safeParse(parsed);
+    if (!result.success) return { status: "invalid" as const, path: path.posix.join(rootPath, filePath), message: z.prettifyError(result.error) };
+    return { status: "ok" as const, path: path.posix.join(rootPath, filePath), config: result.data as WorkspaceConfig };
+  } catch (error) {
+    if (error instanceof SyntaxError) return { status: "invalid" as const, path: path.posix.join(rootPath, filePath), message: error.message };
+    return { status: "missing" as const, path: path.posix.join(rootPath, filePath) };
   }
 }
 
@@ -254,8 +313,4 @@ function latestWorktreeThread(db: Database, taskId: string) {
 
 function dedupe(items: string[]) {
   return [...new Set(items.filter((item) => typeof item === "string" && item.trim() !== "").map((item) => item.trim()))];
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

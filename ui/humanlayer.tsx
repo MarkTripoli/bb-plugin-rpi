@@ -258,14 +258,19 @@ function WorkflowStrip({
   worktreeTiming: "now" | "later" | "never";
   currentLabel?: string | null;
 }) {
-  const steps =
+  const baseSteps =
     workflowType === "rpi"
-      ? ["worktree", "questions", "research", "design", "outline", "implement", "PR"]
+      ? ["questions", "research", "design", "outline", "implement", "PR"]
       : workflowType === "outline_only"
         ? ["questions", "research", "design", "outline", "implement", "PR"]
       : workflowType === "prd_tdd"
         ? ["research", "PRD", "TDD", "outline", "implement", "PR"]
         : ["single session"];
+  const steps = worktreeTiming === "never" || baseSteps[0] === "single session"
+    ? baseSteps
+    : worktreeTiming === "now"
+      ? ["worktree", ...baseSteps]
+      : [...baseSteps.slice(0, Math.max(0, baseSteps.indexOf("implement"))), "worktree", ...baseSteps.slice(Math.max(0, baseSteps.indexOf("implement")))];
   const currentStep = labelStep(currentLabel);
   const currentIndex = steps.findIndex((step) => step === currentStep);
   return (
@@ -278,7 +283,7 @@ function WorkflowStrip({
       </div>
       <div className="flex flex-wrap gap-2">
         {steps.map((step, index) => {
-          const dashed = step === "worktree" && worktreeTiming !== "never";
+          const dashed = step === "worktree" && worktreeTiming === "later";
           return (
             <span
               key={`${step}-${index}`}
@@ -303,6 +308,7 @@ function WorkflowStrip({
 function labelStep(label: string | null | undefined) {
   const normalized = label?.startsWith("rpi:") ? label.slice(4) : label;
   if (normalized === "research-questions") return "questions";
+  if (normalized === "worktree-setup") return "worktree";
   if (normalized === "structure") return "outline";
   if (normalized === "implementation") return "implement";
   if (normalized === "describe-pr") return "PR";

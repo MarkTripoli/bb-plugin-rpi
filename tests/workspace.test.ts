@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mapSourceRefToBaseBranch, mergeWorkspaceConfigs, getWorkspaceView } from "../workspace";
+import { mapSourceRefToBaseBranch, mergeWorkspaceConfigs, getWorkspaceView, validateWorkspaceForWorktreeLaunch } from "../workspace";
 
 test("sourceRef maps HEAD and branches and rejects SHAs or unsupported refs", () => {
   assert.deepEqual(mapSourceRefToBaseBranch(undefined), { kind: "default" });
@@ -146,4 +146,75 @@ test("workspace view merges root .local.json overrides", async () => {
   const view = await getWorkspaceView(bb as never, db as never, task);
   assert.equal(view.sourceRef, "feature/live");
   assert.deepEqual(view.copyGlobs, [".env", ".env.local"]);
+});
+
+test("workspace config reads are rooted under .humanlayer and invalid config is surfaced as absent", async () => {
+  const task = {
+    id: "task_1",
+    projectId: "proj_1",
+    name: "Task",
+    slug: "task",
+    draftPrompt: "prompt",
+    workflowType: "rpi",
+    worktreeTiming: "later",
+    isDraft: false,
+    archived: false,
+    hostId: "host_1",
+    baseEnvironmentId: "env_1",
+    worktreeEnvironmentId: null,
+    defaultDirectory: null,
+    providerId: null,
+    model: null,
+    reasoningLevel: null,
+    serviceTier: null,
+    permissionMode: "default",
+    autoAdvance: false,
+    aa_questions_to_research: true,
+    aa_research_to_design: true,
+    aa_plan_to_worktree: true,
+    aa_worktree_to_implementation: true,
+    aa_implementation_to_pr: false,
+    createdAt: 1,
+    updatedAt: 1,
+  } as const;
+  const reads: Array<{ rootPath?: string; path: string }> = [];
+  const db = { prepare: () => ({ get: () => null, all: () => [] }) };
+  const bb = {
+    sdk: {
+      environments: {
+        get: async () => ({ id: "env_1", status: "ready", path: "/repo", branchName: "main", baseBranch: null, workspaceProvisionType: "unmanaged" }),
+      },
+      files: {
+        read: async (input: { rootPath?: string; path: string }) => {
+          reads.push(input);
+          if (input.path === "workspace.json") return { content: JSON.stringify({ repos: new Array(33).fill({ localPath: "/repo/a", primary: true }) }) };
+          throw new Error("missing");
+        },
+      },
+      threads: { events: { list: async () => [] } },
+    },
+  };
+  const view = await getWorkspaceView(bb as never, db as never, task);
+  assert.deepEqual(reads.map((read) => read.rootPath), ["/repo/.humanlayer", "/repo/.humanlayer"]);
+  assert.equal(reads[0]?.path, "workspace.json");
+  assert.equal(reads[1]?.path, ".local.json");
+  assert.match(view.error ?? "", /workspace\.json/);
+  assert.deepEqual(view.repos, [{ localPath: "/repo", description: null, primary: true, sourceRef: null, setupCommand: null, copyGlobs: [] }]);
+});
+
+test("workspace validation rejects invalid sourceRef for worktree launches", async () => {
+  const bb = {
+    sdk: {
+      files: {
+        read: async ({ path }: { path: string }) => {
+          if (path === "workspace.json") return { content: JSON.stringify({ sourceRef: "refs/heads/main" }) };
+          throw new Error("missing");
+        },
+      },
+    },
+  };
+  await assert.rejects(
+    () => validateWorkspaceForWorktreeLaunch(bb as never, { hostId: "host_1", defaultDirectory: "/repo", worktreeTiming: "later" }),
+    /not a branch name/,
+  );
 });
