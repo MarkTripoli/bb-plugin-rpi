@@ -8,6 +8,10 @@ type Database = BetterSqlite3.Database;
 
 export type NotificationKind = "ready_for_input" | "needs_approval" | "comment";
 
+// Recorded alongside NotificationKind values but never selected by user prefs directly;
+// it reuses the ready_for_input sound/toast prefs (see recoverReadyAfterFailedAdvance).
+export type StoredNotificationKind = NotificationKind | "ready_after_failed_advance";
+
 export type NotificationPrefs = {
   enabled: boolean;
   sound: Record<NotificationKind, boolean>;
@@ -75,7 +79,7 @@ export type NotificationState = {
 export type NotificationRecord = {
   id: string;
   threadId: string;
-  kind: NotificationKind;
+  kind: StoredNotificationKind;
   dedupeKey: string;
   reason: NotificationDecision["reason"];
   sound: boolean;
@@ -227,7 +231,7 @@ export function notificationAlreadyRecorded(db: Database, dedupeKey: string) {
   return Boolean(readRow<{ id: string }>(db, "SELECT id FROM notifications WHERE dedupe_key = ?", dedupeKey));
 }
 
-export function recordNotificationDecision(db: Database, event: NotificationEvent, kind: NotificationKind, dedupeKey: string, decision: NotificationDecision) {
+export function recordNotificationDecision(db: Database, event: NotificationEvent, kind: StoredNotificationKind, dedupeKey: string, decision: NotificationDecision) {
   const timestamp = nowMs();
   const id = randomUUID();
   writeRow(
@@ -293,7 +297,7 @@ export function listNotificationRecords(db: Database, limit: number): Notificati
   return readRows<{
     id: string;
     threadId: string;
-    kind: NotificationKind;
+    kind: StoredNotificationKind;
     dedupeKey: string;
     reason: NotificationDecision["reason"];
     sound: number | boolean;
@@ -323,9 +327,99 @@ export function listNotificationRecords(db: Database, limit: number): Notificati
   ).map((row) => ({ ...row, sound: Boolean(row.sound) }));
 }
 
+// Retention keeps rows for threads whose owning task is not archived, regardless of age;
+// only archived-task threads are swept once their notifications are old enough.
 export function sweepOldNotifications(db: Database, olderThanMs = 30 * 24 * 60 * 60 * 1000) {
   const cutoff = nowMs() - olderThanMs;
-  return writeRow(db, "DELETE FROM notifications WHERE created_at < ?", cutoff).changes;
+  return writeRow(
+    db,
+    `
+    DELETE FROM notifications
+    WHERE created_at < ?
+      AND thread_id IN (
+        SELECT sessions.thread_id FROM sessions
+        JOIN tasks ON tasks.id = sessions.task_id
+        WHERE tasks.archived = 1
+      )
+    `,
+    cutoff,
+  ).changes;
+}
+
+export function sweepOldSuppressions(db: Database, olderThanMs = 7 * 24 * 60 * 60 * 1000) {
+  const cutoff = nowMs() - olderThanMs;
+  return writeRow(
+    db,
+    `
+    DELETE FROM notification_suppressions
+    WHERE created_at < ?
+      AND (
+        consumed_at IS NOT NULL
+        OR thread_id IN (
+          SELECT sessions.thread_id FROM sessions
+          JOIN tasks ON tasks.id = sessions.task_id
+          WHERE tasks.archived = 1
+        )
+      )
+    `,
+    cutoff,
+  ).changes;
+}
+
+/**
+ * Recovers from an auto-advance launch that failed or ended up uncertain. The suppression row
+ * inserted when the advance was claimed would otherwise mute the ready_for_input notification
+ * forever, leaving the user unaware the session is stuck. Consumes that suppression (idempotent:
+ * a second call for the same thread/turnKey is a no-op) and records/publishes exactly one
+ * ready_after_failed_advance notification, reusing the ready_for_input sound/toast prefs.
+ */
+export async function recoverReadyAfterFailedAdvance(
+  bb: BbPluginApi,
+  db: Database,
+  prefs: NotificationPrefs,
+  params: { threadId: string; completedTurnKey: string; failedSkillLabel: string | null },
+) {
+  const consumed = consumeSuppression(db, params.threadId, params.completedTurnKey);
+  if (!consumed) return null;
+  const dedupeKey = `ready-recover:${params.threadId}:${params.completedTurnKey}`;
+  const sound = prefs.enabled && prefs.sound.ready_for_input;
+  const toastAllowed = prefs.enabled && prefs.toast.ready_for_input;
+  const toast: NotificationToast | null = toastAllowed
+    ? {
+        title: "ready_for_input",
+        body: `Auto-advance failed to launch ${params.failedSkillLabel ?? "the next step"}. Retry it from Launch Attempts.`,
+        threadId: params.threadId,
+      }
+    : null;
+  const timestamp = nowMs();
+  writeRow(
+    db,
+    `
+    INSERT OR IGNORE INTO notifications (
+      id, thread_id, kind, dedupe_key, reason, sound, toast_title, toast_body, created_at, delivered_at
+    ) VALUES (?, ?, 'ready_after_failed_advance', ?, 'notify', ?, ?, ?, ?, ?)
+    `,
+    randomUUID(),
+    params.threadId,
+    dedupeKey,
+    sound ? 1 : 0,
+    toast?.title ?? null,
+    toast?.body ?? null,
+    timestamp,
+    sound || toast ? timestamp : null,
+  );
+  if (sound || toast) {
+    bb.realtime.publish("hl:notify", {
+      id: dedupeKey,
+      kind: "ready_after_failed_advance",
+      threadId: params.threadId,
+      sound,
+      toast,
+      volume: prefs.volume,
+      reason: "notify",
+    });
+  }
+  return { sound, toast };
 }
 
 export function notificationSummaryFromSession(session: SessionRow) {

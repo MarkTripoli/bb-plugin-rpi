@@ -29,6 +29,7 @@ import {
 import { markdownBlocks } from "./blocks";
 import {
   iterateInFreshSession,
+  latestLaunchAttemptLabel,
   launchSkill,
   onCompletedTurn,
   proceed,
@@ -59,7 +60,9 @@ import {
   listNotificationRecords,
   normalizeNotificationPrefs,
   notificationSummaryFromSession,
+  recoverReadyAfterFailedAdvance,
   sweepOldNotifications,
+  sweepOldSuppressions,
 } from "./notify";
 import {
   archiveTask,
@@ -342,20 +345,49 @@ export default async function plugin(bb: BbPluginApi) {
     return notificationPrefs;
   }
 
-  async function notifyStatusTransition(previous: NonNullable<ReturnType<typeof readSession>>, next: NonNullable<ReturnType<typeof readSession>>, interactions: readonly unknown[]) {
-    await decideAndPublishNotification(bb, db, {
-      type: "status_transition",
-      threadId: next.threadId,
-      previousStatus: previous.hlStatus,
-      nextStatus: next.hlStatus,
-      completedTurnKey: next.completedTurnKey,
-      title: "taskName" in next ? String(next.taskName) : null,
-      summary: notificationSummaryFromSession(next),
-      approval: approvalFromInteractions(interactions),
-    }, {
-      prefs: await currentNotificationPrefs(),
-      owner: "unknown",
-      viewing: viewingSessions.has(next.threadId),
+  // Evaluated on every derived snapshot (not just when hlStatus changed), so:
+  // - ready_for_input is delivered exactly once from the persisted, final completed_turn_key,
+  //   whichever caller (idle completion or a racing reconcile) observes it last.
+  // - needs_approval is delivered per pending interaction id, even while hlStatus stays
+  //   needs_approval across two different approvals.
+  // Both are idempotent via notify.ts dedupe keys.
+  async function notifySnapshot(threadId: string, interactions: readonly unknown[]) {
+    const row = sessionMirror.get(threadId);
+    if (!row) return;
+    const prefs = await currentNotificationPrefs();
+    const context = { prefs, owner: "unknown" as const, viewing: viewingSessions.has(threadId) };
+    const approval = approvalFromInteractions(interactions);
+    if (approval) {
+      await decideAndPublishNotification(bb, db, {
+        type: "status_transition",
+        threadId,
+        previousStatus: null,
+        nextStatus: "needs_approval",
+        completedTurnKey: null,
+        title: row.taskName,
+        summary: notificationSummaryFromSession(row),
+        approval,
+      }, context);
+    }
+    if (row.hlStatus === "ready_for_input" && !row.blockedReason && row.completedTurnKey) {
+      await decideAndPublishNotification(bb, db, {
+        type: "status_transition",
+        threadId,
+        previousStatus: "running",
+        nextStatus: "ready_for_input",
+        completedTurnKey: row.completedTurnKey,
+        title: row.taskName,
+        summary: notificationSummaryFromSession(row),
+      }, context);
+    }
+  }
+
+  async function notifyAdvanceFailed(session: NonNullable<ReturnType<typeof sessionMirror.get>>) {
+    if (!session.completedTurnKey) return;
+    await recoverReadyAfterFailedAdvance(bb, db, await currentNotificationPrefs(), {
+      threadId: session.threadId,
+      completedTurnKey: session.completedTurnKey,
+      failedSkillLabel: latestLaunchAttemptLabel(db, session.threadId),
     });
   }
 
@@ -1036,7 +1068,8 @@ export default async function plugin(bb: BbPluginApi) {
     launchBindings,
     (row) => onCompletedTurn(bb, db, sessionMirror, launchBindings, row),
     childThreadMirror,
-    notifyStatusTransition,
+    notifySnapshot,
+    notifyAdvanceFailed,
   );
 
   bb.background.service("launch-attempt-sweep", {
@@ -1044,6 +1077,7 @@ export default async function plugin(bb: BbPluginApi) {
       while (!signal.aborted) {
         sweepOldSendReceipts(db);
         sweepOldNotifications(db);
+        sweepOldSuppressions(db);
         for (const taskId of promoteStalePendingLaunchAttempts(db)) {
           bb.realtime.publish("tasks", { taskId });
           bb.realtime.publish("hl:sessions", { taskId, threadId: null });

@@ -441,7 +441,10 @@ function failPreSpawnAttempt(db: Database, attemptId: string, fromThreadId: stri
     if (fromThreadId) {
       const timestamp = nowMs();
       writeRow(db, "UPDATE sessions SET advanced_at = NULL, advanced_attempt_id = NULL, updated_at = ? WHERE thread_id = ? AND advanced_attempt_id = ?", timestamp, fromThreadId, attemptId);
-      writeRow(db, "DELETE FROM notification_suppressions WHERE thread_id = ? AND reason = 'auto_advance'", fromThreadId);
+      // The notification_suppressions row for this turn key is left in place (unconsumed) so the
+      // caller's failure-recovery path (sessions.ts onAdvanceFailed) can consume it and deliver
+      // exactly one ready_after_failed_advance notification. Deleting it here would silently mute
+      // the ready notification for this turn forever.
     }
   })();
 }

@@ -18,8 +18,52 @@ import {
   recordIdleCompletion,
   registerSessionRuntime,
   taskInstructions,
+  type SessionMirrorRow,
 } from "../sessions";
 import { TASK_CONTEXT_FIRST_ACTION } from "../instructions";
+import {
+  DEFAULT_NOTIFICATION_PREFS,
+  approvalFromInteractions,
+  decideAndPublishNotification,
+  notificationSummaryFromSession,
+  recoverReadyAfterFailedAdvance,
+} from "../notify";
+import { latestLaunchAttemptLabel } from "../advance";
+
+// Mirrors server.ts's real notifySnapshot wiring: evaluated on every derived snapshot, not just
+// on hlStatus transitions, so ready_for_input uses the persisted final completed_turn_key and
+// needs_approval fires per pending interaction id.
+function makeSnapshotHandler(db: Database.Database, mirror: Map<string, SessionMirrorRow>, bb: { realtime: { publish: (topic: string, payload: unknown) => void } }) {
+  return async (threadId: string, interactions: readonly unknown[]) => {
+    const row = mirror.get(threadId);
+    if (!row) return;
+    const context = { prefs: DEFAULT_NOTIFICATION_PREFS, owner: "unknown" as const, viewing: false };
+    const approval = approvalFromInteractions(interactions);
+    if (approval) {
+      await decideAndPublishNotification(bb as never, db, {
+        type: "status_transition",
+        threadId,
+        previousStatus: null,
+        nextStatus: "needs_approval",
+        completedTurnKey: null,
+        title: row.taskName,
+        summary: notificationSummaryFromSession(row),
+        approval,
+      }, context);
+    }
+    if (row.hlStatus === "ready_for_input" && !row.blockedReason && row.completedTurnKey) {
+      await decideAndPublishNotification(bb as never, db, {
+        type: "status_transition",
+        threadId,
+        previousStatus: "running",
+        nextStatus: "ready_for_input",
+        completedTurnKey: row.completedTurnKey,
+        title: row.taskName,
+        summary: notificationSummaryFromSession(row),
+      }, context);
+    }
+  };
+}
 
 const row = { hadTurn: false, interrupted: false };
 
@@ -415,6 +459,68 @@ test("idle publishes ready signal after auto-advance suppression exists", async 
   handlers.get("thread.idle")?.({ thread: thread({ numEvents: 2, updatedAt: 2 }), lastAssistantText: text } as never);
   for (let i = 0; i < 10 && publishChecks.length === 0; i += 1) await delay();
   assert.deepEqual(publishChecks, [true]);
+  db.close();
+});
+
+test("ready notification always uses the persisted final completed turn key, never a stale one observed by a racing reconcile", async () => {
+  const db = makeDb();
+  const mirror = new Map();
+  seedSession(db);
+  mirrorSession(db, mirror, "thr_1");
+  const published: unknown[] = [];
+  const bb = { realtime: { publish: (_topic: string, payload: unknown) => published.push(payload) } };
+  const onSnapshot = makeSnapshotHandler(db, mirror, bb);
+  const idleBb = { sdk: { threads: { interactions: { list: async () => [] }, get: async () => ({ environment: null }) } }, log: { info: () => undefined } };
+
+  // Turn 1 completes normally: the idle handler appends the key, then the snapshot check notifies.
+  await recordIdleCompletion(idleBb as never, db, mirror, thread({ updatedAt: 1 }), "first answer");
+  applyStatusDerivation(db, mirror, thread({ status: "idle", runtime: { displayStatus: "idle" } }), [], 1);
+  await onSnapshot("thr_1", []);
+  assert.equal(published.length, 1);
+  assert.equal(mirror.get("thr_1")?.completedTurnKey, "events:1");
+
+  // Agent resumes for a second turn.
+  db.prepare("UPDATE sessions SET hl_status = 'running' WHERE thread_id = 'thr_1'").run();
+  mirrorSession(db, mirror, "thr_1");
+
+  // Astra's case: a racing reconcile (e.g. an interactions-changed event) observes the underlying
+  // thread already idle BEFORE the idle completion handler has appended turn 2's key. It must not
+  // fire a duplicate for the already-notified turn 1 key.
+  applyStatusDerivation(db, mirror, thread({ status: "idle", runtime: { displayStatus: "idle" } }), [], 2);
+  await onSnapshot("thr_1", []);
+  assert.equal(published.length, 1, "a reconcile observing the previous, already-notified key must not fire again");
+
+  // The idle handler now runs for real and appends the final key for turn 2.
+  await recordIdleCompletion(idleBb as never, db, mirror, thread({ updatedAt: 2 }), "second answer");
+  applyStatusDerivation(db, mirror, thread({ status: "idle", runtime: { displayStatus: "idle" } }), [], 3);
+  await onSnapshot("thr_1", []);
+  assert.equal(published.length, 2, "the final turn key must still be notified exactly once");
+  const rows = db.prepare("SELECT dedupe_key AS dedupeKey FROM notifications ORDER BY created_at").all() as Array<{ dedupeKey: string }>;
+  assert.deepEqual(rows.map((row) => row.dedupeKey), ["ready:thr_1:events:1", "ready:thr_1:events:2"]);
+  db.close();
+});
+
+test("needs_approval notifies again for a second pending approval id while status stays needs_approval", async () => {
+  const db = makeDb();
+  const mirror = new Map();
+  seedSession(db);
+  db.prepare("UPDATE sessions SET hl_status = 'needs_approval' WHERE thread_id = 'thr_1'").run();
+  mirrorSession(db, mirror, "thr_1");
+  const published: unknown[] = [];
+  const bb = { realtime: { publish: (_topic: string, payload: unknown) => published.push(payload) } };
+  const onSnapshot = makeSnapshotHandler(db, mirror, bb);
+  const approvalOne = [{ id: "pint_1", status: "pending", payload: { kind: "approval", toolName: "mcp__a__b", toolInput: "x" } }];
+  await onSnapshot("thr_1", approvalOne);
+  assert.equal(published.length, 1);
+  // hlStatus stays needs_approval (no transition), but a second, different approval id arrives.
+  const approvalTwo = [{ id: "pint_2", status: "pending", payload: { kind: "approval", toolName: "mcp__a__b", toolInput: "y" } }];
+  await onSnapshot("thr_1", approvalTwo);
+  assert.equal(published.length, 2, "a second pending approval id must notify even though hlStatus did not change");
+  const rows = db.prepare("SELECT dedupe_key AS dedupeKey FROM notifications ORDER BY created_at").all() as Array<{ dedupeKey: string }>;
+  assert.deepEqual(rows.map((row) => row.dedupeKey), ["approval:thr_1:pint_1", "approval:thr_1:pint_2"]);
+  // Redelivering the same approval id must not duplicate.
+  await onSnapshot("thr_1", approvalTwo);
+  assert.equal(published.length, 2);
   db.close();
 });
 

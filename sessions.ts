@@ -716,7 +716,13 @@ export function registerSessionRuntime(
   bindings: LaunchBindingMirror,
   onCompletedTurn?: (row: SessionMirrorRow) => Promise<unknown>,
   childThreads?: Map<string, ChildThreadMirrorRow>,
-  onStatusTransition?: (previous: SessionRow, next: SessionRow, interactions: readonly unknown[]) => Promise<unknown>,
+  // Called after every derived snapshot (not gated on hlStatus having changed) so ready_for_input
+  // and needs_approval notifications are evaluated from the persisted, final mirror row instead of
+  // a possibly-stale transition snapshot. Idempotent via dedupe in notify.ts.
+  onSnapshot?: (threadId: string, interactions: readonly unknown[]) => Promise<unknown>,
+  // Called when an auto-advance launch attempt for a completed turn fails or throws, so the
+  // suppressed ready_for_input notification for that turn is recovered instead of lost silently.
+  onAdvanceFailed?: (session: SessionMirrorRow) => Promise<unknown>,
 ) {
   const maxSeq = readRow<{ maxSeq: number }>(db, "SELECT COALESCE(MAX(last_reconcile_seq), 0) + 1 AS maxSeq FROM sessions")?.maxSeq ?? 1;
   let nextSeq = maxSeq;
@@ -755,7 +761,7 @@ export function registerSessionRuntime(
       const interactions = await bb.sdk.threads.interactions.list({ threadId });
       if (!mirror.has(threadId) || retiredThreads.has(threadId)) return;
       const result = applyStatusDerivation(db, mirror, thread as ThreadLike, interactions as InteractionLike[], sequence);
-      if (result?.changed && result.row) await onStatusTransition?.(result.previous, result.row, interactions);
+      await onSnapshot?.(threadId, interactions);
       if (result?.changed) publish(threadId);
     });
   };
@@ -803,7 +809,7 @@ export function registerSessionRuntime(
       const sequence = nextSeq;
       nextSeq += 1;
       const result = applyStatusDerivation(db, mirror, thread, interactions as InteractionLike[], sequence);
-      if (result?.changed && result.row) await onStatusTransition?.(result.previous, result.row, interactions);
+      await onSnapshot?.(thread.id, interactions);
       if (result?.changed) publish(thread.id);
     });
   };
@@ -837,12 +843,19 @@ export function registerSessionRuntime(
       nextSeq += 1;
       const interactions = await bb.sdk.threads.interactions.list({ threadId: thread.id });
       if (!mirror.has(thread.id) || retiredThreads.has(thread.id)) return;
-      const result = applyStatusDerivation(db, mirror, thread, interactions as InteractionLike[], sequence);
+      applyStatusDerivation(db, mirror, thread, interactions as InteractionLike[], sequence);
       const completed = mirror.get(thread.id);
       if (completedNewTurn && completed?.hlStatus === "ready_for_input" && !completed.blockedReason) {
-        await onCompletedTurn?.(completed);
+        try {
+          await onCompletedTurn?.(completed);
+        } catch (error) {
+          bb.log.warn(`HumanLayer auto-advance failed for ${thread.id}: ${String(error)}`);
+          await onAdvanceFailed?.(completed).catch((recoveryError) =>
+            bb.log.warn(`HumanLayer advance-failure recovery notification failed for ${thread.id}: ${String(recoveryError)}`),
+          );
+        }
       }
-      if (result?.changed && result.row) await onStatusTransition?.(result.previous, result.row, interactions);
+      await onSnapshot?.(thread.id, interactions);
       publish(thread.id);
     });
   };

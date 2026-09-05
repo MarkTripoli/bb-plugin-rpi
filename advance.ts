@@ -270,6 +270,17 @@ export function suppressReadyToast(db: Database, threadId: string, completedTurn
   );
 }
 
+// Looks up the skill/label of the most recent launch attempt from this thread, used to name
+// the failed skill in the ready_after_failed_advance recovery notification (see sessions.ts).
+export function latestLaunchAttemptLabel(db: Database, threadId: string) {
+  const attempt = readRow<{ skillId: string | null; label: string | null }>(
+    db,
+    "SELECT skill_id AS skillId, label FROM launch_attempts WHERE from_thread_id = ? ORDER BY created_at DESC LIMIT 1",
+    threadId,
+  );
+  return attempt?.label ?? attempt?.skillId ?? null;
+}
+
 function successorFor(db: Database, threadId: string) {
   return readRow<{ threadId: string }>(
     db,

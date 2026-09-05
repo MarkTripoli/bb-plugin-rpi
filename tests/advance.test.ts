@@ -2,11 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import { onCompletedTurn } from "../advance";
+import { latestLaunchAttemptLabel, onCompletedTurn } from "../advance";
 import { MIGRATIONS, stringifyJson } from "../db";
 import { createDraftTask } from "../tasks";
 import { proceed } from "../advance";
 import { createLaunchBindingMirror, mirrorSession, type SessionMirrorRow } from "../sessions";
+import { DEFAULT_NOTIFICATION_PREFS, recoverReadyAfterFailedAdvance } from "../notify";
 
 function makeDb() {
   const db = new Database(":memory:");
@@ -178,7 +179,7 @@ test("proceed and auto-advance racing create one launch", async () => {
   db.close();
 });
 
-test("preflight failure resets only its advanced_at stamp, fails the attempt, and removes suppression", async () => {
+test("preflight failure resets only its advanced_at stamp and fails the attempt, leaving suppression for recovery", async () => {
   const db = makeDb();
   const { session } = seed(db, "plan", "setup-worktree", { worktree_timing: "now", host_id: null });
   const bb = {
@@ -190,11 +191,52 @@ test("preflight failure resets only its advanced_at stamp, fails the attempt, an
   await assert.rejects(() => onCompletedTurn(bb as never, db, new Map(), createLaunchBindingMirror(), session), /hostId is required/);
   const row = db.prepare("SELECT advanced_at AS advancedAt, advanced_attempt_id AS advancedAttemptId FROM sessions WHERE thread_id = 'thr_source'").get() as { advancedAt: number | null; advancedAttemptId: string | null };
   const attempt = db.prepare("SELECT id, status FROM launch_attempts WHERE from_thread_id = 'thr_source'").get() as { id: string; status: string };
-  const suppression = db.prepare("SELECT COUNT(*) AS count FROM notification_suppressions WHERE thread_id = 'thr_source'").get() as { count: number };
+  const suppression = db.prepare("SELECT consumed_at AS consumedAt FROM notification_suppressions WHERE thread_id = 'thr_source'").get() as { consumedAt: number | null } | undefined;
   assert.equal(row.advancedAt, null);
   assert.equal(row.advancedAttemptId, null);
   assert.equal(attempt.status, "failed");
-  assert.equal(suppression.count, 0);
+  // Left unconsumed here: onCompletedTurn itself does not recover, that is sessions.ts's job
+  // (see "auto-advance launch failure delivers exactly one recovery notification" below).
+  assert.equal(suppression?.consumedAt, null);
+  db.close();
+});
+
+test("auto-advance launch failure delivers exactly one ready_after_failed_advance recovery notification", async () => {
+  const db = makeDb();
+  const { session } = seed(db, "plan", "setup-worktree", { worktree_timing: "now", host_id: null });
+  const published: unknown[] = [];
+  const bb = {
+    pluginId: "humanlayer",
+    realtime: { publish: (topic: string, payload: unknown) => { if (topic === "hl:notify") published.push(payload); } },
+    log: { warn: () => undefined },
+    sdk: { threads: { interactions: { list: async () => [] } } },
+  };
+  // Astra's case: a forced launch failure (e.g. a bogus provider/missing hostId) must not leave
+  // the ready_for_input notification suppressed forever.
+  await assert.rejects(() => onCompletedTurn(bb as never, db, new Map(), createLaunchBindingMirror(), session), /hostId is required/);
+  const failedSkillLabel = latestLaunchAttemptLabel(db, session.threadId);
+  assert.equal(failedSkillLabel, "worktree-setup");
+  const result = await recoverReadyAfterFailedAdvance(bb as never, db, DEFAULT_NOTIFICATION_PREFS, {
+    threadId: session.threadId,
+    completedTurnKey: session.completedTurnKey!,
+    failedSkillLabel,
+  });
+  assert.ok(result?.toast);
+  assert.equal(published.length, 1);
+  const rows = db.prepare("SELECT kind, dedupe_key AS dedupeKey, toast_body AS toastBody FROM notifications WHERE thread_id = ?").all(session.threadId) as Array<{ kind: string; dedupeKey: string; toastBody: string | null }>;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, "ready_after_failed_advance");
+  assert.equal(rows[0].dedupeKey, `ready-recover:${session.threadId}:${session.completedTurnKey}`);
+  assert.match(rows[0].toastBody ?? "", /worktree-setup/);
+
+  // A later reconcile re-observing the same stuck turn (e.g. plugin reload) must not duplicate.
+  const again = await recoverReadyAfterFailedAdvance(bb as never, db, DEFAULT_NOTIFICATION_PREFS, {
+    threadId: session.threadId,
+    completedTurnKey: session.completedTurnKey!,
+    failedSkillLabel,
+  });
+  assert.equal(again, null);
+  assert.equal(published.length, 1);
   db.close();
 });
 
