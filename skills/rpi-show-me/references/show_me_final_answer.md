@@ -4,7 +4,7 @@ Artifact saved:
 Summary:
 {summary}
 
-No automatic next phase follows this skill. Use this command only when another visual pass is needed:
+No automatic phase follows this visual helper. Run another visual pass only if the current explanation needs it:
 
 ```text
 /rpi-show-me
