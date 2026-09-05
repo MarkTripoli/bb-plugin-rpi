@@ -57,6 +57,31 @@ export const AUTO_ADVANCE = {
   implementation: { flag: "aa_implementation_to_pr", next: "describe-pr", to: "describe-pr" },
 } as const;
 
+type AutoAdvanceLabel = keyof typeof AUTO_ADVANCE;
+type AutoAdvanceFlag =
+  | "aa_questions_to_research"
+  | "aa_research_to_design"
+  | "aa_plan_to_worktree"
+  | "aa_worktree_to_implementation"
+  | "aa_implementation_to_pr"
+  | null;
+type AutoAdvanceTransition = { flag: AutoAdvanceFlag; next: SkillId; to: PhaseLabel };
+
+const WORKFLOW_AUTO_ADVANCE: Partial<Record<string, Partial<Record<AutoAdvanceLabel, AutoAdvanceTransition>>>> = {
+  outline_only: {
+    research: { flag: "aa_research_to_design", next: "create-structure-outline", to: "structure" },
+    "worktree-setup": { flag: "aa_worktree_to_implementation", next: "implement-outline", to: "implementation" },
+  },
+  prd_tdd: {
+    research: { flag: "aa_research_to_design", next: "create-prd", to: "design-prd" },
+  },
+};
+
+export function autoAdvanceTransition(label: PhaseLabel, workflowType: string): AutoAdvanceTransition | undefined {
+  const key = label as AutoAdvanceLabel;
+  return WORKFLOW_AUTO_ADVANCE[workflowType]?.[key] ?? AUTO_ADVANCE[key];
+}
+
 export const WORKFLOW_GRAPHS = {
   rpi: ["questions", "research", "design", "plan", "worktree", "implementation", "PR"],
   outline_only: ["questions", "research", "structure", "implementation", "PR"],

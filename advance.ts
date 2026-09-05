@@ -6,7 +6,7 @@ import type { SessionRow, TaskRecord } from "./contract";
 import type { NextStepSuggestions } from "./extraction";
 import { activeLaunchAttempt, environmentRoleForAttempt, insertAttempt, launchPhase, withTaskLock } from "./launch";
 import { getTask } from "./tasks";
-import { AUTO_ADVANCE, ITERATE_SKILL_BY_LABEL, normalizePhaseLabel, skillInfo, type PhaseLabel } from "./transitions";
+import { AUTO_ADVANCE, ITERATE_SKILL_BY_LABEL, autoAdvanceTransition, normalizePhaseLabel, skillInfo, type PhaseLabel } from "./transitions";
 import type { LaunchBindingMirror, SessionMirrorRow } from "./sessions";
 
 type Database = BetterSqlite3.Database;
@@ -168,7 +168,7 @@ async function validateAdvance(
   session: SessionRow,
   mode: AdvanceMode,
 ): Promise<
-  | { ok: true; nextStep: NextStepSuggestions & { extraction: { type: "next_step_found"; nextStepType: string; nextStepPrompt: string } }; transition: (typeof AUTO_ADVANCE)[keyof typeof AUTO_ADVANCE] | undefined }
+  | { ok: true; nextStep: NextStepSuggestions & { extraction: { type: "next_step_found"; nextStepType: string; nextStepPrompt: string } }; transition: ReturnType<typeof autoAdvanceTransition> }
   | { ok: false; error: AdvanceRejectedError }
 > {
   const existing = successorFor(db, session.threadId);
@@ -182,7 +182,7 @@ async function validateAdvance(
   const nextStep = parseJson<NextStepSuggestions | null>(session.nextStepJson, null);
   if (nextStep?.extraction.type !== "next_step_found") return { ok: false, error: new AdvanceRejectedError("invalid_next_step", "No next step is available.") };
   const label = normalizePhaseLabel(session.label) as PhaseLabel | null;
-  const transition = label ? AUTO_ADVANCE[label as keyof typeof AUTO_ADVANCE] : undefined;
+  const transition = label ? autoAdvanceTransition(label, task.workflowType) : undefined;
   if (activeLaunchAttempt(db, task.id)) return { ok: false, error: new AdvanceRejectedError("launch_blocked", "A launch attempt is already pending.") };
   return { ok: true, nextStep: nextStep as NextStepSuggestions & { extraction: { type: "next_step_found"; nextStepType: string; nextStepPrompt: string } }, transition };
 }

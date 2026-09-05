@@ -15,12 +15,14 @@ function makeDb() {
   return db;
 }
 
-function seed(db: Database.Database, label: string | null, nextStepType: string | null, patch: Record<string, unknown> = {}) {
+type TestWorkflowType = "rpi" | "outline_only" | "prd_tdd" | "oneshot" | "freeform";
+
+function seed(db: Database.Database, label: string | null, nextStepType: string | null, patch: Record<string, unknown> = {}, workflowType: TestWorkflowType = "rpi") {
   const taskId = createDraftTask(db, {
     projectId: "proj_1",
     prompt: "prompt",
     name: "Task",
-    workflowType: "rpi",
+    workflowType,
     worktreeTiming: "never",
     permissionMode: "default",
     autoAdvance: true,
@@ -143,6 +145,23 @@ test("auto-advance refuses mismatched extracted target", async () => {
   await onCompletedTurn(bb as never, db, new Map(), createLaunchBindingMirror(), session);
   assert.equal(spawns.length, 0);
   db.close();
+});
+
+test("outline-only research auto-advance expects structure", async () => {
+  {
+    const db = makeDb();
+    const { bb, spawns } = fakeBb();
+    await onCompletedTurn(bb as never, db, new Map(), createLaunchBindingMirror(), seed(db, "research", "create-design-discussion", {}, "outline_only").session);
+    assert.equal(spawns.length, 0);
+    db.close();
+  }
+  {
+    const db = makeDb();
+    const { bb, spawns } = fakeBb();
+    await onCompletedTurn(bb as never, db, new Map(), createLaunchBindingMirror(), seed(db, "research", "create-structure-outline", {}, "outline_only").session);
+    assert.equal(spawns.length, 1);
+    db.close();
+  }
 });
 
 test("proceed and auto-advance racing create one launch", async () => {

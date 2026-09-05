@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ALIASES, AUTO_ADVANCE, HELPERS, SKILLS, WORKFLOW_GRAPHS, deriveBoardColumn } from "../transitions";
+import { ALIASES, AUTO_ADVANCE, HELPERS, SKILLS, WORKFLOW_GRAPHS, autoAdvanceTransition, deriveBoardColumn } from "../transitions";
 
 test("skills table keeps labels and button text", () => {
   assert.equal(SKILLS.length, 22);
@@ -29,6 +29,13 @@ test("auto advance table is literal", () => {
     "worktree-setup": { flag: "aa_worktree_to_implementation", next: "implement-plan", to: "implementation" },
     implementation: { flag: "aa_implementation_to_pr", next: "describe-pr", to: "describe-pr" },
   });
+});
+
+test("auto advance resolves workflow-specific targets", () => {
+  assert.equal(autoAdvanceTransition("research", "rpi")?.next, "create-design-discussion");
+  assert.equal(autoAdvanceTransition("research", "outline_only")?.next, "create-structure-outline");
+  assert.equal(autoAdvanceTransition("research", "prd_tdd")?.next, "create-prd");
+  assert.equal(autoAdvanceTransition("worktree-setup", "outline_only")?.next, "implement-outline");
 });
 
 test("board column derives from the current label", () => {
