@@ -254,31 +254,41 @@ async function selectEnvironment(bb: BbPluginApi, task: TaskRecord, skillId: str
       role: "base" as const,
     };
   }
-  // `{type:"project-default"}` is a composer-seeding concept (bb-plugin-sdk-app.d.ts:
-  // ExperimentalProviderModelPickerRouting docs) whose actual server-side resolution is the
-  // project's own ambient default, which some projects configure to always spawn a managed
-  // worktree for a new thread. `worktreeTiming` "never"/"later" is this plugin's own guarantee
-  // that no worktree exists until the plan calls for one, so a base-role spawn must not gamble on
-  // that ambient default. An explicit unmanaged host workspace (`path: null` = "the host's
-  // configured checkout") is a deterministic non-worktree environment whenever any host is
-  // resolvable; `project-default` is the last-resort fallback only when no host can be found at
-  // all (found live: a bare `bb humanlayer tasks create` with no `--host` on a project whose
-  // ambient default happened to be a managed worktree silently broke `worktreeTiming: "later"`).
-  const hostId = task.hostId ?? await firstAvailableHostId(bb);
-  if (hostId) {
+  // `{type:"project-default"}` (bb-plugin-sdk-app.d.ts: ExperimentalProviderModelPickerRouting
+  // docs) resolves to the project's own ambient default, which some projects configure to always
+  // spawn a managed worktree for a new thread. `worktreeTiming` "never"/"later" is this plugin's
+  // own guarantee that no worktree exists until the plan calls for one, so a base-role spawn must
+  // not gamble on that ambient default, and it must not guess a host from `hosts.list()[0]`
+  // either (found live: a bare `bb humanlayer tasks create` with no `--host` on a project whose
+  // ambient default happened to be a managed worktree silently broke `worktreeTiming: "later"`,
+  // and a multi-host bb instance has no ordering guarantee over which host is "first"). The only
+  // deterministic host for an unmanaged base workspace is the project's own default source
+  // (`projects.get(...).sources.find(s => s.isDefault)`); its `hostId`/`path` is exactly the
+  // checkout the project is configured to use. `task.hostId` alone (no defaultDirectory) is the
+  // next-best explicit choice. Anything else is a launch we refuse rather than guess.
+  const source = await projectDefaultSource(bb, task.projectId);
+  if (source) {
     return {
-      environment: { type: "host" as const, hostId, workspace: { type: "unmanaged" as const, path: null } },
+      environment: { type: "host" as const, hostId: source.hostId, workspace: { type: "unmanaged" as const, path: source.path } },
       stores: "base" as const,
       role: "base" as const,
     };
   }
-  return { environment: { type: "project-default" as const }, stores: "base" as const, role: "base" as const };
+  if (task.hostId) {
+    return {
+      environment: { type: "host" as const, hostId: task.hostId, workspace: { type: "unmanaged" as const, path: null } },
+      stores: "base" as const,
+      role: "base" as const,
+    };
+  }
+  throw new Error(`no source host for project ${task.projectId}`);
 }
 
-async function firstAvailableHostId(bb: BbPluginApi): Promise<string | null> {
+async function projectDefaultSource(bb: BbPluginApi, projectId: string): Promise<{ hostId: string; path: string } | null> {
   try {
-    const hosts = await bb.sdk.hosts.list();
-    return hosts[0]?.id ?? null;
+    const project = await bb.sdk.projects.get({ projectId });
+    const source = project.sources?.find((candidate) => candidate.isDefault);
+    return source ? { hostId: source.hostId, path: source.path } : null;
   } catch {
     return null;
   }

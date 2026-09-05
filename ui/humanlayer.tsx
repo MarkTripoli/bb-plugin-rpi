@@ -1275,6 +1275,7 @@ function WorkspaceStat({ label, value }: { label: string; value: string }) {
 }
 
 const SCRATCH_PAD_SAVE_DEBOUNCE_MS = 600;
+const SCRATCH_PAD_MAX_CHARS = 20000;
 
 function ScratchPadPanel({ taskId }: { taskId: string }) {
   const rpc = useRpc<RpcContract>();
@@ -1283,6 +1284,7 @@ function ScratchPadPanel({ taskId }: { taskId: string }) {
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const textRef = useRef(text);
   textRef.current = text;
+  const revisionRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -1291,6 +1293,7 @@ function ScratchPadPanel({ taskId }: { taskId: string }) {
     rpc.call("getTaskUiState", { taskId }).then((state) => {
       if (cancelled) return;
       setText(state.scratch ?? "");
+      revisionRef.current = state.scratchRevision ?? 0;
       setLoaded(true);
     });
     return () => {
@@ -1298,21 +1301,38 @@ function ScratchPadPanel({ taskId }: { taskId: string }) {
     };
   }, [taskId, rpc]);
 
+  const save = (value: string) => {
+    return rpc.call("saveScratchPad", { taskId, text: value, expectedRevision: revisionRef.current }).then((result) => {
+      if (result.outcome === "conflict") {
+        revisionRef.current = result.scratchRevision ?? 0;
+        setText(result.scratch ?? "");
+        toast.info("Updated elsewhere, reloaded");
+        return;
+      }
+      revisionRef.current = result.scratchRevision ?? revisionRef.current + 1;
+      setSavedAt(Date.now());
+    }, (error: unknown) => {
+      toast.error(error instanceof Error ? error.message : "Failed to save scratch pad");
+    });
+  };
+
   // Flush a pending debounce on unmount (task switch, panel close) so the last keystroke is not
   // silently lost.
   useEffect(() => () => {
     if (timerRef.current) {
       clearTimeout(timerRef.current);
-      void rpc.call("saveScratchPad", { taskId, text: textRef.current });
+      void save(textRef.current);
     }
-  }, [taskId, rpc]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskId]);
 
   const onChange = (value: string) => {
-    setText(value);
+    const bounded = value.slice(0, SCRATCH_PAD_MAX_CHARS);
+    setText(bounded);
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
       timerRef.current = null;
-      void rpc.call("saveScratchPad", { taskId, text: value }).then(() => setSavedAt(Date.now()));
+      void save(bounded);
     }, SCRATCH_PAD_SAVE_DEBOUNCE_MS);
   };
 
@@ -1321,11 +1341,14 @@ function ScratchPadPanel({ taskId }: { taskId: string }) {
     <div className="space-y-2">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold text-foreground">Scratch pad</h3>
-        <span className="text-xs text-muted-foreground">{savedAt ? `Saved ${relativeTime(savedAt)} ago` : "Local notes, not visible to sessions"}</span>
+        <span className="text-xs text-muted-foreground">
+          {savedAt ? `Saved ${relativeTime(savedAt)} ago` : "Local notes, not visible to sessions"} · {text.length}/{SCRATCH_PAD_MAX_CHARS}
+        </span>
       </div>
       <textarea
         value={text}
         onChange={(event) => onChange(event.target.value)}
+        maxLength={SCRATCH_PAD_MAX_CHARS}
         placeholder="Local notes for this task..."
         className="min-h-[360px] w-full resize-y rounded-md border border-border bg-card p-3 text-sm text-foreground outline-none focus:border-foreground"
       />

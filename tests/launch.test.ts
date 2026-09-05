@@ -31,6 +31,10 @@ function seedTask(db: Database.Database) {
   }).taskId;
 }
 
+function stubDefaultSource() {
+  return { get: async () => ({ id: "proj_1", name: "Proj", kind: "standard" as const, gitRemoteUrl: null, createdAt: 1, updatedAt: 1, sources: [{ id: "src_1", projectId: "proj_1", hostId: "host_seed", path: "/repo", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 }] }) };
+}
+
 test("a failed attempt not yet retried can be retried; an already-retried failed attempt cannot", async () => {
   const db = makeDb();
   const taskId = seedTask(db);
@@ -39,7 +43,7 @@ test("a failed attempt not yet retried can be retried; an already-retried failed
   let spawns = 0;
   const bb = {
     realtime: { publish: () => undefined },
-    sdk: { threads: { spawn: async () => { spawns += 1; return makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }); }, get: async () => makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }) } },
+    sdk: { projects: stubDefaultSource(), threads: { spawn: async () => { spawns += 1; return makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }); }, get: async () => makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }) } },
     log: { warn: () => undefined },
   };
   await resolveLaunchAttempt(bb as never, db, new Map(), createLaunchBindingMirror(), "attempt_1", { type: "retry" });
@@ -73,6 +77,7 @@ test("launchPhase prompts start with marker then task context first-action line"
   const bb = {
     realtime: { publish: () => undefined },
     sdk: {
+      projects: stubDefaultSource(),
       threads: {
         spawn: async (input: { prompt: string }) => {
           prompt = input.prompt;
@@ -125,6 +130,7 @@ test("phase successor spawn is a sibling with plugin metadata only", async () =>
   const bb = {
     realtime: { publish: () => undefined },
     sdk: {
+      projects: stubDefaultSource(),
       threads: {
         spawn: async (input: Record<string, unknown>) => {
           spawnInput = input;
@@ -268,6 +274,7 @@ test("retry creates a new marked attempt with the same command and role", async 
   const bb = {
     realtime: { publish: () => undefined },
     sdk: {
+      projects: stubDefaultSource(),
       threads: {
         spawn: async (input: { prompt: string }) => {
           prompt = input.prompt;
@@ -300,6 +307,7 @@ test("concurrent retries claim the old attempt once and spawn once", async () =>
   const bb = {
     realtime: { publish: () => undefined },
     sdk: {
+      projects: stubDefaultSource(),
       threads: {
         spawn: async () => {
           spawns += 1;
@@ -458,12 +466,11 @@ test("launchPhase selects environments by worktree timing and phase", async () =
   }
 });
 
-// Regression: a base-role task with no hostId and no defaultDirectory must never gamble on
-// `{type:"project-default"}`, whose actual resolution is the project's own ambient default and can
-// silently be a managed worktree (found live: worktreeTiming "later" was bypassed this way on a
-// project whose default happened to be worktree-per-thread). It must resolve a host and spawn an
-// explicit unmanaged workspace instead, which is deterministically never a worktree.
-test("a hostless base-role task resolves a real host into an unmanaged workspace, never project-default", async () => {
+// Regression: a base-role task with no baseEnvironmentId/hostId+defaultDirectory must resolve the
+// project's own default source host, never `hosts.list()[0]` (no ordering guarantee across hosts)
+// and never `{type:"project-default"}` (the project's ambient default can silently be a managed
+// worktree, which would bypass `worktreeTiming: "later""/"never"`).
+test("a hostless base-role task targets the project's default source host, not the first listed host", async () => {
   const db = makeDb();
   const taskId = createDraftTask(db, {
     projectId: "proj_1",
@@ -480,13 +487,29 @@ test("a hostless base-role task resolves a real host into an unmanaged workspace
   }).taskId;
   const task = db.prepare("SELECT id, project_id AS projectId, name, slug, draft_prompt AS draftPrompt, workflow_type AS workflowType, worktree_timing AS worktreeTiming, is_draft AS isDraft, archived, host_id AS hostId, base_environment_id AS baseEnvironmentId, worktree_environment_id AS worktreeEnvironmentId, default_directory AS defaultDirectory, provider_id AS providerId, model, reasoning_level AS reasoningLevel, service_tier AS serviceTier, permission_mode AS permissionMode, auto_advance AS autoAdvance, aa_questions_to_research, aa_research_to_design, aa_plan_to_worktree, aa_worktree_to_implementation, aa_implementation_to_pr, created_at AS createdAt, updated_at AS updatedAt FROM tasks WHERE id = ?").get(taskId) as never;
   let environment: unknown;
+  let spawned = false;
   const bb = {
     realtime: { publish: () => undefined },
     sdk: {
-      hosts: { list: async () => [{ id: "host_auto", name: "Local", status: "connected" }] },
+      hosts: { list: async () => [{ id: "host_first", name: "First", status: "connected" }, { id: "host_second", name: "Second", status: "connected" }] },
+      projects: {
+        get: async ({ projectId }: { projectId: string }) => ({
+          id: projectId,
+          name: "Proj",
+          kind: "standard" as const,
+          gitRemoteUrl: null,
+          createdAt: 1,
+          updatedAt: 1,
+          sources: [
+            { id: "src_1", projectId, hostId: "host_first", path: "/repo-first", type: "local_path" as const, isDefault: false, createdAt: 1, updatedAt: 1 },
+            { id: "src_2", projectId, hostId: "host_second", path: "/repo-second", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 },
+          ],
+        }),
+      },
       threads: {
         spawn: async (input: { environment: unknown }) => {
           environment = input.environment;
+          spawned = true;
           return makeThreadResponse({ id: "thr_new", environmentId: null, projectId: "proj_1", originPluginId: "humanlayer" });
         },
         get: async () => makeThreadResponse({ id: "thr_new", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }),
@@ -495,11 +518,12 @@ test("a hostless base-role task resolves a real host into an unmanaged workspace
     log: { warn: () => undefined },
   };
   await launchPhase(bb as never, db, new Map(), createLaunchBindingMirror(), task, { skillId: "create-research", launchedBy: "user", fromThreadId: null });
-  assert.deepEqual(environment, { type: "host", hostId: "host_auto", workspace: { type: "unmanaged", path: null } });
+  assert.equal(spawned, true);
+  assert.deepEqual(environment, { type: "host", hostId: "host_second", workspace: { type: "unmanaged", path: "/repo-second" } });
   db.close();
 });
 
-test("project-default is only used when no host can be resolved at all", async () => {
+test("a hostless base-role task with no project source and no task.hostId rejects the launch instead of spawning", async () => {
   const db = makeDb();
   const taskId = createDraftTask(db, {
     projectId: "proj_1",
@@ -515,14 +539,15 @@ test("project-default is only used when no host can be resolved at all", async (
     serviceTier: null,
   }).taskId;
   const task = db.prepare("SELECT id, project_id AS projectId, name, slug, draft_prompt AS draftPrompt, workflow_type AS workflowType, worktree_timing AS worktreeTiming, is_draft AS isDraft, archived, host_id AS hostId, base_environment_id AS baseEnvironmentId, worktree_environment_id AS worktreeEnvironmentId, default_directory AS defaultDirectory, provider_id AS providerId, model, reasoning_level AS reasoningLevel, service_tier AS serviceTier, permission_mode AS permissionMode, auto_advance AS autoAdvance, aa_questions_to_research, aa_research_to_design, aa_plan_to_worktree, aa_worktree_to_implementation, aa_implementation_to_pr, created_at AS createdAt, updated_at AS updatedAt FROM tasks WHERE id = ?").get(taskId) as never;
-  let environment: unknown;
+  let spawned = false;
   const bb = {
     realtime: { publish: () => undefined },
     sdk: {
-      hosts: { list: async () => [] },
+      hosts: { list: async () => [{ id: "host_first", name: "First", status: "connected" }] },
+      projects: { get: async () => ({ id: "proj_1", name: "Proj", kind: "standard" as const, gitRemoteUrl: null, createdAt: 1, updatedAt: 1, sources: [] }) },
       threads: {
-        spawn: async (input: { environment: unknown }) => {
-          environment = input.environment;
+        spawn: async () => {
+          spawned = true;
           return makeThreadResponse({ id: "thr_new", environmentId: null, projectId: "proj_1", originPluginId: "humanlayer" });
         },
         get: async () => makeThreadResponse({ id: "thr_new", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }),
@@ -530,7 +555,13 @@ test("project-default is only used when no host can be resolved at all", async (
     },
     log: { warn: () => undefined },
   };
-  await launchPhase(bb as never, db, new Map(), createLaunchBindingMirror(), task, { skillId: "create-research", launchedBy: "user", fromThreadId: null });
-  assert.deepEqual(environment, { type: "project-default" });
+  await assert.rejects(
+    launchPhase(bb as never, db, new Map(), createLaunchBindingMirror(), task, { skillId: "create-research", launchedBy: "user", fromThreadId: null }),
+    /no source host for project/,
+  );
+  assert.equal(spawned, false);
+  const attempts = db.prepare("SELECT status FROM launch_attempts WHERE task_id = ?").all(taskId) as Array<{ status: string }>;
+  assert.equal(attempts.length, 1);
+  assert.equal(attempts[0]!.status, "failed");
   db.close();
 });

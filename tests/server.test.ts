@@ -121,6 +121,17 @@ test("RPI launch RPC and CLI paths are enabled", async () => {
     pluginId: "humanlayer",
     sdk: {
       subscribe: () => () => undefined,
+      projects: {
+        get: async ({ projectId }: { projectId: string }) => ({
+          id: projectId,
+          name: "Proj",
+          kind: "standard" as const,
+          gitRemoteUrl: null,
+          createdAt: 1,
+          updatedAt: 1,
+          sources: [{ id: "src_1", projectId, hostId: "host_seed", path: "/repo", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 }],
+        }),
+      },
       threads: {
         spawn: async () => {
           spawns += 1;
@@ -167,5 +178,54 @@ test("RPI launch RPC and CLI paths are enabled", async () => {
   assert.equal(launched.exitCode, 0);
   assert.equal(launched.stdout.trim(), "thr_internal_3");
   assert.equal(spawns, 3);
+  await harness.lifecycle.dispose();
+});
+
+test("saveScratchPad is compare-and-swap on revision: stale write conflicts and reloads server text", async () => {
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "humanlayer",
+    sdk: { subscribe: () => () => undefined },
+  });
+  await plugin(bb);
+  const created = await harness.behavior.callRpc("createTask", {
+    request: { text: "prompt", projectId: "proj_1", workflowType: "freeform", worktreeTiming: "never", permissionMode: "default", autoAdvance: false },
+    name: "Task",
+    draft: true,
+  }) as { taskId: string };
+
+  const initial = await harness.behavior.callRpc("getTaskUiState", { taskId: created.taskId }) as { scratch?: string; scratchRevision?: number };
+  assert.equal(initial.scratch, "");
+  assert.equal(initial.scratchRevision, 0);
+
+  const saved = await harness.behavior.callRpc("saveScratchPad", {
+    taskId: created.taskId,
+    text: "first note",
+    expectedRevision: 0,
+  }) as { outcome: string; scratch?: string; scratchRevision?: number };
+  assert.equal(saved.outcome, "saved");
+  assert.equal(saved.scratch, "first note");
+  assert.equal(saved.scratchRevision, 1);
+
+  // Simulate a second tab racing on the stale (pre-save) revision.
+  const stale = await harness.behavior.callRpc("saveScratchPad", {
+    taskId: created.taskId,
+    text: "stale note from tab two",
+    expectedRevision: 0,
+  }) as { outcome: string; scratch?: string; scratchRevision?: number };
+  assert.equal(stale.outcome, "conflict");
+  // Conflict response carries the current server copy so the caller can reload instead of guessing.
+  assert.equal(stale.scratch, "first note");
+  assert.equal(stale.scratchRevision, 1);
+
+  // A save against the correct current revision still succeeds afterward.
+  const retried = await harness.behavior.callRpc("saveScratchPad", {
+    taskId: created.taskId,
+    text: "second note",
+    expectedRevision: 1,
+  }) as { outcome: string; scratch?: string; scratchRevision?: number };
+  assert.equal(retried.outcome, "saved");
+  assert.equal(retried.scratch, "second note");
+  assert.equal(retried.scratchRevision, 2);
+
   await harness.lifecycle.dispose();
 });

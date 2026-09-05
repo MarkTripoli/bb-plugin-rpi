@@ -168,8 +168,8 @@ function readTaskUiState(db: ReturnType<typeof openPluginDatabase>, taskId: stri
   const state = parsed.success ? parsed.data : {};
   // Scratch text lives in its own row (autosaved on every debounce tick) so a keystroke never
   // rewrites the dismissedTips/contextWarningDismissed blob.
-  const scratchRow = readRow<{ text: string }>(db, "SELECT text FROM scratch_pads WHERE task_id = ?", taskId);
-  return { ...state, scratch: scratchRow?.text ?? "" };
+  const scratchRow = readRow<{ text: string; revision: number }>(db, "SELECT text, revision FROM scratch_pads WHERE task_id = ?", taskId);
+  return { ...state, scratch: scratchRow?.text ?? "", scratchRevision: scratchRow?.revision ?? 0 };
 }
 
 function writeTaskUiState(db: ReturnType<typeof openPluginDatabase>, taskId: string, state: { dismissedTips?: Record<string, boolean>; contextWarningDismissed?: Record<string, boolean> }) {
@@ -181,14 +181,27 @@ function writeTaskUiState(db: ReturnType<typeof openPluginDatabase>, taskId: str
   );
 }
 
-function writeScratchPad(db: ReturnType<typeof openPluginDatabase>, taskId: string, text: string) {
-  writeRow(
-    db,
-    "INSERT INTO scratch_pads (task_id, text, updated_at) VALUES (?, ?, ?) ON CONFLICT(task_id) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at",
-    taskId,
-    text,
-    nowMs(),
-  );
+// CAS write: rejects when expectedRevision does not match the current row so two open tabs (or a
+// stale reload) never silently clobber each other's notes. Returns "conflict" with the current
+// server text/revision so the caller can reload instead of guessing.
+function saveScratchPadCas(db: ReturnType<typeof openPluginDatabase>, taskId: string, text: string, expectedRevision: number) {
+  return db.transaction(() => {
+    const existing = readRow<{ text: string; revision: number }>(db, "SELECT text, revision FROM scratch_pads WHERE task_id = ?", taskId);
+    const currentRevision = existing?.revision ?? 0;
+    if (currentRevision !== expectedRevision) {
+      return { outcome: "conflict" as const };
+    }
+    const nextRevision = currentRevision + 1;
+    writeRow(
+      db,
+      "INSERT INTO scratch_pads (task_id, text, revision, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(task_id) DO UPDATE SET text = excluded.text, revision = excluded.revision, updated_at = excluded.updated_at",
+      taskId,
+      text,
+      nextRevision,
+      nowMs(),
+    );
+    return { outcome: "saved" as const };
+  })();
 }
 
 function commentCliLines(threads: CommentThread[]) {
@@ -466,10 +479,10 @@ export default async function plugin(bb: BbPluginApi) {
       bb.realtime.publish("hl:ui-state", { taskId });
       return next;
     },
-    saveScratchPad: async ({ taskId, text }) => {
-      writeScratchPad(db, taskId, text);
+    saveScratchPad: async ({ taskId, text, expectedRevision }) => {
+      const { outcome } = saveScratchPadCas(db, taskId, text, expectedRevision);
       bb.realtime.publish("hl:ui-state", { taskId });
-      return readTaskUiState(db, taskId);
+      return { ...readTaskUiState(db, taskId), outcome };
     },
     dismissContextWarning: async ({ taskId, threadId }) => {
       const state = readTaskUiState(db, taskId);

@@ -525,11 +525,16 @@ export const taskUiStateSchema = z.object({
   // Backed by the dedicated `scratch_pads` table (see db.ts), merged in here for the client so one
   // RPC returns every per-task UI state field.
   scratch: z.string().optional(),
+  // CAS revision counter for the scratch pad row (0 when no row exists yet). saveScratchPad must
+  // echo this back so the client can detect a stale write.
+  scratchRevision: z.number().int().nonnegative().optional(),
 }).strict();
 export type TaskUiState = z.infer<typeof taskUiStateSchema>;
 export const dismissTaskTipInputSchema = z.object({ taskId: z.string().min(1), label: z.string().min(1) }).strict();
 export const viewingSessionInputSchema = z.object({ threadId: z.string().min(1), viewing: z.boolean() }).strict();
-export const saveScratchPadInputSchema = z.object({ taskId: z.string().min(1), text: z.string().max(20000) }).strict();
+export const SCRATCH_PAD_MAX_CHARS = 20000;
+export const saveScratchPadInputSchema = z.object({ taskId: z.string().min(1), text: z.string().max(SCRATCH_PAD_MAX_CHARS), expectedRevision: z.number().int().nonnegative() }).strict();
+export const saveScratchPadOutputSchema = taskUiStateSchema.extend({ outcome: z.enum(["saved", "conflict"]) });
 export const dismissContextWarningInputSchema = z.object({ taskId: z.string().min(1), threadId: z.string().min(1) }).strict();
 
 export const rpcContract = defineRpcContract({
@@ -551,7 +556,7 @@ export const rpcContract = defineRpcContract({
   },
   saveScratchPad: {
     input: saveScratchPadInputSchema,
-    output: taskUiStateSchema,
+    output: saveScratchPadOutputSchema,
   },
   dismissContextWarning: {
     input: dismissContextWarningInputSchema,

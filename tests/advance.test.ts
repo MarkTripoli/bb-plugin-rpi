@@ -56,6 +56,7 @@ function fakeBb() {
       realtime: { publish: () => undefined },
       log: { warn: () => undefined },
       sdk: {
+      projects: { get: async ({ projectId }: { projectId: string }) => ({ id: projectId, name: "Proj", kind: "standard" as const, gitRemoteUrl: null, createdAt: 1, updatedAt: 1, sources: [{ id: "src_1", projectId, hostId: "host_seed", path: "/repo", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 }] }) },
       threads: {
         interactions: { list: async () => [] },
         spawn: async (input: unknown) => {

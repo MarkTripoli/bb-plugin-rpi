@@ -16,14 +16,15 @@ test("scratch pad round trips through task_ui_state without disturbing dismissed
   }) as { taskId: string };
 
   await harness.behavior.callRpc("dismissTaskTip", { taskId: created.taskId, label: "research" });
-  const afterScratch = await harness.behavior.callRpc("saveScratchPad", { taskId: created.taskId, text: "hello world" }) as { scratch?: string; dismissedTips?: Record<string, boolean> };
+  const afterScratch = await harness.behavior.callRpc("saveScratchPad", { taskId: created.taskId, text: "hello world", expectedRevision: 0 }) as { scratch?: string; scratchRevision?: number; dismissedTips?: Record<string, boolean> };
   assert.equal(afterScratch.scratch, "hello world");
+  assert.equal(afterScratch.scratchRevision, 1);
   assert.equal(afterScratch.dismissedTips?.research, true, "saving scratch must not drop other task_ui_state fields");
 
   const refetched = await harness.behavior.callRpc("getTaskUiState", { taskId: created.taskId }) as { scratch?: string };
   assert.equal(refetched.scratch, "hello world");
 
-  const overwritten = await harness.behavior.callRpc("saveScratchPad", { taskId: created.taskId, text: "" }) as { scratch?: string };
+  const overwritten = await harness.behavior.callRpc("saveScratchPad", { taskId: created.taskId, text: "", expectedRevision: 1 }) as { scratch?: string };
   assert.equal(overwritten.scratch, "");
   await harness.lifecycle.dispose();
 });

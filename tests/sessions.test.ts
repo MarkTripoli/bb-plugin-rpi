@@ -125,6 +125,7 @@ function makeRuntimeBb(overrides: {
       realtime: { publish: () => undefined },
       sdk: {
         subscribe: () => () => undefined,
+        projects: { get: async ({ projectId }: { projectId: string }) => ({ id: projectId, name: "Proj", kind: "standard" as const, gitRemoteUrl: null, createdAt: 1, updatedAt: 1, sources: [{ id: "src_1", projectId, hostId: "host_seed", path: "/repo", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 }] }) },
         threads: {
           get: overrides.get ?? (async () => makeThreadResponse({ id: "thr_1", status: "idle", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } })),
           interactions: { list: overrides.interactions ?? (async () => []) },
@@ -326,6 +327,7 @@ test("system-injected initiating messages append summary without overwriting an 
     realtime: { publish: () => undefined },
     log: { warn: () => undefined },
     sdk: {
+      projects: { get: async ({ projectId }: { projectId: string }) => ({ id: projectId, name: "Proj", kind: "standard" as const, gitRemoteUrl: null, createdAt: 1, updatedAt: 1, sources: [{ id: "src_1", projectId, hostId: "host_seed", path: "/repo", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 }] }) },
       threads: {
         interactions: { list: async () => [] },
         spawn: async () => {
@@ -647,6 +649,7 @@ test("reconcile-first: a reconcile racing ahead of the idle event still auto-adv
         captured.subscribeCallback = opts.callback;
         return () => undefined;
       },
+      projects: { get: async ({ projectId }: { projectId: string }) => ({ id: projectId, name: "Proj", kind: "standard" as const, gitRemoteUrl: null, createdAt: 1, updatedAt: 1, sources: [{ id: "src_1", projectId, hostId: "host_seed", path: "/repo", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 }] }) },
       threads: {
         get: async ({ threadId }: { threadId: string }) => ({
           ...makeThreadResponse({ id: threadId, status: "idle", updatedAt: 2, environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }),
@@ -1138,6 +1141,7 @@ test("launch marker binds dispatch before spawn returns", async () => {
     pluginId: "humanlayer",
     sdk: {
       subscribe: () => () => undefined,
+      projects: { get: async ({ projectId }: { projectId: string }) => ({ id: projectId, name: "Proj", kind: "standard" as const, gitRemoteUrl: null, createdAt: 1, updatedAt: 1, sources: [{ id: "src_1", projectId, hostId: "host_seed", path: "/repo", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 }] }) },
       threads: {
         spawn: async () => spawnWait,
         get: async () => ({ ...threadResponse, environment: { id: "env_1", path: "/tmp/repo", status: "ready" }, environmentId: "env_1" }),

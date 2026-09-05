@@ -271,6 +271,10 @@ export const MIGRATIONS: string[] = [
   // was written). Lets reconcile and the idle handler share one idempotent pipeline instead of
   // the idle handler's own guard being satisfied by a reconcile that only stamped a summary.
   `ALTER TABLE sessions ADD COLUMN processed_turn_key TEXT`,
+  // CAS revision counter for the scratch pad textarea: saveScratchPad rejects a write whose
+  // expectedRevision does not match the current row so two open tabs never silently clobber
+  // each other's notes.
+  `ALTER TABLE scratch_pads ADD COLUMN revision INTEGER NOT NULL DEFAULT 0`,
 ];
 
 export function openPluginDatabase(bb: BbPluginApi): Database {
