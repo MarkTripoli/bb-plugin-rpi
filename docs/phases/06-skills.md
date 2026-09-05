@@ -169,3 +169,27 @@ dist/app.meta.json
 | rpi-agent-web-search-researcher | 5804 | 4430 | 16/13 heading blocks; query analysis, search, fetch/read, synthesize, source handling, output format, quality bar preserved as child-thread deliverable | 10/10; sourced external research, official/current sources first, version/date notes, links required, uncertainty stated, no artifact writes | None |
 | rpi-show-me | 3039 | 3708 | 0/6 heading blocks; original visual modes preserved and organized with bb step 0, artifact save, and final template flow | 2/16; smallest useful visual, pseudocode/call tree/component tree/file tree/Mermaid/diff/HTML options, concise prose, no unrelated artifacts | None |
 | rpi-review-artifact-comments | 4192 | 4789 | 6/6 heading blocks; tool availability, input cases, XML format, artifact read, comment fetch/read, ask-before-action, example behavior, notes preserved with bb step 0 | 28/24; ask unless instructed, work one thread at a time, resolve/reply/delete only on confirmation, reversible state changes, comment XML counterpart added | None |
+||||||| parent of 9fa9806 (skills(rpi-iterate-plan): deep rewrite)
+
+
+## Deep rewrite - lane 2
+
+| Skill | Original bytes | New bytes | Sections mirrored | Rules preserved (original / rewritten) | Intentionally dropped and why |
+|---|---:|---:|---|---:|---|
+| rpi-create-design-discussion | 7615 | 7865 | yes (7 original sections/steps, 6 rewritten sections/steps) | 28 / 36 | Claude/SKILLBASE/cloud-hook wording replaced with bb task tools, child threads, and artifact directives; no behavior dropped. |
+| rpi-iterate-design-discussion | 5142 | 5843 | yes (8 original sections/steps, 7 rewritten sections/steps) | 22 / 29 | Claude/SKILLBASE/cloud-hook wording replaced with bb task tools, child threads, and artifact directives; no behavior dropped. |
+| rpi-create-prd | 12224 | 8843 | yes (13 original sections/steps, 14 rewritten sections/steps) | 24 / 34 | Claude/SKILLBASE/cloud-hook wording replaced with bb task tools and bb child research commands; no behavior dropped. |
+| rpi-iterate-prd | 11275 | 8500 | yes (10 original sections/steps, 9 rewritten sections/steps) | 37 / 39 | Claude/SKILLBASE/cloud-hook wording replaced with bb task tools and bb child research commands; no behavior dropped. |
+| rpi-create-tdd | 17410 | 14705 | yes (16 original sections/steps, 17 rewritten sections/steps) | 27 / 59 | Claude/SKILLBASE/cloud-hook wording replaced with bb task tools and local HTML artifact template; no behavior dropped. |
+| rpi-iterate-tdd | 16177 | 12132 | yes (13 original sections/steps, 14 rewritten sections/steps) | 48 / 50 | Claude/SKILLBASE/cloud-hook wording replaced with bb task tools and local HTML artifact template; no behavior dropped. |
+| rpi-create-structure-outline | 9679 | 8442 | yes (12 original sections/steps, 10 rewritten sections/steps) | 39 / 36 | Claude/SKILLBASE/cloud-hook wording replaced with bb task tools, child threads, and auxiliary branch templates; no behavior dropped. |
+| rpi-iterate-structure-outline | 6984 | 6953 | yes (11 original sections/steps, 9 rewritten sections/steps) | 30 / 33 | Claude/SKILLBASE/cloud-hook wording replaced with bb task tools, child threads, and auxiliary branch templates; no behavior dropped. |
+| rpi-create-plan | 3999 | 4802 | yes (10 original sections/steps, 8 rewritten sections/steps) | 21 / 29 | Claude/SKILLBASE/cloud-hook wording replaced with bb task tools, child threads, and auxiliary branch templates; no behavior dropped. |
+| rpi-iterate-plan | 3918 | 4412 | yes (9 original sections/steps, 7 rewritten sections/steps) | 25 / 30 | Claude/SKILLBASE/cloud-hook wording replaced with bb task tools, child threads, and auxiliary branch templates; no behavior dropped. |
+
+Verification for this rewrite pass:
+
+```text
+npm test: 102 pass, 0 fail
+bb plugin build: dist/server.js, dist/app.js, and metadata/css artifacts emitted
+```
