@@ -190,7 +190,7 @@ Important: do not read `task.md`, `ticket.md`, design artifacts, plans, PR descr
    references/research_final_answer.md
    ```
 
-   Respond using that template only. Include the saved artifact directive and mention open-question count only in the template's designated place. For `outline_only`, end with `/rpi-create-structure-outline`; for `rpi`, end with `/rpi-create-design-discussion`.
+   Respond using that template only. Include the saved artifact directive and mention open-question count only in the template's designated place. The last lines must be one fenced `text` block copied from the template, not an inline command. For `outline_only`, end with `/rpi-create-structure-outline`; for `rpi`, end with `/rpi-create-design-discussion`.
 
 10. **Handle follow-up research in place**
 
