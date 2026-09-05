@@ -1,19 +1,22 @@
-# Implementation Notes
+# Implementation Iteration Receipt
 
-## Source Artifact
-- file:
-- version:
+## Source
+- task:
+- plan or outline:
+- feedback:
+- comments:
 
-## Child Threads
-- implementer:
-- reviewer:
+## Current State
+- branch:
+- previous implementation point:
+- relevant diff:
 
-## Changes
+## Changes Made
 -
 
 ## Verification
 - command:
 - result:
 
-## Human Gate
-State whether the code is ready for commit and proceed approval.
+## Remaining Work
+List any manual checks, unresolved comments, or blockers.
