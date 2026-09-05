@@ -4,8 +4,8 @@ Artifact saved:
 Summary:
 {summary}
 
-Auto-advance does not apply at this gate. Continue manually with:
+Auto-advance does not apply at this workspace gate. Continue manually with:
 
 ```text
-/rpi-implement-plan
+/rpi-implement-plan @{artifact_file}
 ```

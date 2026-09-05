@@ -1,29 +1,147 @@
 ---
 name: rpi-setup-worktree
-description: Only use when the user explicitly invokes /rpi-setup-worktree. Set up the worktree.
+description: Only use when the user explicitly invokes /rpi-setup-worktree. Verify and finish task workspace setup inside the current bb environment.
 ---
 
-# Setup Worktree
+## Steps to Follow
 
-## Steps
+### Step 0: Decide whether setup is skipped
 
-0. Call hl_task_context and read its output before any file read. Use the returned task directory, task slug, artifact list, and model hints.
-1. Read task.md or ticket.md from the task directory, plus every explicit @-mentioned file in full.
-2. If an artifact number is needed, call hl_next_artifact_number and use the returned number in NN-workspace-setup-short-slug.md.
-3. Read references/worktree_template.md and draft the artifact in that shape.
-4. Write or update the artifact under .humanlayer/tasks/<slug>/.
-5. Call hl_artifact_save with the artifact file name immediately after writing. Save the returned ::hl-artifact{...} line for your final answer.
-6. Read references/worktree_final_answer.md and answer using that structure exactly. The final answer must end with one fenced text block containing /rpi-implement-plan.
+Call `hl_task_context` before reading files. Use its task directory, task slug, artifact list, workspace data, bb environment id, provider, and model preferences.
 
-## Rules
+Read workspace configuration from the repository root when present:
 
-- Do not open unrelated task artifacts. Use only task.md, ticket.md, @ files, and comments the user asked you to inspect.
-- For workspace.json, keep the documented schema. In a worktree thread, perform copyGlobs and setupCommand and record the exact evidence. Do not run git worktree yourself.
-- For child research, spawn codebase-locator, codebase-analyzer, codebase-pattern-finder, and web-search-researcher as useful. Use:
+```text
+.humanlayer/workspace.json
+.humanlayer/workspace.local.json
+```
 
-  bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <cheap research model from hl_task_context prefs> --prompt "/rpi-agent-<role> <short assignment>"
-  bb thread wait <id>
-  bb thread output <id>
+The local file overrides shared config. If the effective root config has `disabled: true`, do not continue with setup unless the user explicitly asks you to override it.
 
-- Spawn all independent child threads first, then wait for each one and summarize only their results.
-- Treat tool or CLI errors as blockers, not as permission to write untracked side files.
+When setup is disabled, ensure the current branch is suitable for the task if the repository is writable, then answer with a manual implementation handoff. Include a one-line note that auto-advance does not apply:
+
+```text
+/rpi-implement-outline
+```
+
+Next, check whether the current bb environment is already a managed worktree:
+
+```bash
+bb environment show $BB_ENVIRONMENT_ID
+git rev-parse --git-dir
+```
+
+If the git dir shows you are already inside a worktree, do not request another worktree. bb owns worktree creation through task launch. Report the current path and continue with the implementation handoff unless the user asks for a different environment.
+
+### Step 1: Gather required task information
+
+Use the task slug from `hl_task_context`. Read `task.md` or `ticket.md`, then read the selected implementation source artifact when present:
+
+- plan artifact for `/rpi-implement-plan`
+- structure outline for `/rpi-implement-outline`
+
+List the task directory with `ls -La .humanlayer/tasks/<task-slug>` if the source artifact is not already known. Do not use glob-only discovery for task mirrors because they may be symlinks.
+
+### Step 2: Create default config only when none exists
+
+Run this step only if neither workspace config file exists.
+
+Check whether the repository has an old setup script or documented worktree convention. Read only targeted files such as:
+
+```text
+scripts/create_worktree.sh
+README.md
+Makefile
+package.json
+```
+
+If no convention exists, write `.humanlayer/workspace.json` using the documented schema:
+
+```json
+{
+  "repos": [
+    {
+      "localPath": ".",
+      "description": "Selected repository",
+      "primary": true
+    }
+  ],
+  "disabled": false,
+  "sourceRef": "HEAD",
+  "branchTemplate": "{{ TASKSLUG }}",
+  "pathTemplate": "~/.humanlayer/workspaces/{{ TASKSLUG }}/{{ REPOBASENAME }}",
+  "setupCommand": "",
+  "copyGlobs": [
+    ".humanlayer/workspace.local.json",
+    "CLAUDE.local.md",
+    ".env*",
+    ".claude/settings.local.json"
+  ]
+}
+```
+
+For multi-repo tasks, add sibling repos with relative `localPath` values and exactly one `primary: true`. `localPath: "."` means the repository containing the config.
+
+After writing either workspace config, call `hl_artifact_save` only if the file is inside the task directory. Repository config files are normal repository files and should be committed through the regular git flow, not saved as task artifacts.
+
+### Step 3: Apply setup in the current bb worktree
+
+Do not run `git worktree add`. The plugin launcher creates or reuses the bb environment according to task settings. This skill verifies that environment and performs the file-copy and setup-command steps that the workspace config describes.
+
+Resolve the effective config:
+
+- Defaults.
+- `.humanlayer/workspace.json`.
+- `.humanlayer/workspace.local.json`.
+- Per-repo overrides.
+
+Use only `{{ TASKSLUG }}` and `{{ REPOBASENAME }}` template variables. Treat unsupported variables as a configuration error.
+
+For each repo entry:
+
+#### Step 3.1: Verify the repo worktree
+
+Confirm the local path exists and is a git repository:
+
+```bash
+ls -la <localPath>
+git -C <localPath> rev-parse --git-dir
+git -C <localPath> status --short --branch
+```
+
+Compare `sourceRef`, requested path template, and branch template with the current bb environment. bb may choose the actual worktree path and branch name; report requested vs actual instead of trying to rename them.
+
+#### Step 3.2: Copy configured files
+
+Build `copyGlobs` additively with de-duplication. Copy only files that exist in the source checkout and are safe to copy. Preserve the relative path under the target worktree.
+
+Record for each pattern:
+
+- files copied
+- no-match patterns
+- skipped directories or unreadable files
+- files already present and left untouched
+
+Do not copy dependency directories such as `node_modules` unless the user explicitly configured them and confirms the cost.
+
+#### Step 3.3: Run the setup command
+
+If `setupCommand` is non-empty, run it from the repo's worktree path. Capture the command, exit status, and bounded output.
+
+If the command fails, stop before Step 4. Report the failure and work with the user on retrying, skipping, or changing the config.
+
+### Step 4: Report success only after setup is complete
+
+Only use this step if every configured repo has been verified and every setup command succeeded or was intentionally skipped by the user.
+
+Create a setup receipt with `references/worktree_template.md`. If it is saved as a task artifact, call `hl_next_artifact_number`, write `NN-worktree-setup-*.md`, then call `hl_artifact_save`.
+
+Read `references/worktree_final_answer.md` and answer using that template. The final answer must include the saved artifact directive and end with exactly one fenced `text` block containing the manual next command. Auto-advance does not apply at this gate.
+
+## Additional Rules
+
+- Keep `.humanlayer/workspace.json` compatible with the schema described in the research docs.
+- Keep `.humanlayer/workspace.local.json` for machine-specific overrides and ensure it is gitignored when created.
+- Multi-repo setup is sequential in this plugin. Record every repo result.
+- Do not claim the workspace exists merely because config exists; verify the current bb environment.
+- Do not read unrelated task artifacts. Use the task file, the selected plan or outline, explicit `@file` arguments, and comments the user asked about.
