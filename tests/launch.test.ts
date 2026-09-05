@@ -31,6 +31,29 @@ function seedTask(db: Database.Database) {
   }).taskId;
 }
 
+test("a failed attempt not yet retried can be retried; an already-retried failed attempt cannot", async () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  db.prepare("INSERT INTO launch_attempts (id, task_id, from_thread_id, skill_id, command_line, label, environment_role, launched_by, status, thread_id, created_at) VALUES (?, ?, 'thr_source', 'setup-worktree', '/rpi-setup-worktree', 'worktree-setup', 'worktree', 'auto_advance', 'failed', NULL, ?)")
+    .run("attempt_1", taskId, 1);
+  let spawns = 0;
+  const bb = {
+    realtime: { publish: () => undefined },
+    sdk: { threads: { spawn: async () => { spawns += 1; return makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }); }, get: async () => makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }) } },
+    log: { warn: () => undefined },
+  };
+  await resolveLaunchAttempt(bb as never, db, new Map(), createLaunchBindingMirror(), "attempt_1", { type: "retry" });
+  assert.equal(spawns, 1);
+  const attempts = db.prepare("SELECT id, status, retried_from AS retriedFrom FROM launch_attempts ORDER BY created_at, id").all() as Array<{ id: string; status: string; retriedFrom: string | null }>;
+  assert.equal(attempts[0]!.status, "failed");
+  assert.equal(attempts[1]!.status, "spawned");
+  assert.equal(attempts[1]!.retriedFrom, "attempt_1");
+  // The now-superseded failed attempt cannot be retried a second time.
+  await resolveLaunchAttempt(bb as never, db, new Map(), createLaunchBindingMirror(), "attempt_1", { type: "retry" });
+  assert.equal(spawns, 1);
+  db.close();
+});
+
 test("resolved launch attempts are no-ops", async () => {
   const db = makeDb();
   const taskId = seedTask(db);
@@ -170,6 +193,32 @@ test("adopt stores worktree environment when the attempt role is worktree", asyn
   const task = db.prepare("SELECT worktree_environment_id AS worktreeEnvironmentId, base_environment_id AS baseEnvironmentId FROM tasks WHERE id = ?").get(taskId) as { worktreeEnvironmentId: string | null; baseEnvironmentId: string | null };
   assert.equal(task.worktreeEnvironmentId, "env_worktree");
   assert.equal(task.baseEnvironmentId, null);
+  db.close();
+});
+
+test("adopting a launch attempt supersedes its origin thread's failed-advance recovery notification", async () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  db.prepare("INSERT INTO launch_attempts (id, task_id, from_thread_id, skill_id, command_line, label, environment_role, launched_by, status, thread_id, created_at) VALUES (?, ?, 'thr_source', 'setup-worktree', '/rpi-setup-worktree', 'worktree-setup', 'worktree', 'auto_advance', 'uncertain', NULL, ?)")
+    .run("attempt_1", taskId, 1);
+  db.prepare("INSERT INTO notifications (id, thread_id, kind, dedupe_key, reason, sound, created_at, delivered_at) VALUES ('n1', 'thr_source', 'ready_after_failed_advance', 'ready-recover:thr_source:turn_1', 'notify', 1, 1, 1)").run();
+  const thread = makeThreadResponse({ id: "thr_adopt", projectId: "proj_1", createdAt: 2, originPluginId: "humanlayer" });
+  const published: unknown[] = [];
+  const bb = {
+    pluginId: "humanlayer",
+    realtime: { publish: (topic: string, payload: unknown) => { if (topic === "hl:notify") published.push(payload); } },
+    sdk: {
+      threads: {
+        list: async () => [thread],
+        get: async () => ({ ...thread, environmentId: "env_worktree", environment: { id: "env_worktree", path: "/tmp/repo", status: "ready" } }),
+        interactions: { list: async () => [] },
+      },
+    },
+  };
+  await resolveLaunchAttempt(bb as never, db, new Map(), createLaunchBindingMirror(), "attempt_1", { type: "adopt", threadId: "thr_adopt" });
+  const notification = db.prepare("SELECT superseded_at AS supersededAt FROM notifications WHERE id = 'n1'").get() as { supersededAt: number | null };
+  assert.notEqual(notification.supersededAt, null);
+  assert.deepEqual(published, [{ kind: "dismiss", notificationId: "n1" }]);
   db.close();
 });
 

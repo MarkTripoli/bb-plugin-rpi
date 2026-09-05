@@ -19,6 +19,7 @@ import {
   type SessionMirrorRow,
 } from "./sessions";
 import { TASK_CONTEXT_FIRST_ACTION } from "./instructions";
+import { supersedeReadyRecoverNotification } from "./notify";
 
 type Database = BetterSqlite3.Database;
 
@@ -512,7 +513,14 @@ export async function resolveLaunchAttempt(
   return withTaskLock(attempt.taskId, async () => {
     const fresh = readLaunchAttempt(db, id);
     if (!fresh) throw new Error(`No launch attempt found for id ${id}`);
-    if (fresh.status !== "pending" && fresh.status !== "uncertain") return currentAttemptResult(db, fresh);
+    // A failed attempt that has not itself already been retried (retryMarker null) is resolvable
+    // via retry (item 5: Launch Attempts shows failed rows with a Retry action, matching the
+    // recovery toast's "Retry it from Launch Attempts"). Adopt and dismiss, and retrying an
+    // already-retried failed attempt, stay no-ops.
+    const retryableFailed = fresh.status === "failed" && fresh.retryMarker === null && action.type === "retry";
+    if (fresh.status !== "pending" && fresh.status !== "uncertain" && !retryableFailed) {
+      return currentAttemptResult(db, fresh);
+    }
     if (action.type === "dismiss") {
       const claimed = writeRow(db, "UPDATE launch_attempts SET status = 'failed' WHERE id = ? AND status IN ('pending', 'uncertain')", id).changes === 1;
       clearPendingLaunch(bindings, id);
@@ -561,6 +569,9 @@ export async function resolveLaunchAttempt(
       }
       mirrorSession(db, mirror, action.threadId);
       await reconcileSession(bb, db, mirror, action.threadId);
+      // The failed-advance recovery toast (if any) for the thread this was adopted to replace is
+      // now moot: the user resolved it by adopting an orphaned thread.
+      if (fresh.fromThreadId) supersedeReadyRecoverNotification(bb, db, fresh.fromThreadId);
       return { threadId: action.threadId };
     }
     const task = readTaskOrThrow(db, fresh.taskId);
@@ -568,7 +579,7 @@ export async function resolveLaunchAttempt(
     const claimed = db.transaction(() => {
       const claim = writeRow(
         db,
-        "UPDATE launch_attempts SET status = 'retrying', retry_marker = ? WHERE id = ? AND status IN ('pending', 'uncertain')",
+        "UPDATE launch_attempts SET status = 'retrying', retry_marker = ? WHERE id = ? AND status IN ('pending', 'uncertain', 'failed') AND retry_marker IS NULL",
         retryMarker,
         id,
       );
