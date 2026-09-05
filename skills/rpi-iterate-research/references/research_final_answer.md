@@ -6,8 +6,8 @@ Summary:
 
 If you want to review it first, open the updated research artifact from the task sidebar.
 
-When you are ready for the design phase, start:
+When you are ready for the structure phase, start:
 
 ```text
-/rpi-create-design-discussion
+/rpi-create-structure-outline
 ```

@@ -3,25 +3,25 @@
 Write `.humanlayer/workspace.json` with this schema after the user accepts the proposal.
 
 {
-  "disabled": false,
-  "pathTemplate": "~/.humanlayer/workspaces/{{ TASKSLUG }}/{{ REPOBASENAME }}",
-  "branchTemplate": "{{ TASKSLUG }}",
-  "sourceRef": "origin/main",
-  "setupCommand": "",
-  "copyGlobs": [
-    ".env",
-    ".env.local",
-    ".env.development.local",
-    ".claude/settings.local.json",
-    ".humanlayer/workspace.local.json"
-  ],
   "repos": [
     {
       "localPath": ".",
       "description": "Selected repository",
       "primary": true
     }
-  ]
+  ],
+  "sourceRef": "origin/main",
+  "branchTemplate": "{{ TASKSLUG }}",
+  "pathTemplate": "~/.humanlayer/workspaces/{{ TASKSLUG }}/{{ REPOBASENAME }}",
+  "setupCommand": "",
+  "copyGlobs": [
+    ".humanlayer/workspace.local.json",
+    ".env.local",
+    ".env.development.local",
+    ".claude/settings.local.json",
+    ".env"
+  ],
+  "disabled": false
 }
 
 ## Validation

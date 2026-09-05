@@ -7,5 +7,5 @@ Summary:
 The implementation commit step is complete. Continue with:
 
 ```text
-/rpi-describe-pr @{artifact_file}
+/rpi-describe-pr{artifact_arg}
 ```

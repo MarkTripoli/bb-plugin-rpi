@@ -1,6 +1,6 @@
 ---
 name: rpi-iterate-prd
-description: Only use when the user explicitly invokes /rpi-iterate-prd. Refine an existing Product Requirements Document artifact.
+description: Run for /rpi-iterate-prd requests. Refine an existing Product Requirements Document artifact.
 ---
 
 # Iterate PRD
@@ -76,6 +76,8 @@ bb thread output <thread-id>
 
 Role mapping: locator finds files and tests, analyzer explains current behavior, pattern finder finds local precedents, and web researcher checks external behavior or current documentation. The child thread's final message is the deliverable. Use only findings you have read from `bb thread output`.
 
+If a child thread or direct read discovers current-state facts that are missing or stale in the completed research artifact, fold those discoveries back into that research artifact before finalizing the PRD. Save the updated research artifact with `hl_artifact_save`, then continue the PRD from the corrected context.
+
 4. **Update the PRD**:
    - Edit the target artifact in place.
    - Preserve frontmatter and the template's major sections.
@@ -85,7 +87,7 @@ Role mapping: locator finds files and tests, analyzer explains current behavior,
 5. **Update mockups when feedback changes visuals**:
    - Edit existing HTML mockups when they represent the same decision.
    - Create a new mockup only when the feedback introduces a distinct UI choice.
-   - Re-embed mockups with task-artifact blocks.
+   - Re-embed mockups with `::hl-artifact{...}` embeds.
 
 6. **Stop and ask what is next**:
    - After incorporating feedback, stop.

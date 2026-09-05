@@ -1,6 +1,6 @@
 ---
 name: rpi-create-research-questions
-description: Only use when the user explicitly invokes /rpi-create-research-questions. Draft a neutral query plan for the research phase.
+description: Run for /rpi-create-research-questions requests. Draft a neutral query plan for the research phase.
 ---
 
 # Research Planning Phase
@@ -17,7 +17,7 @@ Use the returned task directory, artifact inventory, artifact directive guidance
 
 Do not infer the task directory from old paths, thread titles, or previous messages when `hl_task_context` provides it.
 
-## Steps to follow after receiving the user's request
+## Research-planning workflow
 
 1. **Read every explicit input immediately and completely**
 

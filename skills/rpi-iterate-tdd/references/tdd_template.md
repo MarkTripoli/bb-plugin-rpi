@@ -1,9 +1,9 @@
 ---
 task: eng-xxxx-description
 type: design-tdd
-repo: [current repository]
-branch: [current branch name]
-sha: [result of git rev-parse HEAD]
+repo: [repository name]
+branch: [branch name]
+sha: [current commit]
 ---
 
 # [TDD Title]
@@ -41,10 +41,22 @@ entrypoint
   reportResult
 ```
 
+### Type Definitions
+
+[Interfaces, schemas, message shapes, component props, command inputs, or returned values that define the implementation boundary.]
+
+### Configuration
+
+[Settings, environment variables, feature flags, migrations, generated files, or setup changes needed for the design.]
+
+### Error Handling
+
+[Expected failure modes, validation errors, retries, rollback behavior, empty states, and user-visible recovery paths.]
+
 ### What We're Not Doing
 
-[Technical scope intentionally excluded. Remove this section if there is nothing meaningful to exclude.]
+[Intentional technical non-goals. Omit this section when there are none.]
 
-### Patterns to Follow
+### Local Patterns
 
-[Existing codebase patterns, with file locations and short snippets.]
+[Relevant repository examples, cited with paths and compact excerpts.]

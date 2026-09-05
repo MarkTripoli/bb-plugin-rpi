@@ -6,5 +6,5 @@ The design discussion has been updated and still has open questions. Work throug
 Auto-advance does not apply at this human gate. Continue manually with:
 
 ```text
-/rpi-iterate-design-discussion @{artifact_file}
+/rpi-iterate-design-discussion{artifact_arg}
 ```

@@ -1,6 +1,6 @@
 ---
 name: rpi-create-prd
-description: Only use when the user explicitly invokes /rpi-create-prd. Create a guided Product Requirements Document artifact.
+description: Run for /rpi-create-prd requests. Create a guided Product Requirements Document artifact.
 ---
 
 # PRD Phase
@@ -82,7 +82,7 @@ Ask one product decision at a time. For each decision:
 
 1. State the decision clearly.
 2. Present two or three options with tradeoffs and a recommendation.
-3. Use an HTML mockup for visual UI choices and display it with a task-artifact block.
+3. Use an HTML mockup for visual UI choices and display it with a `::hl-artifact{...}` embed.
 4. Discuss until the decision is resolved.
 5. Rework Proposed Solution, Solution Details, Alternative Solutions Considered, Out of Scope, and mockups so the document remains cohesive.
 
@@ -118,6 +118,8 @@ bb thread output <thread-id>
 ```
 
 Role mapping: locator finds files and tests, analyzer explains current behavior, pattern finder finds local precedents, and web researcher checks external behavior or current documentation. The child thread's final message is the deliverable. Use only findings you have read from `bb thread output`.
+
+If a child thread or direct read discovers current-state facts that are missing or stale in the completed research artifact, fold those discoveries back into that research artifact before finalizing the PRD. Save the updated research artifact with `hl_artifact_save`, then continue the PRD from the corrected context.
 
 ## Artifact and Reading Rules
 

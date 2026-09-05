@@ -1,6 +1,6 @@
 ---
 name: rpi-review-artifact-comments
-description: Only use when the user explicitly invokes /rpi-review-artifact-comments. Review artifact comments and act only with explicit user direction.
+description: Run for /rpi-review-artifact-comments requests. Review artifact comments and act only with explicit user direction.
 ---
 
 # Review Artifact Comments
@@ -17,7 +17,7 @@ The available comment tools are:
 
 - `hl_get_artifact_comments`
 - `hl_update_artifact_comments`
-- `hl_reply_artifact_comment`
+- `hl_reply_to_artifact_comment`
 
 If these tools are unavailable or `hl_task_context` says the thread is not attached to a task, tell the user that comment tools are not available in this session and ask them to move to a task session with artifact access.
 
@@ -85,7 +85,7 @@ when you need a reminder of the XML shape.
 
    If replying:
 
-   - use `hl_reply_artifact_comment`
+   - use `hl_reply_to_artifact_comment`
    - keep replies specific to the comment
    - do not use replies to hide unresolved decisions
 

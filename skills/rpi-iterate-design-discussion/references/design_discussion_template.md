@@ -1,9 +1,9 @@
 ---
 task: eng-xxxx-description
 type: design-discussion
-repo: [current repository]
-branch: [current branch name]
-sha: [result of git rev-parse HEAD]
+repo: [repository name]
+branch: [branch name]
+sha: [current commit]
 ---
 
 ### Summary of change request

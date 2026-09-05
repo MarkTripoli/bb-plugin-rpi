@@ -6,5 +6,5 @@ The program design is ready for review. Resolve any code-shape concerns before c
 Auto-advance does not apply at this human gate. Continue manually with:
 
 ```text
-/rpi-iterate-tdd @{artifact_file}
+/rpi-iterate-tdd{artifact_arg}
 ```

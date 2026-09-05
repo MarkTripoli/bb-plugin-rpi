@@ -1,20 +1,20 @@
 ---
-date: [Current date and time with timezone in ISO format]
-git_commit: [Current commit hash]
-branch: [Current branch name]
-repository: [Repository name]
-topic: "[Research topic]"
+date: [ISO timestamp]
+git_commit: [commit]
+branch: [branch]
+repository: [repo]
+topic: "[topic]"
 type: research
 tags: [research, codebase]
 status: complete
 ---
 
-# Research: [Research topic]
+# Research: [topic]
 
-**Date**: [Current date and time with timezone]
-**Git Commit**: [Current commit hash]
-**Branch**: [Current branch name]
-**Repository**: [Repository name]
+**Date**: [timestamp]
+**Git Commit**: [commit]
+**Branch**: [branch]
+**Repository**: [repo]
 
 ## Research Question
 

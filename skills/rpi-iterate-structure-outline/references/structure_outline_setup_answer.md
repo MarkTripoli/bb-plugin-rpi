@@ -6,5 +6,5 @@ The implementation outline has been updated. Check the phase order and validatio
 Auto-advance does not apply at this human gate. Continue manually with:
 
 ```text
-/rpi-setup-worktree @{artifact_file}
+/rpi-setup-worktree{artifact_arg}
 ```

@@ -1,6 +1,6 @@
 ---
 name: rpi-setup-worktree
-description: Only use when the user explicitly invokes /rpi-setup-worktree. Verify and finish task workspace setup inside the current bb environment.
+description: Run for /rpi-setup-worktree requests. Verify and finish task workspace setup inside the current bb environment.
 ---
 
 ## Steps to Follow
@@ -18,11 +18,7 @@ Read workspace configuration from the repository root when present:
 
 The local file overrides shared config. If the effective root config has `disabled: true`, do not continue with setup unless the user explicitly asks you to override it.
 
-When setup is disabled, ensure the current branch is suitable for the task if the repository is writable, then answer with a manual implementation handoff. Include a one-line note that auto-advance does not apply:
-
-```text
-/rpi-implement-outline
-```
+When setup is disabled, ensure the current branch is suitable for the task if the repository is writable, then answer with a manual implementation handoff. Use `/rpi-implement-outline` for `outline_only`; use `/rpi-implement-plan` for every other workflow.
 
 Next, check whether the current bb environment is already a managed worktree:
 
@@ -31,7 +27,7 @@ bb environment show $BB_ENVIRONMENT_ID
 git rev-parse --git-dir
 ```
 
-If the git dir shows you are already inside a worktree, do not request another worktree. bb owns worktree creation through task launch. Report the current path and continue with the implementation handoff unless the user asks for a different environment.
+If the git dir shows you are already inside a worktree, that is the normal path. Do not request another worktree. Continue with the setup work in the current worktree: resolve workspace config from the base path reported by `hl_task_context`, apply copyGlobs, run setupCommand, and verify the branch.
 
 ### Step 1: Gather required task information
 
@@ -54,6 +50,8 @@ README.md
 Makefile
 package.json
 ```
+
+If a legacy setup script or documented task-worktree command exists, read its usage, ask before running it, run it only against the current bb worktree, then verify branch and setup output before continuing. Do not let a legacy script create a second worktree unless the user explicitly requests that escape hatch.
 
 If no convention exists, write `.humanlayer/workspace.json` using the documented schema:
 
@@ -86,7 +84,7 @@ After writing either workspace config, call `hl_artifact_save` only if the file 
 
 ### Step 3: Apply setup in the current bb worktree
 
-Do not run `git worktree add`. The plugin launcher creates or reuses the bb environment according to task settings. This skill verifies that environment and performs the file-copy and setup-command steps that the workspace config describes.
+Do not run `git worktree add`. The plugin launcher creates or reuses the bb environment according to task settings. This skill verifies that environment and performs the file-copy and setup-command steps that the workspace config describes. Use `workspace.defaultDirectory` from `hl_task_context` as the source checkout for copyGlobs when it is present; otherwise use the repository root of the base task environment.
 
 Resolve the effective config:
 
@@ -135,6 +133,8 @@ If the command fails, stop before Step 4. Report the failure and work with the u
 Only use this step if every configured repo has been verified and every setup command succeeded or was intentionally skipped by the user.
 
 Create a setup receipt with `references/worktree_template.md`. If it is saved as a task artifact, call `hl_next_artifact_number`, write `NN-worktree-setup-*.md`, then call `hl_artifact_save`.
+
+Derive `{implementation_command}` from `hl_task_context.task.workflow`: `/rpi-implement-outline` for `outline_only`, otherwise `/rpi-implement-plan`.
 
 Read `references/worktree_final_answer.md` and answer using that template. The final answer must include the saved artifact directive and end with exactly one fenced `text` block containing the manual next command. Auto-advance does not apply at this gate.
 

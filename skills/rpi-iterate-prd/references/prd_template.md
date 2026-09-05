@@ -1,26 +1,26 @@
 ---
 task: eng-xxxx-description
 type: design-prd
-repo: [current repository]
-branch: [current branch name]
-sha: [result of git rev-parse HEAD]
+repo: [repository name]
+branch: [branch name]
+sha: [current commit]
 ---
 
 # [PRD Title]
 
 ### Problem to Solve
 
-[State the user pain, product gap, or business need. Keep this in product language, not implementation language.]
+[Describe the product problem and user impact without implementation details.]
 
 - [What users see today]
 - [Where the current workflow breaks down]
 - [Why the problem matters]
 
-### What does business success look like, and how can we measure it?
+### Success Measures
 
-- [What will be true after shipping]
-- [The signal that tells us the change helped]
-- [Expected user behavior, operational outcome, benchmark, or qualitative review]
+- [Post-launch state]
+- [Metric or observation that proves impact]
+- [Behavioral, operational, benchmark, or review evidence]
 - [Experiment or feature-flag reference if relevant]
 
 ### Proposed Solution
@@ -43,9 +43,7 @@ sha: [result of git rev-parse HEAD]
 
 [Behavior and edge cases.]
 
-```task-artifact
-.humanlayer/tasks/{task-slug}/mockup-{description}.html
-```
+::hl-artifact{task="{task-id}" file="mockup-{description}.html"}
 
 [Explain what the mockup demonstrates.]
 

@@ -1,6 +1,6 @@
 ---
 name: rpi-create-design-discussion
-description: Only use when the user explicitly invokes /rpi-create-design-discussion. Create a design discussion artifact from task and research context.
+description: Run for /rpi-create-design-discussion requests. Create a design discussion artifact from task and research context.
 ---
 
 # Design Discussion Phase
@@ -54,7 +54,7 @@ Role mapping: locator finds files and tests, analyzer explains current behavior,
    - Call `hl_next_artifact_number`.
    - Write `NN-design-discussion-<slug>.md` in the task directory.
    - Keep frontmatter fields compatible with the template: task, type, repo, branch, and sha.
-   - Include Summary of change request, Current State, Desired End State, What we're not doing, Proposed End State Architecture, Design Questions, Resolved Design Questions, and Patterns to follow.
+   - Include the request summary, present behavior, intended outcome, excluded scope, proposed architecture, open decisions, settled decisions, and patterns to follow.
 
 <content_guidance>
 

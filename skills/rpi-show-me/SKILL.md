@@ -1,6 +1,6 @@
 ---
 name: rpi-show-me
-description: Only use when the user explicitly invokes /rpi-show-me. Explain the current topic visually with compact diagrams or a focused HTML artifact.
+description: Run for /rpi-show-me requests. Explain the current topic visually with compact diagrams or a focused HTML artifact.
 ---
 
 # Show Me

@@ -16,14 +16,12 @@ Use the smallest visual that explains the current decision. Keep prose short and
 Example file tree:
 
 ```text
-src/
-├── commands/       # parses user actions
-├── sessions/       # owns session state
-└── transport/      # sends API requests
+packages/
+├── billing/        # invoice and subscription flows
+├── ledger/         # persisted account movements
+└── notifier/       # outbound receipt delivery
 ```
 
 Example task artifact embed:
 
-```task-artifact
-.humanlayer/tasks/{task-slug}/show-me-{description}.html
-```
+::hl-artifact{task="{task-id}" file="show-me-{description}.html"}

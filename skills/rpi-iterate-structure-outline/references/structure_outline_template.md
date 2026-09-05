@@ -1,9 +1,9 @@
 ---
 task: eng-xxxx-description
 type: structure-outline
-repo: [current repository]
-branch: [current branch name]
-sha: [result of git rev-parse HEAD]
+repo: [repository name]
+branch: [branch name]
+sha: [current commit]
 ---
 
 # [Plan Title]
@@ -15,14 +15,14 @@ sha: [result of git rev-parse HEAD]
 - [What is true when the work is complete]
 - [How the completed behavior can be recognized]
 
-## Implementation Overview
+## Phase Checklist
 
-- [ ] Phase 1: [Phase Title]
-- [ ] Phase 2: [Phase Title]
+- [ ] Step 1: [Work area]
+- [ ] Step 2: [Work area]
 
 ---
 
-## Phase 1: [Phase Title]
+## Step 1: [Work area]
 
 [What this phase accomplishes and why it is independently useful.]
 
@@ -59,7 +59,7 @@ interface TargetShape {
 
 ---
 
-## Phase 2: [Phase Title]
+## Step 2: [Work area]
 
 [Repeat the same structure.]
 

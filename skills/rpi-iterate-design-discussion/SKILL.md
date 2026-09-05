@@ -1,6 +1,6 @@
 ---
 name: rpi-iterate-design-discussion
-description: Only use when the user explicitly invokes /rpi-iterate-design-discussion. Revise a design discussion artifact using feedback, comments, or new evidence.
+description: Run for /rpi-iterate-design-discussion requests. Revise a design discussion artifact using feedback, comments, or new evidence.
 ---
 
 # Iterate Design Discussion

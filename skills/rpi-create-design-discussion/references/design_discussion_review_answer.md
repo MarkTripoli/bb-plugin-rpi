@@ -6,5 +6,5 @@ The design discussion is ready for review. Work through the open questions befor
 Auto-advance does not apply at this human gate. Continue manually with:
 
 ```text
-/rpi-iterate-design-discussion @{artifact_file}
+/rpi-iterate-design-discussion{artifact_arg}
 ```

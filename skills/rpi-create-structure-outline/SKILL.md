@@ -1,6 +1,6 @@
 ---
 name: rpi-create-structure-outline
-description: Only use when the user explicitly invokes /rpi-create-structure-outline. Create a phased implementation outline from design artifacts.
+description: Run for /rpi-create-structure-outline requests. Create a phased implementation outline from design artifacts.
 ---
 
 # Create Structure Outline
@@ -59,7 +59,7 @@ Do not let child research run out of sight. Spawn, wait, read output, then use o
    - In diff fences, use `+` for added or retargeted ownership, `-` for removals, and leading spaces for context.
    - Keep trees shallow enough to scan. Group files under shared directories and omit unchanged paths unless they provide context.
 
-Each phase should usually be a thin vertical slice across the layers needed for a working increment. Avoid a horizontal sequence such as schema first, then all API, then all UI, then all tests. Prefer slices like: create the simplest end-to-end flow, edit one field end-to-end, then add the first validation path. A phase should not require the next phase before it can be verified.
+Each phase should produce a verifiable increment that crosses the necessary layers. Do not batch the whole schema, then the whole API, then the whole UI, then tests. Prefer increments such as the smallest working flow, one field carried through the stack, then the first validation case. A phase should stand on its own for verification.
 
 5. **For each phase, specify**:
    - Overview of the phase.
@@ -76,14 +76,10 @@ Each phase should usually be a thin vertical slice across the layers needed for 
 
 1. Read `references/structure_outline_template.md`.
 2. Call `hl_next_artifact_number` and write `NN-structure-outline-<slug>.md` under the task directory.
-3. Check whether the current git directory is already a worktree:
+3. Check `hl_task_context.workspace.worktreeTiming`.
 
-```text
-git rev-parse --git-dir
-```
-
-4. If the git dir includes `.git/worktrees/`, read `references/structure_outline_final_answer.md`. Otherwise read `references/structure_outline_setup_answer.md`.
-5. Never suggest worktree setup when already inside a worktree.
+4. If `worktreeTiming` is `later`, read `references/structure_outline_setup_answer.md`; otherwise read `references/structure_outline_final_answer.md`.
+5. Never suggest worktree setup when `worktreeTiming` is `never` or the current workspace is already the intended worktree.
 6. Save with `hl_artifact_save` and respond with the chosen template exactly.
 
 ## Work with the user to iterate on the design

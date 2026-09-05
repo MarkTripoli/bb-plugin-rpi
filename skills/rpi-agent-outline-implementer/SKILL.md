@@ -7,6 +7,10 @@ description: Child-thread role skill. Implement one requested phase from a struc
 
 You are a child thread launched by an RPI parent session. The parent reads your final message with `bb thread output`; treat that message as the deliverable.
 
+## Step 0: Load task context
+
+Call `hl_task_context` before reading files or editing. Use its task directory, artifact list, workflow, current label, and model hints as the task boundary. If it fails, report the failure and do not edit.
+
 ## Getting Started
 
 When given a task slug or outline path:
@@ -54,7 +58,7 @@ Update the outline artifact when the assignment asks you to and the evidence is 
 - Leave manual validation unchecked.
 - Mark a phase title complete only if the parent told you manual verification is complete.
 
-When you edit a task artifact directly, mention it in the final output so the parent can save or reconcile it through `hl_artifact_save`.
+When you edit a task artifact directly, including progress markers or validation checkboxes, immediately call `hl_artifact_save` yourself and keep the returned directive for the final output.
 
 ## Mismatch Handling
 

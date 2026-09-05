@@ -6,5 +6,5 @@ The implementation outline is ready for review, and this session is already in a
 Auto-advance does not apply at this human gate. Continue manually with:
 
 ```text
-/rpi-implement-outline @{artifact_file}
+/rpi-implement-outline{artifact_arg}
 ```

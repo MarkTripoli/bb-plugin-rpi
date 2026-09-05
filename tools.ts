@@ -107,6 +107,12 @@ export function registerArtifactTools(
         artifacts.push({ name: "[truncated]", type: "other", version: 0 });
       }
       const task = getArtifactVersion(db, row.taskId, "task.md");
+      const taskWorkspace = db.prepare(`
+        SELECT default_directory AS defaultDirectory, base_environment_id AS baseEnvironmentId,
+          worktree_environment_id AS worktreeEnvironmentId, worktree_timing AS worktreeTiming
+        FROM tasks WHERE id = ?
+      `).get(row.taskId) as { defaultDirectory: string | null; baseEnvironmentId: string | null; worktreeEnvironmentId: string | null; worktreeTiming: string } | undefined;
+      const thread = await bb.sdk.threads.get({ threadId, include: "environment" }).catch(() => null) as { environment?: { id?: string | null; path?: string | null; branchName?: string | null } | null; environmentId?: string | null } | null;
       return JSON.stringify({
         task: {
           id: row.taskId,
@@ -115,6 +121,17 @@ export function registerArtifactTools(
           workflow: row.workflowType,
           currentLabel: row.label,
           artifactDir: `.humanlayer/tasks/${row.taskSlug}`,
+        },
+        workspace: {
+          worktreeTiming: taskWorkspace?.worktreeTiming ?? null,
+          defaultDirectory: taskWorkspace?.defaultDirectory ?? null,
+          baseEnvironmentId: taskWorkspace?.baseEnvironmentId ?? null,
+          worktreeEnvironmentId: taskWorkspace?.worktreeEnvironmentId ?? null,
+          currentEnvironmentId: thread?.environment?.id ?? thread?.environmentId ?? null,
+          currentPath: thread?.environment?.path ?? null,
+          currentBranch: thread?.environment?.branchName ?? null,
+          sessionThreadId,
+          currentThreadId: threadId,
         },
         prefs: {
           researchSubagentModel: row.providerId && row.model ? `${row.providerId} ${row.model}` : null,

@@ -1,6 +1,6 @@
 ---
 name: rpi-iterate-research
-description: Only use when the user explicitly invokes /rpi-iterate-research. Update an existing research artifact from feedback or additional questions.
+description: Run for /rpi-iterate-research requests. Update an existing research artifact from feedback or additional questions.
 ---
 
 # Iterate Research
@@ -32,7 +32,7 @@ If several research artifacts exist, ask the user which one to revise before rea
 If no task context or artifact is available, answer with:
 
 ```text
-I'm ready to iterate on researching the codebase. Please provide the research document or the area to investigate, and I will update the artifact with current evidence.
+I'm ready to revise the research artifact. Send the research document or the area to investigate, and I will update it with current evidence.
 ```
 
 Then wait for the user.
@@ -183,8 +183,8 @@ For each affected findings section, document the tests that currently cover it. 
 - Do not write placeholder values.
 - Use four backticks for outer markdown fences when a code sample contains triple backticks.
 
-<important if="there are open questions in the research document">
+<open-question-note>
 If unresolved factual questions remain after the revision, include this sentence in the final answer after the review sentence:
 
 `There are N open questions that need review; you can ask for another research pass, provide the answers, or tell me to remove them as irrelevant.`
-</important>
+</open-question-note>

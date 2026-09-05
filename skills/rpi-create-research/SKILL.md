@@ -1,6 +1,6 @@
 ---
 name: rpi-create-research
-description: Only use when the user explicitly invokes /rpi-create-research. Research and document the current codebase from research questions.
+description: Run for /rpi-create-research requests. Research and document the current codebase from research questions.
 ---
 
 # Research Codebase
@@ -59,7 +59,7 @@ I'm ready to research the codebase. Please provide the research question or area
 
 Important: do not read `task.md`, `ticket.md`, design artifacts, plans, PR descriptions, or other task files unless the user directly names them. Research must stay objective. The research-questions document is the handoff from the task input.
 
-## Steps to follow after receiving the research query
+## Research workflow
 
 1. **Read directly mentioned files first**
 
@@ -190,7 +190,7 @@ Important: do not read `task.md`, `ticket.md`, design artifacts, plans, PR descr
    references/research_final_answer.md
    ```
 
-   Respond using that template only. Include the saved artifact directive and mention open-question count only in the template's designated place. The final response must end with exactly one fenced `text` block containing `/rpi-create-design-discussion`.
+   Respond using that template only. Include the saved artifact directive and mention open-question count only in the template's designated place. For `outline_only`, end with `/rpi-create-structure-outline`; for `rpi`, end with `/rpi-create-design-discussion`.
 
 10. **Handle follow-up research in place**
 
@@ -271,8 +271,8 @@ Every major findings section should include how that area is tested today:
 - Keep research artifacts under `.humanlayer/tasks/<slug>/`.
 - If the artifact contains code blocks that themselves show markdown fences, use four backticks for the outer fence.
 
-<important if="there are open questions in the research document">
+<open-question-note>
 If open questions remain after the optional second pass, include this sentence in the final answer after the review sentence:
 
 `There are N open questions that need review; you can ask for another research pass, provide the answers, or tell me to remove them as irrelevant.`
-</important>
+</open-question-note>

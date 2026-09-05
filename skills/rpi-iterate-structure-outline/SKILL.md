@@ -1,6 +1,6 @@
 ---
 name: rpi-iterate-structure-outline
-description: Only use when the user explicitly invokes /rpi-iterate-structure-outline. Revise a phased implementation outline.
+description: Run for /rpi-iterate-structure-outline requests. Revise a phased implementation outline.
 ---
 
 # Iterate Structure Outline
@@ -77,9 +77,9 @@ Each phase should remain a vertical slice where possible. Avoid grouping by all 
    - Use diff notation only when it clarifies additions, removals, or changed ownership.
 
 7. **Update the user**:
-   - Check the current git directory with `git rev-parse --git-dir`.
-   - If it includes `.git/worktrees/`, read `references/structure_outline_final_answer.md`. Otherwise read `references/structure_outline_setup_answer.md`.
-   - Never suggest worktree setup when already inside a worktree.
+   - Check `hl_task_context.workspace.worktreeTiming`.
+   - If `worktreeTiming` is `later`, read `references/structure_outline_setup_answer.md`; otherwise read `references/structure_outline_final_answer.md`.
+   - Never suggest worktree setup when `worktreeTiming` is `never` or the current workspace is already the intended worktree.
    - Save with `hl_artifact_save` and respond with the selected template exactly.
 
 ## Artifact and Reading Rules

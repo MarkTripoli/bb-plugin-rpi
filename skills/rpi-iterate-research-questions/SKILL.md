@@ -1,6 +1,6 @@
 ---
 name: rpi-iterate-research-questions
-description: Only use when the user explicitly invokes /rpi-iterate-research-questions. Update an existing research-questions artifact from feedback.
+description: Run for /rpi-iterate-research-questions requests. Update an existing research-questions artifact from feedback.
 ---
 
 # Iterate Research Questions

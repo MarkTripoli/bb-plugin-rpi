@@ -1,11 +1,11 @@
 ---
 name: rpi-iterate-plan
-description: Only use when the user explicitly invokes /rpi-iterate-plan. Revise an implementation plan from feedback.
+description: Run for /rpi-iterate-plan requests. Revise an implementation plan from feedback.
 ---
 
-# Iterate Plan
+# Revise Implementation Plan
 
-You are iterating on an existing implementation plan. Apply feedback only after checking it, preserve the plan structure, and keep validation actionable.
+You are revising an existing implementation plan. Check feedback before applying it, preserve the plan structure, and keep validation actionable.
 
 ## bb Task Setup
 
@@ -17,7 +17,7 @@ You are iterating on an existing implementation plan. Apply feedback only after 
 ## Steps
 
 1. **Read all input files fully**:
-   - Read the plan and relevant prior artifacts: task or ticket, research, design discussion, PRD, TDD, and structure outline.
+   - Read the plan and the relevant upstream artifacts: task or ticket, research, design notes, PRD, TDD, and structure outline.
    - Read supplied feedback files fully.
    - List the task directory with `ls -La <task-dir>`. Avoid plain `ls`, `ls -l`, search, and glob expansion inside `.humanlayer/tasks` because the path may be linked.
    - Do not use partial reads.
@@ -33,6 +33,14 @@ You are iterating on an existing implementation plan. Apply feedback only after 
    - Verify code examples, file paths, and command names.
    - If the plan depends on uncertain behavior, inspect the source directly or spawn a narrow child research thread and read it with `bb thread output`.
 
+   Child research pattern:
+
+   ```text
+   bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same provider> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-codebase-analyzer <narrow fact to verify>"
+   bb thread wait <thread-id>
+   bb thread output <thread-id>
+   ```
+
 4. **Process the feedback**:
    - Reorganize phases when requested or when the current sequence is not independently verifiable.
    - Update code examples when file or API facts change.
@@ -46,7 +54,7 @@ You are iterating on an existing implementation plan. Apply feedback only after 
    - Keep manual checks specific and remove filler.
    - Maintain phase sections with success criteria.
 
-6. **Check worktree state**:
+6. **Inspect workspace state**:
 
 ```text
 Read .humanlayer/workspace.json if present
@@ -54,7 +62,7 @@ Read .humanlayer/workspace.local.json if present
 git rev-parse --git-dir
 ```
 
-7. **Read the appropriate final answer template**:
+7. **Select the final answer template**:
    - If already in a worktree, use `references/plan_in_worktree_answer.md`.
    - Else if workspace setup is disabled by local config or shared config, create or check out the task branch, then use `references/plan_disabled_answer.md`.
    - Otherwise use `references/plan_final_answer.md`.
@@ -67,7 +75,7 @@ git rev-parse --git-dir
 - Include concrete code examples when they prevent ambiguity.
 - Use runnable automated checks.
 - Use manual validation only when human judgment is needed.
-- Pause for human confirmation between phases that require manual validation.
+- Pause for human confirmation at every phase boundary before the next phase starts.
 
 ## Artifact and Reading Rules
 

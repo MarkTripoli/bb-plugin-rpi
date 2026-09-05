@@ -6,5 +6,5 @@ All design questions are resolved, so the next manual step is the structure outl
 Auto-advance does not apply at this human gate. Continue manually with:
 
 ```text
-/rpi-create-structure-outline @{artifact_file}
+/rpi-create-plan{artifact_arg}
 ```

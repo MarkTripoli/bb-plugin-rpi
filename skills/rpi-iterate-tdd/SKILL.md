@@ -1,11 +1,11 @@
 ---
 name: rpi-iterate-tdd
-description: Only use when the user explicitly invokes /rpi-iterate-tdd. Refine an existing Technical Design Document artifact.
+description: Run for /rpi-iterate-tdd requests. Refine an existing Technical Design Document artifact.
 ---
 
-# Iterate TDD
+# Revise Technical Design
 
-You are refining an existing Technical Design Document. Use the same standards as TDD creation, but work from feedback and resolve one change or design question at a time.
+You are refining an existing Technical Design Document. Use the TDD creation standards, work from feedback, and resolve one change or design question at a time.
 
 ## Operating Principles
 
@@ -50,7 +50,7 @@ If the user asks to keep working through technical questions:
 1. **Find and read the task directory**:
    - Resolve the target TDD from `@file` when present, otherwise use the artifact manifest.
    - Ask the user to choose only if multiple TDD artifacts are plausible.
-   - Read the TDD, task or ticket, research, design discussion, PRD if present, mockups, and user-mentioned files fully.
+   - Read the TDD, task or ticket, research, design notes, PRD if present, mockups, and user-mentioned files fully.
    - Do not read research-question artifacts unless explicitly requested.
 
 2. **Validate feedback**:
@@ -73,6 +73,8 @@ bb thread output <thread-id>
 ```
 
 Role mapping: locator finds files and tests, analyzer explains current behavior, pattern finder finds local precedents, and web researcher checks external behavior or current documentation. The child thread's final message is the deliverable. Use only findings you have read from `bb thread output`.
+
+If a child thread or direct read discovers current-state facts that are missing or stale in the completed research artifact, fold those discoveries back into that research artifact before finalizing the TDD. Save the updated research artifact with `hl_artifact_save`, then continue the TDD from the corrected context.
 
 4. **Update the TDD in place**:
    - Preserve frontmatter and major template sections.
@@ -141,7 +143,7 @@ After a change, save the artifact and ask what to work on next. Do not continue 
 
 ## Representation Guidance
 
-Use Mermaid for system flows, sequence diagrams, entity relationships, or type hierarchy sketches. Use HTML artifacts for concepts that need annotations, comparison, or layout beyond markdown. Read `references/artifact_template.html` before writing HTML and display the file with a task-artifact block.
+Use Mermaid for system flows, sequence diagrams, entity relationships, or type hierarchy sketches. Use HTML artifacts for concepts that need annotations, comparison, or layout beyond markdown. Read `references/artifact_template.html` before writing HTML and display the file with a `::hl-artifact{...}` embed.
 
 Use call-stack trees, component trees, file-tree diffs, dependency-injection maps, signatures, and pseudocode for Program Design. Use proper tree glyphs in trees and reserve diff notation for actual before/after changes.
 
@@ -158,7 +160,7 @@ If the iteration is driven by artifact comments:
 3. If a comment asks for a factual correction, verify it before editing.
 4. If a comment asks for a new technical choice, treat it as an open design decision and ask one question unless the answer is already explicit.
 5. Reply with `hl_reply_to_artifact_comment` only when the reply adds value beyond the document edit.
-6. Resolve comments with `hl_update_artifact_comments` only when the user asked for cleanup or the comment's requested edit has plainly been handled.
+6. Resolve comments with `hl_update_artifact_comments` only after the user explicitly confirms resolution.
 7. Do not delete comments unless explicitly asked.
 
 Comments are collaboration inputs, not a second source of hidden requirements. Fold their accepted content into the TDD so future sessions can read the artifact without reading the comment thread.

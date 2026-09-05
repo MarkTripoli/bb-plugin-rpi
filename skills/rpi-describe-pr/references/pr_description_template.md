@@ -1,12 +1,12 @@
-[{TICKET_ID}]({TICKET_URL}) | [HumanLayer Task]({TASK_URL}) | [PR Walkthrough]({PR_WALKTHROUGH_URL})
+Ticket: [{TICKET_ID}]({TICKET_URL}) | Task: [{TASK_SLUG}]({TASK_URL}) | Walkthrough: [{PR_WALKTHROUGH_URL}]({PR_WALKTHROUGH_URL})
 
-## Why the change
+## Purpose
 
-{Exactly one sentence explaining the problem solved and what this PR enables.}
+{One sentence explaining the problem addressed and the capability this PR adds.}
 
 ## Special things to note
 
-- {List 1-3 reviewer-relevant warnings, migrations, constraints, deliberate omissions, or surprising decisions. Use "None." when there are no special notes.}
+- {Name up to three items a reviewer should not miss, such as migrations, constraints, tradeoffs, or unusual choices. Write "None." if nothing needs special attention.}
 
 ## Change outline
 

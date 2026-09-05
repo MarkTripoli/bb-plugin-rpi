@@ -1,6 +1,6 @@
 ---
 name: rpi-implement-outline
-description: Only use when the user explicitly invokes /rpi-implement-outline. Orchestrate implementation from a structure outline artifact.
+description: Run for /rpi-implement-outline requests. Orchestrate implementation from a structure outline artifact.
 ---
 
 # Outline Implementation Orchestrator

@@ -1,6 +1,6 @@
 ---
 name: rpi-ci-commit
-description: Only use when the user explicitly invokes /rpi-ci-commit. Create focused commits for completed work.
+description: Run for /rpi-ci-commit requests. Create focused commits for completed work.
 ---
 
 # Commit Changes

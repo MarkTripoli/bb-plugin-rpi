@@ -1,9 +1,9 @@
 ---
 name: rpi-describe-pr
-description: Only use when the user explicitly invokes /rpi-describe-pr. Create or update the pull request description for the current task.
+description: Run for /rpi-describe-pr requests. Create or update the pull request description for the current task.
 ---
 
-# Describe a Pull Request
+# Pull Request Description
 
 Create or update the pull request description for the current task branch. Explain why the change exists and how it is shaped.
 
@@ -41,7 +41,7 @@ If no PR exists, inspect branch status and committed changes. Commit and push on
 
 Read `task.md` or `ticket.md` and only explanatory task artifacts: plan, outline, PRD/TDD, design discussion, implementation receipts, or explicit `@file` inputs.
 
-Read the complete PR diff and enough surrounding code to understand ownership and behavior.
+Read the full PR diff plus the surrounding code needed to understand ownership and behavior.
 
 If the task has a plan, launch the reviewer child:
 
@@ -77,7 +77,13 @@ Write the PR description to:
 
 If no task directory exists, use `.humanlayer/tasks/pr-<number>/description.md`.
 
-Call `hl_artifact_save` after writing. Then update the PR body through bb's environment PR workflow. Confirm URL, title, number, base, and head.
+Call `hl_artifact_save` after writing. Then publish the saved body when possible:
+
+1. If `gh` is on PATH and the current branch has a GitHub PR, update the PR body from `.humanlayer/tasks/<task-slug>/pr-description.md`.
+2. Else if `glab` is on PATH and the current branch has a GitLab MR, update the MR description from `.humanlayer/tasks/<task-slug>/pr-description.md`.
+3. Otherwise, print the artifact path and say the PR or MR body must be pasted manually.
+
+Confirm URL, title, number, base, and head when publication succeeds.
 
 ### 6. Report completion
 

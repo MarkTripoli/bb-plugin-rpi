@@ -1,6 +1,6 @@
 ---
 name: rpi-configure-workspaces
-description: Only use when the user explicitly invokes /rpi-configure-workspaces. Propose, write, and validate HumanLayer workspace config files for bb-managed task environments.
+description: Run for /rpi-configure-workspaces requests. Propose, write, and validate HumanLayer workspace config files for bb-managed task environments.
 ---
 
 # Configure Workspaces
@@ -29,10 +29,10 @@ Check the current location:
 ```bash
 pwd
 printf '%s\n' "$HOME"
-git rev-parse --show-toplevel
+git rev-parse --path-format=absolute --show-toplevel
 ```
 
-If `git rev-parse` succeeds, use that repository root and state it in one sentence.
+If git confirms a repository, use the current checkout and state the selected root in one sentence.
 
 If the current directory is home or is not inside a git repository, ask exactly one question:
 
@@ -73,11 +73,13 @@ ls -la ../
 git remote -v
 ```
 
+If `git remote -v` shows multiple plausible push or fetch remotes and the requested base is not obvious, ask which remote should be used before writing `sourceRef`.
+
 If the task context named `task.md`, `ticket.md`, or explicit `@file` artifacts, read those only when they change the workspace proposal. Do not browse unrelated artifacts.
 
-### Step 2: Build the proposal
+### Step 2: Draft workspace config
 
-Infer a complete proposal from the project and the user's request.
+Derive a complete workspace config from repository evidence and the user's request.
 
 Use these defaults unless the repository provides better evidence:
 
@@ -99,7 +101,7 @@ For multi-repo workspaces:
 - Add related sibling repos with paths such as `../api` or `../web`.
 - Mark exactly one repo with `primary: true` when there is a clear default.
 
-The first response after inspection must show the proposed shared config in a fenced `json` block. If local overrides are useful, show a second fenced `json` block for `.humanlayer/workspace.local.json`.
+After inspection, present the shared config proposal in a fenced `json` block. When machine-local overrides are needed, include a separate fenced `json` block for `.humanlayer/workspace.local.json`.
 
 End that response with:
 
@@ -179,8 +181,8 @@ Config rules:
 - Other `localPath` values are resolved relative to that repository.
 - Only `{{ TASKSLUG }}` and `{{ REPOBASENAME }}` are valid template variables.
 - `copyGlobs` merges additively with de-duplication. Local and per-repo lists extend inherited lists; they do not replace them.
-- Repo entries may override `sourceRef`, `setupCommand`, `copyGlobs`, and `primary`.
-- `branchTemplate` stays at the root level.
+- A repo entry can supply its own `sourceRef`, `setupCommand`, `copyGlobs`, or `primary` value.
+- Keep `branchTemplate` on the top-level config object.
 - `.humanlayer/workspace.local.json` may use `{ "$patch": "delete" }` on a repo entry to remove it locally. Do not put that patch marker in shared config.
 - `disabled: true` at the root disables workspace setup.
 - In bb, `sourceRef` maps to task launch base branch only when it is `HEAD`, absent, `origin/<branch>`, or a named branch. Treat raw SHAs or unsupported refs as invalid for automatic launch.

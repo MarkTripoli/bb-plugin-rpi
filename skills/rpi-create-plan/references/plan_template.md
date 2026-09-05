@@ -1,9 +1,9 @@
 ---
 task: eng-xxxx-description
 type: plan
-repo: [current repository]
-branch: [current branch name]
-sha: [result of git rev-parse HEAD]
+repo: [repository name]
+branch: [branch name]
+sha: [current commit]
 ---
 
 # [Feature or Task Name] Implementation Plan
@@ -18,9 +18,9 @@ sha: [result of git rev-parse HEAD]
 
 ### Key Discoveries:
 
-- [Finding with file:line reference]
-- [Pattern to follow]
-- [Constraint to respect]
+- [Observed repository fact with source location]
+- [Existing approach this should match]
+- [Limit or risk to preserve]
 
 ## Desired End State
 
@@ -30,24 +30,24 @@ sha: [result of git rev-parse HEAD]
 
 [Out-of-scope items that prevent drift.]
 
-## Implementation Approach
+## Execution Strategy
 
-[High-level strategy and reasoning.]
+[Implementation path and tradeoffs.]
 
 ---
 
-## Phase 1: [Descriptive Name]
+## Phase 1: [Phase title]
 
-### Overview
+### Goal
 
-[What this phase accomplishes.]
+[Result this phase must produce.]
 
-### Changes Required:
+### Required Edits:
 
-#### 1.1 [Component or File Group]
+#### 1.1 [Area to modify]
 
 **File**: `path/to/file.ext`
-**Changes**: [Specific change and location.]
+**Changes**: [Concrete edit and where it belongs.]
 
 ```diff
 + [specific code shape to add]
@@ -64,10 +64,10 @@ sha: [result of git rev-parse HEAD]
 
 - [ ] [specific manual step, only if useful]
 
-**Implementation Note**: If manual validation is required, pause after automated checks pass and wait for human confirmation before the next phase.
+**Implementation Note**: Pause after each phase's automated checks pass and wait for human confirmation before the next phase.
 
 ---
 
-## Phase 2: [Descriptive Name]
+## Phase 2: [Phase title]
 
 [Repeat this structure.]

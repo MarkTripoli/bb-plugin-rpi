@@ -7,5 +7,5 @@ Summary:
 Auto-advance does not apply at this workspace configuration gate. Continue manually with:
 
 ```text
-/rpi-setup-worktree @{artifact_file}
+/rpi-setup-worktree{artifact_arg}
 ```

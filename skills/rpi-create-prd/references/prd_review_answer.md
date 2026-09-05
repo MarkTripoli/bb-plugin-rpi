@@ -6,5 +6,5 @@ The PRD has been started. Continue the product interview one decision at a time 
 Auto-advance does not apply at this human gate. Continue manually with:
 
 ```text
-/rpi-iterate-prd @{artifact_file}
+/rpi-iterate-prd{artifact_arg}
 ```

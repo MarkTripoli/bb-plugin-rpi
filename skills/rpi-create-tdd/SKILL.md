@@ -1,13 +1,13 @@
 ---
 name: rpi-create-tdd
-description: Only use when the user explicitly invokes /rpi-create-tdd. Create a guided Technical Design Document artifact.
+description: Run for /rpi-create-tdd requests. Create a guided Technical Design Document artifact.
 ---
 
 # TDD Phase
 
 You are creating a Technical Design Document. The TDD explains how the agreed product behavior will be built. Product requirements and user experience belong upstream; this phase handles architecture, interfaces, data movement, code shape, and technical tradeoffs.
 
-Run the TDD as a guided conversation in two ordered phases:
+Run the TDD as an interview with two ordered phases:
 
 1. System Design: behavior across components, services, endpoints, stores, queues, workers, and external systems.
 2. Program Design: the code shape inside those components, including call paths, modules, interfaces, dependency boundaries, and tests.
@@ -128,7 +128,7 @@ Use data contracts when the shared schema is the important decision. Match the c
 
 ### HTML artifacts for complex system concepts
 
-When one concept needs combined annotations, side-by-side shapes, color, or layout, write a focused HTML artifact in the task directory as `diagram-<description>.html`. Read `references/artifact_template.html` first and use its small set of classes. Display it with a task-artifact block.
+When one concept needs combined annotations, side-by-side shapes, color, or layout, write a focused HTML artifact in the task directory as `diagram-<description>.html`. Read `references/artifact_template.html` first and use its small set of classes. Display it with a `::hl-artifact{...}` embed.
 
 ## Step 4: System Design review gate
 
@@ -141,7 +141,7 @@ Design the in-code shape under Program Design. Almost every program-design quest
 For each program-design decision:
 
 1. Ask one question.
-2. Show options as call-stack trees, component trees, file-tree diffs, dependency-injection maps, method signatures, or pseudocode.
+2. Show options as call-stack trees, component trees, file ownership changes, dependency maps, method signatures, or pseudocode.
 3. Recommend one option based on codebase conventions and implementation risk.
 4. Wait until the decision is resolved.
 5. Rework Program Design and Patterns to Follow so the artifact stays current.
@@ -161,10 +161,10 @@ entrypoint
 Frontend component tree for UI work:
 
 ```tsx
-<ResourcePage> (apps/example/src/routes/resource.tsx)
-  useResourceActions()
-  <ResourceToolbar>
-    <CreateResourceDialog />
+<InvoiceConsole> (apps/admin/src/routes/invoices.tsx)
+  useInvoiceFilters()
+  <InvoiceActionBar>
+    <SendReminderDialog />
 ```
 
 File-tree diff for ownership changes. Use proper tree glyphs when showing trees: `├──`, `└──`, and `│`. Inside diff fences, use `+` for additions or changed ownership, `-` for removals, and a leading space for context.
@@ -250,6 +250,8 @@ bb thread output <thread-id>
 ```
 
 Role mapping: locator finds files and tests, analyzer explains current behavior, pattern finder finds local precedents, and web researcher checks external behavior or current documentation. The child thread's final message is the deliverable. Use only findings you have read from `bb thread output`.
+
+If a child thread or direct read discovers current-state facts that are missing or stale in the completed research artifact, fold those discoveries back into that research artifact before finalizing the TDD. Save the updated research artifact with `hl_artifact_save`, then continue the TDD from the corrected context.
 
 ## Artifact and Reading Rules
 

@@ -1,6 +1,6 @@
 ---
 name: rpi-implement-plan
-description: Only use when the user explicitly invokes /rpi-implement-plan. Orchestrate phased implementation from a saved plan artifact.
+description: Run for /rpi-implement-plan requests. Orchestrate phased implementation from a saved plan artifact.
 ---
 
 # Plan Implementation Orchestrator

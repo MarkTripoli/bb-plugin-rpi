@@ -1,6 +1,6 @@
 ---
 name: rpi-create-plan
-description: Only use when the user explicitly invokes /rpi-create-plan. Create a detailed implementation plan from the structure outline.
+description: Run for /rpi-create-plan requests. Create a detailed implementation plan from the structure outline.
 ---
 
 # Create Plan
@@ -19,7 +19,7 @@ You are in the plan-writing phase. Expand the structure outline into a detailed 
 1. **Read all input files fully**:
    - Read supplied paths without partial reads.
    - List the task directory with `ls -La <task-dir>` and read relevant artifacts.
-   - Read task or ticket, research, design discussion, PRD, TDD, and structure outline if present.
+   - Read the available upstream artifacts: task or ticket, research, design notes, PRD, TDD, and structure outline.
    - Exclude research-question artifacts; use completed research instead.
 
 2. **Read relevant source files**:
@@ -43,7 +43,7 @@ You are in the plan-writing phase. Expand the structure outline into a detailed 
 - Prefer specific file edits, target functions, and short code examples over broad descriptions.
 - Automated verification must be runnable commands.
 - Manual verification must be concrete steps a person can perform.
-- Pause for human confirmation between phases when manual validation is required.
+- Pause for human confirmation at every phase boundary before the next phase starts.
 - If research found testing patterns, include test additions or modified test examples that follow those patterns.
 - Do not add manual validation just to fill a section.
 

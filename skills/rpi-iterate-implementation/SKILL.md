@@ -1,6 +1,6 @@
 ---
 name: rpi-iterate-implementation
-description: Only use when the user explicitly invokes /rpi-iterate-implementation. Apply follow-up implementation feedback on the same branch.
+description: Run for /rpi-iterate-implementation requests. Apply follow-up implementation feedback on the same branch.
 ---
 
 # Iterate Implementation
@@ -68,7 +68,7 @@ If there are several viable fixes and no clear default, ask before editing.
 
 When the fix is clear, make the smallest correct change in the shared/root-cause location. Run the relevant tests, build, lint, or other checks. If the work changes task artifacts, call `hl_next_artifact_number` before creating a new implementation note, then call `hl_artifact_save` after every task-directory write.
 
-If the change updates comments, use `hl_reply_artifact_comments` or `hl_update_artifact_comments` only for the exact comment ids involved, and only when the user has asked you to resolve or reply.
+If the change updates comments, use `hl_reply_to_artifact_comment` or `hl_update_artifact_comments` only for the exact comment ids involved, and only when the user has asked you to resolve or reply.
 
 ### 6. Update the user
 
@@ -102,4 +102,4 @@ When the feedback is addressed, checks have run, and no further implementation e
 
 1. Save any changed task artifact with `hl_artifact_save`.
 2. Read `references/implementation_final_answer.md`.
-3. Respond with that template only. The next step is the commit handoff.
+3. Respond with that template only. The next step is `/rpi-describe-pr`; use `/rpi-ci-commit` only when the user asks for an in-loop commit gate.
