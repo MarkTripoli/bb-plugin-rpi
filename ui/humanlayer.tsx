@@ -18,6 +18,7 @@ import type {
   TaskRecord,
   TaskRow,
   TaskWorkspaceState,
+  CommentThreadRecord,
 } from "../contract";
 import { BOARD_COLUMNS, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS } from "../transitions";
 import { Button } from "@/components/ui/button";
@@ -693,8 +694,31 @@ function ArtifactRow({
   );
 }
 
+function markdownBlocks(text: string) {
+  const blocks: Array<{ index: number; text: string; start: number; end: number }> = [];
+  let start = 0;
+  let cursor = 0;
+  let inFence = false;
+  const lines = text.match(/[^\n]*(?:\n|$)/g) ?? [];
+  for (const line of lines) {
+    if (line === "") break;
+    const lineStart = cursor;
+    cursor += line.length;
+    if (/^\s*```/.test(line)) inFence = !inFence;
+    if (!inFence && line.trim() === "") {
+      const blockText = text.slice(start, lineStart).trim();
+      if (blockText) blocks.push({ index: blocks.length, text: blockText, start, end: lineStart });
+      start = cursor;
+    }
+  }
+  const tail = text.slice(start).trim();
+  if (tail) blocks.push({ index: blocks.length, text: tail, start, end: text.length });
+  return blocks;
+}
+
 function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileName: string; onRestore: () => void }) {
   const rpc = useRpc<RpcContract>();
+  const { values: settings } = useSettings();
   const [mode, setMode] = useState<"preview" | "raw">("preview");
   const [artifact, setArtifact] = useState<ArtifactRecord | null>(null);
   const [versions, setVersions] = useState<ArtifactVersionRecord[]>([]);
@@ -703,18 +727,33 @@ function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileN
   const [content, setContent] = useState<string | null>(null);
   const [isBinary, setIsBinary] = useState(false);
   const [url, setUrl] = useState<string | null>(null);
+  const [commentThreads, setCommentThreads] = useState<CommentThreadRecord[]>([]);
+  const [showResolved, setShowResolved] = useState(false);
+  const [composingBlock, setComposingBlock] = useState<number | null>(null);
+  const [composerText, setComposerText] = useState("");
+  const [sessions, setSessions] = useState<SessionView[]>([]);
+  const [sendThreadId, setSendThreadId] = useState("");
+  const [sendMode, setSendMode] = useState<"send" | "send-and-resolve">("send-and-resolve");
 
   useEffect(() => {
     setVersion(null);
     setPinnedVersion(null);
+    setCommentThreads([]);
+    setComposingBlock(null);
   }, [taskId, fileName]);
+
+  useEffect(() => {
+    const configured = settings?.sendCommentsMode;
+    if (configured === "send" || configured === "send-and-resolve") setSendMode(configured);
+  }, [settings?.sendCommentsMode]);
 
   useEffect(() => {
     let cancelled = false;
     Promise.all([
       rpc.call("listArtifactVersions", { taskId, fileName }),
       rpc.call("getArtifact", { taskId, fileName, version: pinnedVersion }),
-    ]).then(([versionResult, artifactResult]) => {
+      rpc.call("listSessions", { taskId }),
+    ]).then(([versionResult, artifactResult, sessionResult]) => {
       if (cancelled) return;
       setVersions(versionResult.versions);
       setArtifact(artifactResult.artifact);
@@ -722,11 +761,19 @@ function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileN
       setIsBinary(artifactResult.isBinary);
       setUrl(artifactResult.url);
       setVersion(artifactResult.version?.version ?? null);
+      setSessions(sessionResult.sessions);
+      const latestThreadId = sessionResult.sessions[0]?.threadId;
+      if (latestThreadId) setSendThreadId((current) => current || latestThreadId);
+      if (artifactResult.artifact) {
+        void rpc.call("listComments", { artifactId: artifactResult.artifact.id, includeResolved: showResolved }).then((result) => {
+          if (!cancelled) setCommentThreads(result.threads);
+        });
+      }
     });
     return () => {
       cancelled = true;
     };
-  }, [fileName, taskId, pinnedVersion, rpc]);
+  }, [fileName, taskId, pinnedVersion, rpc, showResolved]);
   useRealtime("hl:artifacts", (payload) => {
     if (!payload || typeof payload !== "object" || (payload as { taskId?: unknown }).taskId !== taskId) return;
     void Promise.all([
@@ -741,10 +788,34 @@ function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileN
       setVersion(artifactResult.version?.version ?? null);
     });
   });
+  useRealtime("hl:comments", (payload) => {
+    if (!artifact || !payload || typeof payload !== "object" || (payload as { artifactId?: unknown }).artifactId !== artifact.id) return;
+    void rpc.call("listComments", { artifactId: artifact.id, includeResolved: showResolved }).then((result) => setCommentThreads(result.threads));
+  });
 
   if (!artifact) return <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">Select an artifact.</div>;
 
   const versionMeta = versions.find((item) => item.version === version);
+  const blocks = !isBinary && content !== null ? markdownBlocks(content) : [];
+
+  const saveComment = async (block: (typeof blocks)[number]) => {
+    if (!versionMeta || composerText.trim() === "") return;
+    await rpc.call("createComment", {
+      artifactId: artifact.id,
+      versionId: versionMeta.id,
+      contentText: composerText.trim(),
+      blockText: block.text,
+      prevBlockText: blocks[block.index - 1]?.text ?? null,
+      nextBlockText: blocks[block.index + 1]?.text ?? null,
+      anchorJson: { v: 1, blockIndex: block.index, start: block.start, end: block.end, selectedText: block.text },
+      replyToId: null,
+    });
+    setComposerText("");
+    setComposingBlock(null);
+    const result = await rpc.call("listComments", { artifactId: artifact.id, includeResolved: showResolved });
+    setCommentThreads(result.threads);
+  };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 rounded-md border border-border bg-card p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -771,20 +842,184 @@ function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileN
           <Button type="button" variant="outline" className="h-8" onClick={onRestore}>Restore</Button>
         </div>
       ) : null}
-      <div className="min-h-[260px] flex-1 overflow-auto rounded-md border border-border bg-background p-3">
-        {mode === "preview" && isRasterPreview(artifact.contentType) && url ? (
-          <img src={url} alt={artifact.fileName} className="max-h-full max-w-full rounded-md" />
-        ) : mode === "preview" && isSandboxedPreview(artifact.contentType) && content !== null ? (
-          <iframe title={artifact.fileName} sandbox="" srcDoc={content} className="h-full min-h-[240px] w-full rounded-md border-0 bg-background" />
-        ) : mode === "preview" && !isBinary && content !== null ? (
-          <Markdown content={content} />
-        ) : isBinary ? (
-          <div className="text-sm text-muted-foreground">Binary preview is available through the HTTP route.</div>
-        ) : (
-          <SourceCode content={content ?? ""} path={artifact.fileName} overflow="wrap" />
-        )}
+      <div className="grid min-h-[260px] flex-1 gap-3 overflow-hidden lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="min-h-0 overflow-auto rounded-md border border-border bg-background p-3">
+          {mode === "preview" && isRasterPreview(artifact.contentType) && url ? (
+            <img src={url} alt={artifact.fileName} className="max-h-full max-w-full rounded-md" />
+          ) : mode === "preview" && isSandboxedPreview(artifact.contentType) && content !== null ? (
+            <iframe title={artifact.fileName} sandbox="" srcDoc={content} className="h-full min-h-[240px] w-full rounded-md border-0 bg-background" />
+          ) : mode === "preview" && !isBinary && content !== null ? (
+            <div className="space-y-2">
+              {blocks.map((block) => (
+                <div key={block.index} className="group grid grid-cols-[28px_minmax(0,1fr)] gap-2 rounded-md border border-transparent hover:border-border">
+                  <button
+                    type="button"
+                    aria-label="Add comment"
+                    title="Add comment"
+                    onClick={() => {
+                      setComposingBlock(block.index);
+                      setComposerText("");
+                    }}
+                    className="mt-2 flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground opacity-0 transition hover:text-foreground group-hover:opacity-100"
+                  >
+                    <Icon name="Plus" className="size-4" />
+                  </button>
+                  <div className="min-w-0">
+                    <Markdown content={block.text} />
+                    {composingBlock === block.index ? (
+                      <div className="mb-2 space-y-2 rounded-md border border-border bg-card p-2">
+                        <textarea value={composerText} onChange={(event) => setComposerText(event.target.value)} className="min-h-20 w-full rounded-md border border-border bg-background p-2 text-sm text-foreground" />
+                        <div className="flex justify-end gap-2">
+                          <Button type="button" variant="outline" className="h-8" onClick={() => setComposingBlock(null)}>Cancel</Button>
+                          <Button type="button" className="h-8" onClick={() => void saveComment(block)}>Save</Button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : isBinary ? (
+            <div className="text-sm text-muted-foreground">Binary preview is available through the HTTP route.</div>
+          ) : (
+            <SourceCode content={content ?? ""} path={artifact.fileName} overflow="wrap" />
+          )}
+        </div>
+        <CommentRail
+          artifact={artifact}
+          threads={commentThreads}
+          showResolved={showResolved}
+          setShowResolved={setShowResolved}
+          sessions={sessions}
+          sendThreadId={sendThreadId}
+          setSendThreadId={setSendThreadId}
+          sendMode={sendMode}
+          setSendMode={setSendMode}
+          refetch={() => rpc.call("listComments", { artifactId: artifact.id, includeResolved: showResolved }).then((result) => setCommentThreads(result.threads))}
+        />
       </div>
     </div>
+  );
+}
+
+function CommentRail({
+  artifact,
+  threads,
+  showResolved,
+  setShowResolved,
+  sessions,
+  sendThreadId,
+  setSendThreadId,
+  sendMode,
+  setSendMode,
+  refetch,
+}: {
+  artifact: ArtifactRecord;
+  threads: CommentThreadRecord[];
+  showResolved: boolean;
+  setShowResolved: (value: boolean) => void;
+  sessions: SessionView[];
+  sendThreadId: string;
+  setSendThreadId: (value: string) => void;
+  sendMode: "send" | "send-and-resolve";
+  setSendMode: (value: "send" | "send-and-resolve") => void;
+  refetch: () => Promise<void>;
+}) {
+  const rpc = useRpc<RpcContract>();
+  const anchored = threads.filter((thread) => !thread.root.anchor?.orphaned);
+  const unanchored = threads.filter((thread) => thread.root.anchor?.orphaned);
+  const sendIds = threads.filter((thread) => !thread.root.isResolved).map((thread) => thread.root.id);
+
+  const update = async (action: Promise<unknown>) => {
+    await action;
+    await refetch();
+  };
+
+  return (
+    <aside className="min-h-0 overflow-auto rounded-md border border-border bg-background p-3">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <h4 className="text-sm font-semibold text-foreground">Comments</h4>
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <input type="checkbox" checked={showResolved} onChange={(event) => setShowResolved(event.target.checked)} />
+          Show resolved
+        </label>
+      </div>
+      <div className="mb-3 space-y-2 rounded-md border border-border bg-card p-2">
+        <select value={sendThreadId} onChange={(event) => setSendThreadId(event.target.value)} className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs text-foreground">
+          {sessions.map((session) => <option key={session.threadId} value={session.threadId}>{session.title ?? session.threadId}</option>)}
+        </select>
+        <select value={sendMode} onChange={(event) => setSendMode(event.target.value as "send" | "send-and-resolve")} className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs text-foreground">
+          <option value="send-and-resolve">Send and resolve</option>
+          <option value="send">Send</option>
+        </select>
+        <Button type="button" className="h-8 w-full" disabled={!sendThreadId || sendIds.length === 0} onClick={() => void update(rpc.call("sendCommentsToSession", { threadId: sendThreadId, artifactId: artifact.id, commentIds: sendIds, mode: sendMode }))}>
+          Send {sendIds.length} comments to session
+        </Button>
+      </div>
+      <div className="space-y-3">
+        {anchored.map((thread) => (
+          <CommentThread key={thread.root.id} artifactId={artifact.id} thread={thread} update={update} />
+        ))}
+        {unanchored.length > 0 ? (
+          <section className="space-y-2 border-t border-border pt-3">
+            <div className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">Unanchored</div>
+            {unanchored.map((thread) => <CommentThread key={thread.root.id} artifactId={artifact.id} thread={thread} update={update} />)}
+          </section>
+        ) : null}
+      </div>
+    </aside>
+  );
+}
+
+function CommentThread({ artifactId, thread, update }: { artifactId: string; thread: CommentThreadRecord; update: (action: Promise<unknown>) => Promise<void> }) {
+  const rpc = useRpc<RpcContract>();
+  const [reply, setReply] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [editText, setEditText] = useState(thread.root.contentText);
+  const root = thread.root;
+  return (
+    <article className="space-y-2 rounded-md border border-border bg-card p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-xs font-medium text-foreground">{root.createdByAgent ? "Agent" : "You"} <span className="text-muted-foreground">{relativeTime(root.createdAt)}</span></div>
+          <div className="text-xs text-muted-foreground">block {root.anchor?.orphaned ? "unanchored" : root.anchor?.blockIndex ?? "?"}</div>
+        </div>
+        <button type="button" className="text-xs text-muted-foreground hover:text-foreground" onClick={() => void update(rpc.call("resolveComments", { artifactId, commentIds: [root.id], resolved: !root.isResolved }))}>
+          {root.isResolved ? "Unresolve" : "Resolve"}
+        </button>
+      </div>
+      {editing ? (
+        <div className="space-y-2">
+          <textarea value={editText} onChange={(event) => setEditText(event.target.value)} className="min-h-20 w-full rounded-md border border-border bg-background p-2 text-sm text-foreground" />
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" className="h-8" onClick={() => setEditing(false)}>Cancel</Button>
+            <Button type="button" className="h-8" onClick={() => void update(rpc.call("editComment", { commentId: root.id, content: editText })).then(() => setEditing(false))}>Save</Button>
+          </div>
+        </div>
+      ) : (
+        <p className="whitespace-pre-wrap text-sm text-foreground">{root.contentText}</p>
+      )}
+      <div className="flex flex-wrap gap-2 text-xs">
+        <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => setReply((value) => value || " ")}>Reply</button>
+        {!root.createdByAgent ? <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => setEditing(true)}>Edit</button> : null}
+        <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => void update(rpc.call("deleteComment", { artifactId, commentIds: [root.id] }))}>Delete</button>
+      </div>
+      {thread.replies.map((item) => (
+        <div key={item.id} className="rounded-md border border-border bg-background p-2">
+          <div className="text-xs font-medium text-foreground">{item.createdByAgent ? "Agent" : "You"} <span className="text-muted-foreground">{relativeTime(item.createdAt)}</span></div>
+          <p className="whitespace-pre-wrap text-sm text-foreground">{item.contentText}</p>
+        </div>
+      ))}
+      {reply ? (
+        <div className="space-y-2">
+          <textarea value={reply.trimStart()} onChange={(event) => setReply(event.target.value)} className="min-h-16 w-full rounded-md border border-border bg-background p-2 text-sm text-foreground" />
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" className="h-8" onClick={() => setReply("")}>Cancel</Button>
+            <Button type="button" className="h-8" onClick={() => void update(rpc.call("replyComment", { artifactId, commentId: root.id, content: reply.trim() })).then(() => setReply(""))}>Reply</Button>
+          </div>
+        </div>
+      ) : null}
+    </article>
   );
 }
 
