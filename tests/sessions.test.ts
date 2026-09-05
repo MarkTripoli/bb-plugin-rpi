@@ -279,6 +279,33 @@ test("system-injected initiating messages append summary without overwriting an 
   db.close();
 });
 
+test("unlabeled plugin-spawn messages still update next step extraction", async () => {
+  const db = makeDb();
+  const mirror = new Map();
+  seedSession(db);
+  mirrorSession(db, mirror, "thr_1");
+  const text = "ready\n```text\n/rpi-create-research\n```";
+  const bb = {
+    sdk: {
+      threads: {
+        interactions: { list: async () => [] },
+        timeline: async () => ({
+          rows: [
+            { kind: "conversation", role: "user", text: "start", turnId: "turn_new", sourceSeqStart: 1, senderThreadId: null, systemMessageKind: "unlabeled" },
+            { kind: "conversation", role: "assistant", text, turnId: "turn_new", sourceSeqStart: 2 },
+          ],
+        }),
+      },
+    },
+    log: { warn: () => undefined },
+  };
+  await recordIdleCompletion(bb as never, db, mirror, thread({ updatedAt: 2 }), text);
+  const stored = db.prepare("SELECT next_step_turn_key, next_step_json FROM sessions WHERE thread_id = ?").get("thr_1") as { next_step_turn_key: string | null; next_step_json: string | null };
+  assert.equal(stored.next_step_turn_key, "events:2");
+  assert.equal(parseJson<{ extraction?: { type?: string; nextStepType?: string } }>(stored.next_step_json, {}).extraction?.nextStepType, "create-research");
+  db.close();
+});
+
 test("buffered idle replay preserves completion order", async () => {
   const db = makeDb();
   const mirror = new Map();

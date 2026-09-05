@@ -523,7 +523,7 @@ async function initiatingMessageIsSystemInjected(bb: BbPluginApi, threadId: stri
       }
     }
   }
-  return Boolean(user?.systemMessageKind || user?.senderThreadId);
+  return Boolean((user?.systemMessageKind && user.systemMessageKind !== "unlabeled") || user?.senderThreadId);
 }
 
 function liveArtifacts(db: Database, taskId: string) {
