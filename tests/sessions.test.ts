@@ -693,6 +693,115 @@ test("reconcile-first: a reconcile racing ahead of the idle event still auto-adv
   db.close();
 });
 
+test("reconcile-first: an interrupted turn does not auto-advance and settles on interrupted status", async () => {
+  const db = makeDb();
+  const mirror = new Map();
+  seedSession(db);
+  const taskId = (db.prepare("SELECT task_id AS taskId FROM sessions WHERE thread_id = 'thr_1'").get() as { taskId: string }).taskId;
+  db.prepare("UPDATE tasks SET workflow_type = 'rpi', auto_advance = 1, aa_questions_to_research = 1 WHERE id = ?").run(taskId);
+  db.prepare("UPDATE sessions SET label = 'research-questions' WHERE thread_id = 'thr_1'").run();
+  mirrorSession(db, mirror, "thr_1");
+  let spawns = 0;
+  const text = "done\n```text\n/rpi-create-research\n```";
+  const captured: { subscribeCallback: ((event: { id: string; changes: string[] }) => void) | null } = { subscribeCallback: null };
+  const bb = {
+    pluginId: "humanlayer",
+    log: { warn: () => undefined, info: () => undefined },
+    realtime: { publish: () => undefined },
+    onDispose: () => undefined,
+    experimental_hooks: { on: () => undefined },
+    events: { on: () => undefined },
+    sdk: {
+      subscribe: (opts: { callback: (event: { id: string; changes: string[] }) => void }) => {
+        captured.subscribeCallback = opts.callback;
+        return () => undefined;
+      },
+      threads: {
+        get: async ({ threadId }: { threadId: string }) => ({
+          ...makeThreadResponse({ id: threadId, status: "idle", updatedAt: 2, environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }),
+          numEvents: 2,
+        }),
+        interactions: { list: async () => [] },
+        events: { list: async () => [{ type: "system/thread/interrupted" }] },
+        timeline: async () => ({
+          rows: [
+            { kind: "conversation", role: "user", text: "start", turnId: "t1", sourceSeqStart: 1, senderThreadId: null, systemMessageKind: "unlabeled" },
+            { kind: "conversation", role: "assistant", text, turnId: "t1", sourceSeqStart: 2 },
+          ],
+        }),
+        spawn: async () => {
+          spawns += 1;
+          return makeThreadResponse({ id: "thr_next", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" });
+        },
+      },
+      files: { listPaths: async () => [] },
+    },
+  };
+  const onSnapshot = makeSnapshotHandler(db, mirror, bb);
+  registerSessionRuntime(
+    bb as never,
+    db,
+    mirror,
+    createLaunchBindingMirror(),
+    (row) => onCompletedTurn(bb as never, db, mirror, createLaunchBindingMirror(), row),
+    undefined,
+    onSnapshot,
+  );
+  // Reconcile observes the thread already idle with no completed_turn_key recorded yet, races
+  // ahead of the idle event, and the event log already contains system/thread/interrupted: the
+  // unified post-completion check (processCompletedTurn) must refuse to auto-advance here exactly
+  // as the idle path would, and settle the session on "interrupted" instead of "ready_for_input".
+  captured.subscribeCallback?.({ id: "thr_1", changes: ["status-changed"] });
+  for (let i = 0; i < 20; i += 1) await delay();
+  assert.equal(spawns, 0, "an interrupted turn must never auto-advance");
+  const stored = db.prepare("SELECT hl_status AS hlStatus, interrupted FROM sessions WHERE thread_id = 'thr_1'").get() as { hlStatus: string; interrupted: number };
+  assert.equal(stored.hlStatus, "interrupted");
+  assert.equal(stored.interrupted, 1);
+  const reasons = (db.prepare("SELECT reason FROM notifications WHERE thread_id = 'thr_1'").all() as Array<{ reason: string }>).map((row) => row.reason);
+  assert.deepEqual(reasons, [], "no ready toast for an interrupted turn");
+  db.close();
+});
+
+test("idle-first: an interrupted turn does not auto-advance", async () => {
+  const db = makeDb();
+  const mirror = new Map();
+  seedSession(db);
+  const taskId = (db.prepare("SELECT task_id AS taskId FROM sessions WHERE thread_id = 'thr_1'").get() as { taskId: string }).taskId;
+  db.prepare("UPDATE tasks SET workflow_type = 'rpi', auto_advance = 1, aa_questions_to_research = 1 WHERE id = ?").run(taskId);
+  db.prepare("UPDATE sessions SET label = 'research-questions' WHERE thread_id = 'thr_1'").run();
+  const text = "done\n```text\n/rpi-create-research\n```";
+  let spawns = 0;
+  const { bb, handlers } = makeRuntimeBb({
+    get: async ({ threadId }) => ({ ...makeThreadResponse({ id: threadId, status: "idle", updatedAt: 2, environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }), numEvents: 2 }),
+    events: async () => [{ type: "system/thread/interrupted" }],
+  });
+  Object.assign(bb.sdk.threads, {
+    ...bb.sdk.threads,
+    interactions: { list: async () => [] },
+    timeline: async () => ({
+      rows: [
+        { kind: "conversation", role: "user", text: "start", turnId: "turn_1", sourceSeqStart: 1, senderThreadId: null, systemMessageKind: "unlabeled" },
+        { kind: "conversation", role: "assistant", text, turnId: "turn_1", sourceSeqStart: 2 },
+      ],
+    }),
+    spawn: async () => {
+      spawns += 1;
+      return makeThreadResponse({ id: "thr_next", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" });
+    },
+  });
+  Object.assign(bb.sdk, { files: { listPaths: async () => [] } });
+  const onSnapshot = makeSnapshotHandler(db, mirror, bb);
+  registerSessionRuntime(bb as never, db, mirror, createLaunchBindingMirror(), (row) => onCompletedTurn(bb as never, db, mirror, createLaunchBindingMirror(), row), undefined, onSnapshot);
+  mirrorSession(db, mirror, "thr_1");
+  handlers.get("thread.idle")?.({ thread: thread({ numEvents: 2, updatedAt: 2 }), lastAssistantText: text } as never);
+  for (let i = 0; i < 20; i += 1) await delay();
+  assert.equal(spawns, 0, "an interrupted turn must never auto-advance");
+  const stored = db.prepare("SELECT hl_status AS hlStatus, interrupted FROM sessions WHERE thread_id = 'thr_1'").get() as { hlStatus: string; interrupted: number };
+  assert.equal(stored.hlStatus, "interrupted");
+  assert.equal(stored.interrupted, 1);
+  db.close();
+});
+
 test("startup replay does not re-run the completion pipeline for an already-processed turn", async () => {
   const db = makeDb();
   const mirror = new Map();

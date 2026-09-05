@@ -777,6 +777,49 @@ async function idleWasInterrupted(bb: BbPluginApi, threadId: string) {
   return false;
 }
 
+/**
+ * The single post-completion decision for a finished turn, run identically after idle's and
+ * reconcile's completion pipeline (recordIdleCompletion / reconstructMissingCompletedTurnKey) so
+ * neither caller can auto-advance a turn the other would have refused. Interruption is derived
+ * fresh from the ordered event log here (idleWasInterrupted), not passed in by the caller: a
+ * system/thread/interrupted event racing in after the pipeline ran still suppresses the
+ * auto-advance and flips the session to interrupted instead of firing onCompletedTurn.
+ */
+async function processCompletedTurn(
+  bb: BbPluginApi,
+  db: Database,
+  mirror: Map<string, SessionMirrorRow>,
+  thread: ThreadLike,
+  interactions: readonly InteractionLike[],
+  completedNewTurn: boolean,
+  onCompletedTurn?: (row: SessionMirrorRow) => Promise<unknown>,
+  onAdvanceFailed?: (session: SessionMirrorRow) => Promise<unknown>,
+) {
+  if (!completedNewTurn) return;
+  let interrupted = false;
+  try {
+    interrupted = await idleWasInterrupted(bb, thread.id);
+  } catch (error) {
+    bb.log.warn(`Failed to inspect HumanLayer idle events ${thread.id}: ${String(error)}`);
+  }
+  if (interrupted) {
+    writeRow(db, "UPDATE sessions SET interrupted = 1, updated_at = ? WHERE thread_id = ?", nowMs(), thread.id);
+    applyStatusDerivation(db, mirror, thread, interactions);
+    return;
+  }
+  const completed = mirror.get(thread.id);
+  if (completed?.hlStatus === "ready_for_input" && !completed.blockedReason) {
+    try {
+      await onCompletedTurn?.(completed);
+    } catch (error) {
+      bb.log.warn(`HumanLayer auto-advance failed for ${thread.id}: ${String(error)}`);
+      await onAdvanceFailed?.(completed).catch((recoveryError) =>
+        bb.log.warn(`HumanLayer advance-failure recovery notification failed for ${thread.id}: ${String(recoveryError)}`),
+      );
+    }
+  }
+}
+
 export async function reconcileSession(
   bb: BbPluginApi,
   db: Database,
@@ -848,19 +891,7 @@ export function registerSessionRuntime(
           return false;
         });
       }
-      if (completedNewTurn) {
-        const completed = mirror.get(threadId);
-        if (completed?.hlStatus === "ready_for_input" && !completed.blockedReason) {
-          try {
-            await onCompletedTurn?.(completed);
-          } catch (error) {
-            bb.log.warn(`HumanLayer auto-advance failed for ${threadId}: ${String(error)}`);
-            await onAdvanceFailed?.(completed).catch((recoveryError) =>
-              bb.log.warn(`HumanLayer advance-failure recovery notification failed for ${threadId}: ${String(recoveryError)}`),
-            );
-          }
-        }
-      }
+      await processCompletedTurn(bb, db, mirror, thread as ThreadLike, interactions as InteractionLike[], completedNewTurn, onCompletedTurn, onAdvanceFailed);
       await onSnapshot?.(threadId, interactions);
       if (result?.changed || completedNewTurn) publish(threadId);
     });
@@ -944,17 +975,7 @@ export function registerSessionRuntime(
       const interactions = await bb.sdk.threads.interactions.list({ threadId: thread.id });
       if (!mirror.has(thread.id) || retiredThreads.has(thread.id)) return;
       applyStatusDerivation(db, mirror, thread, interactions as InteractionLike[], sequence);
-      const completed = mirror.get(thread.id);
-      if (completedNewTurn && completed?.hlStatus === "ready_for_input" && !completed.blockedReason) {
-        try {
-          await onCompletedTurn?.(completed);
-        } catch (error) {
-          bb.log.warn(`HumanLayer auto-advance failed for ${thread.id}: ${String(error)}`);
-          await onAdvanceFailed?.(completed).catch((recoveryError) =>
-            bb.log.warn(`HumanLayer advance-failure recovery notification failed for ${thread.id}: ${String(recoveryError)}`),
-          );
-        }
-      }
+      await processCompletedTurn(bb, db, mirror, thread, interactions as InteractionLike[], completedNewTurn, onCompletedTurn, onAdvanceFailed);
       await onSnapshot?.(thread.id, interactions);
       publish(thread.id);
     });
