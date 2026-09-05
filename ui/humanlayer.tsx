@@ -21,6 +21,7 @@ import type {
   CommentThreadRecord,
 } from "../contract";
 import { BOARD_COLUMNS, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS } from "../transitions";
+import { markdownBlocks } from "../blocks";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
@@ -694,28 +695,6 @@ function ArtifactRow({
   );
 }
 
-function markdownBlocks(text: string) {
-  const blocks: Array<{ index: number; text: string; start: number; end: number }> = [];
-  let start = 0;
-  let cursor = 0;
-  let inFence = false;
-  const lines = text.match(/[^\n]*(?:\n|$)/g) ?? [];
-  for (const line of lines) {
-    if (line === "") break;
-    const lineStart = cursor;
-    cursor += line.length;
-    if (/^\s*```/.test(line)) inFence = !inFence;
-    if (!inFence && line.trim() === "") {
-      const blockText = text.slice(start, lineStart).trim();
-      if (blockText) blocks.push({ index: blocks.length, text: blockText, start, end: lineStart });
-      start = cursor;
-    }
-  }
-  const tail = text.slice(start).trim();
-  if (tail) blocks.push({ index: blocks.length, text: tail, start, end: text.length });
-  return blocks;
-}
-
 function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileName: string; onRestore: () => void }) {
   const rpc = useRpc<RpcContract>();
   const { values: settings } = useSettings();
@@ -728,6 +707,7 @@ function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileN
   const [isBinary, setIsBinary] = useState(false);
   const [url, setUrl] = useState<string | null>(null);
   const [commentThreads, setCommentThreads] = useState<CommentThreadRecord[]>([]);
+  const [commentsNextOffset, setCommentsNextOffset] = useState<number | null>(null);
   const [showResolved, setShowResolved] = useState(false);
   const [composingBlock, setComposingBlock] = useState<number | null>(null);
   const [composerText, setComposerText] = useState("");
@@ -739,6 +719,7 @@ function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileN
     setVersion(null);
     setPinnedVersion(null);
     setCommentThreads([]);
+    setCommentsNextOffset(null);
     setComposingBlock(null);
   }, [taskId, fileName]);
 
@@ -765,8 +746,11 @@ function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileN
       const latestThreadId = sessionResult.sessions[0]?.threadId;
       if (latestThreadId) setSendThreadId((current) => current || latestThreadId);
       if (artifactResult.artifact) {
-        void rpc.call("listComments", { artifactId: artifactResult.artifact.id, includeResolved: showResolved }).then((result) => {
-          if (!cancelled) setCommentThreads(result.threads);
+        void rpc.call("listComments", { artifactId: artifactResult.artifact.id, includeResolved: showResolved, offset: 0 }).then((result) => {
+          if (!cancelled) {
+            setCommentThreads(result.threads);
+            setCommentsNextOffset(result.nextOffset);
+          }
         });
       }
     });
@@ -786,11 +770,20 @@ function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileN
       setIsBinary(artifactResult.isBinary);
       setUrl(artifactResult.url);
       setVersion(artifactResult.version?.version ?? null);
+      if (artifactResult.artifact) {
+        void rpc.call("listComments", { artifactId: artifactResult.artifact.id, includeResolved: showResolved, offset: 0 }).then((result) => {
+          setCommentThreads(result.threads);
+          setCommentsNextOffset(result.nextOffset);
+        });
+      }
     });
   });
   useRealtime("hl:comments", (payload) => {
     if (!artifact || !payload || typeof payload !== "object" || (payload as { artifactId?: unknown }).artifactId !== artifact.id) return;
-    void rpc.call("listComments", { artifactId: artifact.id, includeResolved: showResolved }).then((result) => setCommentThreads(result.threads));
+    void rpc.call("listComments", { artifactId: artifact.id, includeResolved: showResolved, offset: 0 }).then((result) => {
+      setCommentThreads(result.threads);
+      setCommentsNextOffset(result.nextOffset);
+    });
   });
 
   if (!artifact) return <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">Select an artifact.</div>;
@@ -814,6 +807,7 @@ function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileN
     setComposingBlock(null);
     const result = await rpc.call("listComments", { artifactId: artifact.id, includeResolved: showResolved });
     setCommentThreads(result.threads);
+    setCommentsNextOffset(result.nextOffset);
   };
 
   return (
@@ -895,7 +889,15 @@ function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileN
           setSendThreadId={setSendThreadId}
           sendMode={sendMode}
           setSendMode={setSendMode}
-          refetch={() => rpc.call("listComments", { artifactId: artifact.id, includeResolved: showResolved }).then((result) => setCommentThreads(result.threads))}
+          nextOffset={commentsNextOffset}
+          refetch={() => rpc.call("listComments", { artifactId: artifact.id, includeResolved: showResolved, offset: 0 }).then((result) => {
+            setCommentThreads(result.threads);
+            setCommentsNextOffset(result.nextOffset);
+          })}
+          loadMore={() => commentsNextOffset === null ? Promise.resolve() : rpc.call("listComments", { artifactId: artifact.id, includeResolved: showResolved, offset: commentsNextOffset }).then((result) => {
+            setCommentThreads((current) => [...current, ...result.threads]);
+            setCommentsNextOffset(result.nextOffset);
+          })}
         />
       </div>
     </div>
@@ -912,7 +914,9 @@ function CommentRail({
   setSendThreadId,
   sendMode,
   setSendMode,
+  nextOffset,
   refetch,
+  loadMore,
 }: {
   artifact: ArtifactRecord;
   threads: CommentThreadRecord[];
@@ -923,9 +927,12 @@ function CommentRail({
   setSendThreadId: (value: string) => void;
   sendMode: "send" | "send-and-resolve";
   setSendMode: (value: "send" | "send-and-resolve") => void;
+  nextOffset: number | null;
   refetch: () => Promise<void>;
+  loadMore: () => Promise<void>;
 }) {
   const rpc = useRpc<RpcContract>();
+  const [sending, setSending] = useState(false);
   const anchored = threads.filter((thread) => !thread.root.anchor?.orphaned);
   const unanchored = threads.filter((thread) => thread.root.anchor?.orphaned);
   const sendIds = threads.filter((thread) => !thread.root.isResolved).map((thread) => thread.root.id);
@@ -933,6 +940,18 @@ function CommentRail({
   const update = async (action: Promise<unknown>) => {
     await action;
     await refetch();
+  };
+
+  const sendSelected = async () => {
+    if (!sendThreadId || sendIds.length === 0 || sending) return;
+    setSending(true);
+    try {
+      const requestId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+      await rpc.call("sendCommentsToSession", { threadId: sendThreadId, artifactId: artifact.id, commentIds: sendIds, mode: sendMode, requestId });
+      await refetch();
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
@@ -952,8 +971,8 @@ function CommentRail({
           <option value="send-and-resolve">Send and resolve</option>
           <option value="send">Send</option>
         </select>
-        <Button type="button" className="h-8 w-full" disabled={!sendThreadId || sendIds.length === 0} onClick={() => void update(rpc.call("sendCommentsToSession", { threadId: sendThreadId, artifactId: artifact.id, commentIds: sendIds, mode: sendMode }))}>
-          Send {sendIds.length} comments to session
+        <Button type="button" className="h-8 w-full" disabled={!sendThreadId || sendIds.length === 0 || sending} onClick={() => void sendSelected()}>
+          {sending ? "Sending" : `Send ${sendIds.length} comments to session`}
         </Button>
       </div>
       <div className="space-y-3">
@@ -966,6 +985,11 @@ function CommentRail({
             {unanchored.map((thread) => <CommentThread key={thread.root.id} artifactId={artifact.id} thread={thread} update={update} />)}
           </section>
         ) : null}
+        {nextOffset === null ? null : (
+          <Button type="button" variant="outline" className="h-8 w-full" onClick={() => void loadMore()}>
+            Load more
+          </Button>
+        )}
       </div>
     </aside>
   );

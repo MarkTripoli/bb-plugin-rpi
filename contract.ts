@@ -374,7 +374,12 @@ export const commentReplyInputSchema = z.object({ artifactId: z.string().min(1),
 export const commentEditInputSchema = z.object({ commentId: z.string().min(1), content: z.string().trim().min(1).max(10000) }).strict();
 export const commentIdsInputSchema = z.object({ artifactId: z.string().min(1), commentIds: z.array(z.string().min(1)).min(1).max(100) }).strict();
 export const resolveCommentsInputSchema = commentIdsInputSchema.extend({ resolved: z.boolean() }).strict();
-export const sendCommentsInputSchema = commentIdsInputSchema.extend({ threadId: z.string().min(1), mode: z.enum(["send", "send-and-resolve"]) }).strict();
+export const sendCommentsInputSchema = commentIdsInputSchema.extend({
+  threadId: z.string().min(1),
+  mode: z.enum(["send", "send-and-resolve"]),
+  requestId: z.string().min(1).max(100).optional(),
+  includeResolved: z.boolean().optional(),
+}).strict();
 
 export const rpcContract = defineRpcContract({
   listTasks: {

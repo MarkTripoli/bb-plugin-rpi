@@ -166,6 +166,17 @@ export const MIGRATIONS: string[] = [
     PRIMARY KEY (task_id, file_name)
   )
   `,
+  `
+  CREATE TABLE send_receipts (
+    request_id TEXT PRIMARY KEY,
+    artifact_id TEXT NOT NULL REFERENCES artifacts(id),
+    thread_id TEXT NOT NULL,
+    comment_ids_json TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    sent_ids_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )
+  `,
 ];
 
 export function openPluginDatabase(bb: BbPluginApi): Database {

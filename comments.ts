@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type * as BetterSqlite3 from "better-sqlite3";
 import { getArtifactVersion } from "./artifacts";
+import { markdownBlocks, type MarkdownBlock } from "./blocks";
 import { nowMs, parseJson, readRow, readRows, stringifyJson, transaction, writeRow } from "./db";
 
 type Database = BetterSqlite3.Database;
@@ -60,29 +61,19 @@ type RawComment = {
 
 const XML_LIMIT_BYTES = 40_000;
 
-export function markdownBlocks(text: string) {
-  const blocks: Array<{ index: number; text: string; start: number; end: number }> = [];
-  let start = 0;
-  let cursor = 0;
-  let inFence = false;
-  const lines = text.match(/[^\n]*(?:\n|$)/g) ?? [];
-  for (const line of lines) {
-    if (line === "") break;
-    const lineStart = cursor;
-    cursor += line.length;
-    if (/^\s*```/.test(line)) inFence = !inFence;
-    if (!inFence && line.trim() === "") {
-      const blockText = text.slice(start, lineStart).trim();
-      if (blockText) blocks.push({ index: blocks.length, text: blockText, start, end: lineStart });
-      start = cursor;
-    }
-  }
-  const tail = text.slice(start).trim();
-  if (tail) blocks.push({ index: blocks.length, text: tail, start, end: text.length });
-  return blocks;
-}
+type CommentPage = {
+  threads: CommentThread[];
+  total: number;
+  nextOffset: number | null;
+  offset: number;
+  idPrefixes: Map<string, string>;
+};
 
-export function normalizeComment(row: RawComment, currentText: string | null): CommentRecord {
+export type CommentMutationResult =
+  | { input: string; id: string; ok: true }
+  | { input: string; ok: false; code: "not_found" | "ambiguous" | "not_a_root" };
+
+export function normalizeComment(row: RawComment, currentBlocks: MarkdownBlock[] | null): CommentRecord {
   const anchorJson = parseJson<CommentAnchor | null>(row.anchorJson, null);
   const base = {
     id: row.id,
@@ -102,7 +93,7 @@ export function normalizeComment(row: RawComment, currentText: string | null): C
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
-  const anchor = currentText === null || !row.blockText || !anchorJson ? null : reanchor(base, currentText);
+  const anchor = currentBlocks === null || !row.blockText || !anchorJson ? null : reanchor(base, currentBlocks);
   return { ...base, anchor };
 }
 
@@ -149,22 +140,26 @@ export function listComments(db: Database, artifactId: string, options: { includ
   const limit = Math.min(100, Math.max(1, options.limit ?? 50));
   const offset = Math.max(0, options.offset ?? 0);
   const text = currentVersionText(db, artifactId);
-  const comments = rowsForArtifact(db, artifactId).map((row) => normalizeComment(row, text));
-  const byParent = new Map<string | null, CommentRecord[]>();
-  for (const comment of comments) {
-    const key = comment.replyToId;
-    byParent.set(key, [...(byParent.get(key) ?? []), comment]);
+  const currentBlocks = text === null ? null : markdownBlocks(text);
+  const rows = rowsForArtifact(db, artifactId);
+  const idPrefixes = idPrefixesForIds(rows.map((row) => row.id));
+  const rawByParent = new Map<string | null, RawComment[]>();
+  for (const row of rows) {
+    rawByParent.set(row.replyToId, [...(rawByParent.get(row.replyToId) ?? []), row]);
   }
-  const roots = (byParent.get(null) ?? []).filter((comment) => options.includeResolved || !comment.isResolved);
+  const roots = (rawByParent.get(null) ?? []).filter((comment) => options.includeResolved || !Boolean(comment.isResolved));
   const page = roots.slice(offset, offset + limit);
   return {
-    threads: page.map((root) => ({
-      root,
-      replies: (byParent.get(root.id) ?? []).map((reply) => ({ ...reply, anchor: root.anchor })),
-    })),
+    threads: page.map((rootRow) => {
+      const root = normalizeComment(rootRow, currentBlocks);
+      const replies = (rawByParent.get(root.id) ?? []).map((reply) => ({ ...normalizeComment(reply, currentBlocks), anchor: root.anchor }));
+      return { root, replies };
+    }),
     total: roots.length,
     nextOffset: offset + page.length < roots.length ? offset + page.length : null,
-  };
+    offset,
+    idPrefixes,
+  } satisfies CommentPage;
 }
 
 export function createComment(
@@ -218,15 +213,14 @@ export function replyToComment(
   options: { createdByThreadId?: string | null; createdByAgent?: boolean } = {},
 ) {
   const root = readComment(db, commentId);
-  if (!root || root.artifactId !== artifactId || root.isDeleted) return null;
-  const replyToId = root.replyToId ?? root.id;
+  if (!root || root.artifactId !== artifactId || root.isDeleted || root.replyToId !== null) return null;
   return createComment(db, artifactId, root.versionId, {
     contentText,
     blockText: root.blockText ?? "",
     prevBlockText: root.prevBlockText,
     nextBlockText: root.nextBlockText,
     anchorJson: root.anchorJson ?? { v: 1, blockIndex: 0, start: 0, end: 0, selectedText: "" },
-    replyToId,
+    replyToId: root.id,
     createdByThreadId: options.createdByThreadId ?? null,
     createdByAgent: options.createdByAgent ?? false,
   });
@@ -238,16 +232,28 @@ export function editComment(db: Database, id: string, contentText: string) {
 }
 
 export function setCommentsResolved(db: Database, ids: string[], resolved: boolean, artifactId?: string) {
+  const results: CommentMutationResult[] = [];
   const update = transaction(db, () => {
     for (const id of ids) {
+      const comment = readComment(db, id);
+      if (!comment || comment.isDeleted || (artifactId && comment.artifactId !== artifactId)) {
+        results.push({ input: id, ok: false, code: "not_found" });
+        continue;
+      }
+      if (comment.replyToId !== null) {
+        results.push({ input: id, ok: false, code: "not_a_root" });
+        continue;
+      }
       writeRow(
         db,
         `UPDATE comments SET is_resolved = ?, updated_at = ? WHERE id = ? AND reply_to_id IS NULL AND is_deleted = 0 ${artifactId ? "AND artifact_id = ?" : ""}`,
         ...(artifactId ? [resolved ? 1 : 0, nowMs(), id, artifactId] : [resolved ? 1 : 0, nowMs(), id]),
       );
+      results.push({ input: id, id, ok: true });
     }
   });
   update();
+  return results;
 }
 
 export function softDeleteComments(db: Database, ids: string[], artifactId?: string) {
@@ -261,6 +267,27 @@ export function softDeleteComments(db: Database, ids: string[], artifactId?: str
     }
   });
   update();
+}
+
+export function restoreComments(db: Database, ids: string[], artifactId?: string) {
+  const results: CommentMutationResult[] = [];
+  const update = transaction(db, () => {
+    for (const id of ids) {
+      const comment = readComment(db, id);
+      if (!comment || (artifactId && comment.artifactId !== artifactId)) {
+        results.push({ input: id, ok: false, code: "not_found" });
+        continue;
+      }
+      writeRow(
+        db,
+        `UPDATE comments SET is_deleted = 0, updated_at = ? WHERE id = ? ${artifactId ? "AND artifact_id = ?" : ""}`,
+        ...(artifactId ? [nowMs(), id, artifactId] : [nowMs(), id]),
+      );
+      results.push({ input: id, id, ok: true });
+    }
+  });
+  update();
+  return results;
 }
 
 export function readComment(db: Database, id: string) {
@@ -292,8 +319,13 @@ export function readComment(db: Database, id: string) {
   return row ? normalizeComment(row, null) : null;
 }
 
-export function resolveTruncatedId(db: Database, artifactId: string, prefix: string) {
-  const rows = readRows<{ id: string }>(db, "SELECT id FROM comments WHERE artifact_id = ? AND is_deleted = 0 AND id LIKE ? ORDER BY id ASC", artifactId, `${prefix}%`);
+export function resolveTruncatedId(db: Database, artifactId: string, prefix: string, options: { includeDeleted?: boolean } = {}) {
+  const rows = readRows<{ id: string }>(
+    db,
+    `SELECT id FROM comments WHERE artifact_id = ? ${options.includeDeleted ? "" : "AND is_deleted = 0"} AND id LIKE ? ORDER BY id ASC`,
+    artifactId,
+    `${prefix}%`,
+  );
   if (rows.length === 0) return { ok: false as const, code: "not_found" as const };
   if (rows.length > 1) return { ok: false as const, code: "ambiguous" as const };
   return { ok: true as const, id: rows[0]!.id };
@@ -301,11 +333,11 @@ export function resolveTruncatedId(db: Database, artifactId: string, prefix: str
 
 export function reanchor(
   comment: Pick<CommentRecord, "blockText" | "prevBlockText" | "nextBlockText" | "anchorJson">,
-  newVersionText: string,
+  newVersionText: string | MarkdownBlock[],
 ) {
-  const blocks = markdownBlocks(newVersionText);
+  const blocks = typeof newVersionText === "string" ? markdownBlocks(newVersionText) : newVersionText;
   const originalIndex = comment.anchorJson?.blockIndex ?? 0;
-  const makeAnchor = (block: (typeof blocks)[number], orphaned = false) => ({
+  const makeAnchor = (block: MarkdownBlock, orphaned = false) => ({
     v: 1 as const,
     blockIndex: block.index,
     start: block.start,
@@ -313,28 +345,41 @@ export function reanchor(
     selectedText: comment.anchorJson?.selectedText ?? comment.blockText ?? "",
     orphaned,
   });
-  const nearest = (candidates: typeof blocks) => candidates.sort((left, right) => Math.abs(left.index - originalIndex) - Math.abs(right.index - originalIndex))[0];
-  const exact = nearest(blocks.filter((block) => block.text === comment.blockText));
-  if (exact) return makeAnchor(exact);
-  const context = blocks.filter((block) => {
-    const prev = blocks[block.index - 1]?.text ?? null;
-    const next = blocks[block.index + 1]?.text ?? null;
-    return prev === (comment.prevBlockText ?? null) && next === (comment.nextBlockText ?? null);
-  });
-  if (context.length === 1) return makeAnchor(context[0]!);
-  const scored = blocks
-    .map((block) => ({ block, score: tokenRatio(comment.blockText ?? "", block.text) }))
-    .filter((item) => item.score >= 0.8)
-    .sort((left, right) => right.score - left.score || Math.abs(left.block.index - originalIndex) - Math.abs(right.block.index - originalIndex));
-  if (scored[0] && scored[0].score > (scored[1]?.score ?? 0)) return makeAnchor(scored[0].block);
-  return {
+  const orphan = () => ({
     v: 1 as const,
     blockIndex: originalIndex,
     start: comment.anchorJson?.start ?? 0,
     end: comment.anchorJson?.end ?? 0,
     selectedText: comment.anchorJson?.selectedText ?? comment.blockText ?? "",
     orphaned: true,
-  };
+  });
+  const exact = blocks.filter((block) => block.text === comment.blockText);
+  const bothContext = exact.filter((block) => {
+    const prev = blocks[block.index - 1]?.text ?? null;
+    const next = blocks[block.index + 1]?.text ?? null;
+    return prev === (comment.prevBlockText ?? null) && next === (comment.nextBlockText ?? null);
+  });
+  if (bothContext.length === 1) return makeAnchor(bothContext[0]!);
+  if (exact.length === 1) return makeAnchor(exact[0]!);
+  if (exact.length > 1) {
+    const hasPrev = comment.prevBlockText !== null && comment.prevBlockText !== undefined;
+    const hasNext = comment.nextBlockText !== null && comment.nextBlockText !== undefined;
+    const oneContext = exact.filter((block) => {
+      const prev = blocks[block.index - 1]?.text ?? null;
+      const next = blocks[block.index + 1]?.text ?? null;
+      return (hasPrev && prev === comment.prevBlockText) || (hasNext && next === comment.nextBlockText);
+    });
+    if (oneContext.length === 1) return makeAnchor(oneContext[0]!);
+    const inWindow = exact.filter((block) => Math.abs(block.index - originalIndex) <= 2);
+    if (oneContext.length === 0 && inWindow.length === 1) return makeAnchor(inWindow[0]!);
+    return orphan();
+  }
+  const scored = blocks
+    .map((block) => ({ block, score: tokenRatio(comment.blockText ?? "", block.text) }))
+    .sort((left, right) => right.score - left.score || Math.abs(left.block.index - originalIndex) - Math.abs(right.block.index - originalIndex));
+  const candidates = scored.filter((item) => item.score >= 0.8);
+  if (candidates.length === 1 && (scored[1]?.score ?? 0) < 0.6) return makeAnchor(candidates[0]!.block);
+  return orphan();
 }
 
 function tokenRatio(left: string, right: string) {
@@ -358,21 +403,33 @@ function normalizeText(value: string) {
   return value.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
-export function toAgentXml(threads: CommentThread[], options: { truncatedIds?: string[]; total?: number; nextOffset?: number | null } = {}) {
-  const prefixes = idPrefixes(threads.flatMap((thread) => [thread.root, ...thread.replies]).map((comment) => comment.id));
+export function toAgentXml(
+  threads: CommentThread[],
+  options: {
+    truncatedIds?: string[];
+    total?: number;
+    nextOffset?: number | null;
+    idPrefixes?: Map<string, string>;
+    truncatedThreadIds?: Set<string>;
+    hint?: string;
+  } = {},
+) {
+  const prefixes = options.idPrefixes ?? idPrefixesForIds(threads.flatMap((thread) => [thread.root, ...thread.replies]).map((comment) => comment.id));
   const attrs = [
     `total="${options.total ?? threads.length}"`,
     options.nextOffset === null || options.nextOffset === undefined ? null : `next_offset="${options.nextOffset}"`,
   ].filter(Boolean).join(" ");
   const lines = [`<artifact_comments ${attrs}>`];
   for (const thread of threads) {
-    lines.push(`  <thread id="${escapeXml(prefixes.get(thread.root.id) ?? thread.root.id.slice(0, 8))}">`);
+    const truncated = options.truncatedThreadIds?.has(thread.root.id) ? ` truncated="true"` : "";
+    lines.push(`  <thread id="${escapeXml(prefixes.get(thread.root.id) ?? thread.root.id.slice(0, 8))}"${truncated}>`);
     lines.push(commentXml(thread.root, prefixes, "    "));
     for (const reply of thread.replies) lines.push(commentXml(reply, prefixes, "    ", "reply"));
     lines.push("  </thread>");
   }
   if (options.truncatedIds?.length) {
-    lines.push(`  <truncated>${options.truncatedIds.map(escapeXml).join(",")}</truncated>`);
+    const hint = options.hint ? ` hint="${escapeXml(options.hint)}"` : "";
+    lines.push(`  <truncated${hint}>${options.truncatedIds.map(escapeXml).join(",")}</truncated>`);
   }
   lines.push("</artifact_comments>");
   return lines.join("\n");
@@ -380,19 +437,78 @@ export function toAgentXml(threads: CommentThread[], options: { truncatedIds?: s
 
 export function boundedAgentXml(page: ReturnType<typeof listComments>, byteLimit = XML_LIMIT_BYTES) {
   const included: CommentThread[] = [];
-  const truncatedIds: string[] = [];
   for (const thread of page.threads) {
-    const next = toAgentXml([...included, thread], { total: page.total, nextOffset: page.nextOffset, truncatedIds });
+    const next = toAgentXml([...included, thread], { total: page.total, nextOffset: page.nextOffset, idPrefixes: page.idPrefixes });
     if (Buffer.byteLength(next, "utf8") > byteLimit) {
-      truncatedIds.push(thread.root.id.slice(0, 8));
-      continue;
+      if (included.length === 0) return truncatedThreadXml(page, thread, byteLimit);
+      const nextOffset = page.offset + included.length;
+      return toAgentXml(included, {
+        total: page.total,
+        nextOffset,
+        idPrefixes: page.idPrefixes,
+        truncatedIds: [page.idPrefixes.get(thread.root.id) ?? thread.root.id.slice(0, 8)],
+        hint: `fetch again with offset ${nextOffset}`,
+      });
     }
     included.push(thread);
   }
-  return toAgentXml(included, { total: page.total, nextOffset: page.nextOffset, truncatedIds });
+  return toAgentXml(included, { total: page.total, nextOffset: page.nextOffset, idPrefixes: page.idPrefixes });
 }
 
-function idPrefixes(ids: string[]) {
+function truncatedThreadXml(page: ReturnType<typeof listComments>, thread: CommentThread, byteLimit: number) {
+  const nextOffset = page.offset + 1;
+  let low = 0;
+  let high = Math.max(...[thread.root, ...thread.replies].flatMap((comment) => [comment.contentText.length, comment.blockText?.length ?? 0]));
+  let best = truncateThread(thread, 0);
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = truncateThread(thread, mid);
+    const xml = toAgentXml([candidate], {
+      total: page.total,
+      nextOffset,
+      idPrefixes: page.idPrefixes,
+      truncatedThreadIds: new Set([thread.root.id]),
+      truncatedIds: [page.idPrefixes.get(thread.root.id) ?? thread.root.id.slice(0, 8)],
+      hint: `fetch again with offset ${nextOffset}`,
+    });
+    if (Buffer.byteLength(xml, "utf8") <= byteLimit) {
+      best = candidate;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return toAgentXml([best], {
+    total: page.total,
+    nextOffset,
+    idPrefixes: page.idPrefixes,
+    truncatedThreadIds: new Set([thread.root.id]),
+    truncatedIds: [page.idPrefixes.get(thread.root.id) ?? thread.root.id.slice(0, 8)],
+    hint: `fetch again with offset ${nextOffset}`,
+  });
+}
+
+function truncateThread(thread: CommentThread, maxChars: number): CommentThread {
+  return {
+    root: truncateComment(thread.root, maxChars),
+    replies: thread.replies.map((reply) => truncateComment(reply, maxChars)),
+  };
+}
+
+function truncateComment(comment: CommentRecord, maxChars: number): CommentRecord {
+  return {
+    ...comment,
+    contentText: truncateValue(comment.contentText, maxChars),
+    blockText: comment.blockText === null ? null : truncateValue(comment.blockText, maxChars),
+  };
+}
+
+function truncateValue(value: string, maxChars: number) {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars)}[truncated]`;
+}
+
+function idPrefixesForIds(ids: string[]) {
   const result = new Map<string, string>();
   for (const id of ids) {
     for (let length = 8; length <= id.length; length += 1) {
@@ -413,12 +529,78 @@ function commentXml(comment: CommentRecord, prefixes: Map<string, string>, inden
 }
 
 function escapeXml(value: string) {
-  return value
+  return stripInvalidXmlCodePoints(value)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll("\"", "&quot;")
     .replaceAll("'", "&apos;");
+}
+
+function stripInvalidXmlCodePoints(value: string) {
+  let result = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        const point = value.codePointAt(index)!;
+        if (point !== 0xfffe && point !== 0xffff) result += value[index] + value[index + 1];
+        index += 1;
+      }
+      continue;
+    }
+    if (code >= 0xdc00 && code <= 0xdfff) continue;
+    if ((code >= 0x00 && code <= 0x08) || (code >= 0x0b && code <= 0x0c) || (code >= 0x0e && code <= 0x1f)) continue;
+    if (code === 0xfffe || code === 0xffff) continue;
+    result += value[index];
+  }
+  return result;
+}
+
+function selectedThreadsByRootIds(db: Database, artifactId: string, commentIds: string[], includeResolved: boolean) {
+  const text = currentVersionText(db, artifactId);
+  const currentBlocks = text === null ? null : markdownBlocks(text);
+  const rows = rowsForArtifact(db, artifactId);
+  const idPrefixes = idPrefixesForIds(rows.map((row) => row.id));
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const byParent = new Map<string | null, RawComment[]>();
+  for (const row of rows) byParent.set(row.replyToId, [...(byParent.get(row.replyToId) ?? []), row]);
+  const seen = new Set<string>();
+  const threads: CommentThread[] = [];
+  for (const id of commentIds) {
+    const row = byId.get(id);
+    if (!row) throw new Error(`comment not found: ${id}`);
+    if (row.replyToId !== null) throw new Error(`not_a_root: ${id}`);
+    if (!includeResolved && Boolean(row.isResolved)) continue;
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    const root = normalizeComment(row, currentBlocks);
+    threads.push({
+      root,
+      replies: (byParent.get(root.id) ?? []).map((reply) => ({ ...normalizeComment(reply, currentBlocks), anchor: root.anchor })),
+    });
+  }
+  return { threads, total: threads.length, nextOffset: null, offset: 0, idPrefixes } satisfies CommentPage;
+}
+
+function sendXmlChunks(page: CommentPage, byteLimit: number) {
+  const chunks: CommentThread[][] = [];
+  let current: CommentThread[] = [];
+  for (const thread of page.threads) {
+    const single = toAgentXml([thread], { total: 1, nextOffset: null, idPrefixes: page.idPrefixes });
+    if (Buffer.byteLength(single, "utf8") > byteLimit) throw new Error("selection too large, send fewer comments");
+    const next = [...current, thread];
+    const xml = toAgentXml(next, { total: next.length, nextOffset: null, idPrefixes: page.idPrefixes });
+    if (Buffer.byteLength(xml, "utf8") > byteLimit && current.length > 0) {
+      chunks.push(current);
+      current = [thread];
+    } else {
+      current = next;
+    }
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
 }
 
 export async function sendCommentsToSession(
@@ -428,17 +610,39 @@ export async function sendCommentsToSession(
   artifactId: string,
   commentIds: string[],
   mode: "send" | "send-and-resolve",
+  options: { requestId?: string | null; includeResolved?: boolean; byteLimit?: number } = {},
 ) {
+  if (options.requestId) {
+    const receipt = readRow<{ sentIdsJson: string }>(db, "SELECT sent_ids_json AS sentIdsJson FROM send_receipts WHERE request_id = ?", options.requestId);
+    if (receipt) return { sent: parseJson<string[]>(receipt.sentIdsJson, []).length };
+  }
   const artifact = readRow<{ taskId: string; fileName: string }>(db, "SELECT task_id AS taskId, file_name AS fileName FROM artifacts WHERE id = ?", artifactId);
   if (!artifact) throw new Error("artifact not found");
   const session = readRow<{ taskId: string }>(db, "SELECT task_id AS taskId FROM sessions WHERE thread_id = ?", threadId);
   if (!session || session.taskId !== artifact.taskId) throw new Error("not a HumanLayer task session");
-  const selected = new Set(commentIds);
-  const all = listComments(db, artifactId, { includeResolved: true, limit: 100, offset: 0 });
-  const threads = all.threads.filter((thread) => selected.has(thread.root.id));
-  const xml = boundedAgentXml({ ...all, threads, total: threads.length, nextOffset: null });
-  const text = `Please review the following comments on ${artifact.fileName} and address them:\n\n${xml}`;
-  await bb.sdk.threads.send({ threadId, mode: "auto", input: [{ type: "text", text }] } as never);
-  if (mode === "send-and-resolve") setCommentsResolved(db, threads.map((thread) => thread.root.id), true);
-  return { sent: threads.length };
+  const page = selectedThreadsByRootIds(db, artifactId, commentIds, options.includeResolved ?? false);
+  const chunks = sendXmlChunks(page, options.byteLimit ?? XML_LIMIT_BYTES);
+  const delivered: string[] = [];
+  for (const chunk of chunks) {
+    const xml = toAgentXml(chunk, { total: chunk.length, nextOffset: null, idPrefixes: page.idPrefixes });
+    const text = `Please review the following comments on ${artifact.fileName} and address them:\n\n${xml}`;
+    await bb.sdk.threads.send({ threadId, mode: "auto", input: [{ type: "text", text }] } as never);
+    const ids = chunk.map((thread) => thread.root.id);
+    delivered.push(...ids);
+    if (mode === "send-and-resolve") setCommentsResolved(db, ids, true, artifactId);
+  }
+  if (options.requestId) {
+    writeRow(
+      db,
+      "INSERT INTO send_receipts (request_id, artifact_id, thread_id, comment_ids_json, mode, sent_ids_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      options.requestId,
+      artifactId,
+      threadId,
+      stringifyJson(commentIds),
+      mode,
+      stringifyJson(delivered),
+      nowMs(),
+    );
+  }
+  return { sent: delivered.length };
 }

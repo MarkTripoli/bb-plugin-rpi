@@ -14,6 +14,7 @@ import {
   listComments,
   replyToComment,
   resolveTruncatedId,
+  restoreComments,
   setCommentsResolved,
   softDeleteComments,
 } from "./comments";
@@ -49,6 +50,10 @@ function artifactForTool(db: Database, taskId: string, fileName: string) {
 
 function toolError(error: unknown) {
   return { content: [{ type: "text" as const, text: String(error instanceof Error ? error.message : error) }], isError: true };
+}
+
+function toolJson(value: unknown, isError = false) {
+  return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }], isError };
 }
 
 export function registerArtifactTools(bb: BbPluginApi, db: Database, mirror: Map<string, SessionMirrorRow>) {
@@ -189,17 +194,30 @@ export function registerArtifactTools(bb: BbPluginApi, db: Database, mirror: Map
         const artifact = artifactForTool(db, row.taskId, artifact_filename);
         if (resolved === undefined && deleted === undefined) throw new Error("resolved or deleted is required");
         const results = comment_ids.map((input) => {
-          const match = resolveTruncatedId(db, artifact.id, input);
-          return match.ok ? { input, id: match.id, ok: true as const } : { input, ok: false as const, code: match.code };
+          const match = resolveTruncatedId(db, artifact.id, input, { includeDeleted: deleted === false });
+          if (!match.ok) return { input, ok: false as const, code: match.code };
+          const comment = db.prepare("SELECT reply_to_id AS replyToId FROM comments WHERE id = ?").get(match.id) as { replyToId: string | null } | undefined;
+          if (resolved !== undefined && comment?.replyToId !== null) return { input, ok: false as const, code: "not_a_root" as const };
+          return { input, id: match.id, ok: true as const };
         });
         const ids = results.filter((result): result is { input: string; id: string; ok: true } => result.ok).map((result) => result.id);
-        if (resolved !== undefined) setCommentsResolved(db, ids, resolved);
-        if (deleted !== undefined) softDeleteComments(db, ids);
+        if (results.some((result) => !result.ok && (result.code === "ambiguous" || result.code === "not_found"))) return toolJson({ results }, true);
+        if (resolved !== undefined) {
+          const resolvedResults = setCommentsResolved(db, ids, resolved, artifact.id);
+          for (const result of resolvedResults) {
+            if (!result.ok) {
+              const index = results.findIndex((item) => item.ok && item.id === result.input);
+              if (index >= 0) results[index] = { input: results[index]!.input, ok: false, code: result.code };
+            }
+          }
+        }
+        if (deleted === true) softDeleteComments(db, ids, artifact.id);
+        if (deleted === false) restoreComments(db, ids, artifact.id);
         if (ids.length > 0) {
-          bb.realtime.publish("hl:comments", { taskId: row.taskId, artifactId: artifact.id, commentId: null, createdByAgent: true });
+          bb.realtime.publish("hl:comments", { taskId: row.taskId, artifactId: artifact.id, commentId: null, createdByAgent: true, kind: deleted === undefined ? "resolved" : "deleted" });
           bb.realtime.publish("hl:artifacts", { taskId: row.taskId });
         }
-        return JSON.stringify({ results }, null, 2);
+        return toolJson({ results }, results.some((result) => !result.ok));
       } catch (error) {
         return toolError(error);
       }
@@ -223,12 +241,12 @@ export function registerArtifactTools(bb: BbPluginApi, db: Database, mirror: Map
         const row = taskSession(mirror, threadId);
         const artifact = artifactForTool(db, row.taskId, artifact_filename);
         const match = resolveTruncatedId(db, artifact.id, comment_id);
-        if (!match.ok) return JSON.stringify({ ok: false, code: match.code });
+        if (!match.ok) return toolJson({ ok: false, code: match.code }, true);
         const comment = replyToComment(db, artifact.id, match.id, content, { createdByAgent: true, createdByThreadId: threadId });
-        if (!comment) return JSON.stringify({ ok: false, code: "not_found" });
-        bb.realtime.publish("hl:comments", { taskId: row.taskId, artifactId: artifact.id, commentId: comment.id, createdByAgent: true });
+        if (!comment) return toolJson({ ok: false, code: "not_a_root" }, true);
+        bb.realtime.publish("hl:comments", { taskId: row.taskId, artifactId: artifact.id, commentId: comment.id, createdByAgent: true, kind: "replied" });
         bb.realtime.publish("hl:artifacts", { taskId: row.taskId });
-        return JSON.stringify({ ok: true, comment_id: comment.id.slice(0, 8) });
+        return toolJson({ ok: true, comment_id: comment.id.slice(0, 8) });
       } catch (error) {
         return toolError(error);
       }

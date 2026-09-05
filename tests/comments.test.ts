@@ -7,9 +7,14 @@ import { createDraftTask } from "../tasks";
 import { upsertArtifact } from "../artifacts";
 import {
   createComment,
+  boundedAgentXml,
   listComments,
   reanchor,
+  restoreComments,
   resolveTruncatedId,
+  sendCommentsToSession,
+  setCommentsResolved,
+  softDeleteComments,
   toAgentXml,
   type CommentRecord,
 } from "../comments";
@@ -68,6 +73,44 @@ test("reanchor uses exact, context, fuzzy, then orphan", () => {
   assert.equal(reanchor(comment(), "Delta\n\nEpsilon").orphaned, true);
 });
 
+test("reanchor orphans ambiguous similar blocks and disambiguates repeated items by context", () => {
+  const ambiguous = reanchor(
+    comment({
+      blockText: "wind changed east and west marker",
+      prevBlockText: "missing",
+      nextBlockText: "missing",
+      anchorJson: anchor(3, "wind changed east and west marker"),
+    }),
+    [
+      "intro",
+      "wind changed east marker",
+      "middle",
+      "wind changed west marker",
+      "outro",
+    ].join("\n\n"),
+  );
+  assert.equal(ambiguous.orphaned, true);
+
+  const repeated = reanchor(
+    comment({
+      blockText: "- Review item",
+      prevBlockText: "- East context",
+      nextBlockText: "- West context",
+      anchorJson: anchor(1, "- Review item"),
+    }),
+    [
+      "- North context",
+      "- Review item",
+      "- South context",
+      "- East context",
+      "- Review item",
+      "- West context",
+    ].join("\n\n"),
+  );
+  assert.equal(repeated.orphaned, false);
+  assert.equal(repeated.blockIndex, 4);
+});
+
 test("agent XML escapes content and extends ambiguous prefixes", () => {
   const root = {
     id: "12345678a-root",
@@ -94,6 +137,31 @@ test("agent XML escapes content and extends ambiguous prefixes", () => {
   assert.match(xml, /id="12345678b"/);
   assert.match(xml, /Use &lt;tag&gt; &amp; &quot;quotes&quot;/);
   assert.match(xml, /block="Block &amp; text"/);
+});
+
+test("agent XML strips invalid XML code points before escaping", () => {
+  const root = {
+    id: "strip-root",
+    artifactId: "artifact",
+    versionId: "version",
+    replyToId: null,
+    contentText: "ok\u0000\u0008\t\n\r\u000b\ud800\ufffe<done>",
+    blockText: "block\u0001",
+    prevBlockText: null,
+    nextBlockText: null,
+    anchorJson: anchor(0),
+    kind: "comment",
+    isResolved: false,
+    isDeleted: false,
+    createdByAgent: false,
+    createdByThreadId: null,
+    createdAt: 1,
+    updatedAt: 1,
+    anchor: { ...anchor(0), orphaned: false },
+  } satisfies CommentRecord;
+  const xml = toAgentXml([{ root, replies: [] }]);
+  assert.match(xml, />ok\t\n\r&lt;done&gt;</);
+  assert.doesNotMatch(xml, /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ud800\ufffe]/u);
 });
 
 test("listComments returns chronological root threads with replies", () => {
@@ -132,6 +200,52 @@ test("listComments returns chronological root threads with replies", () => {
   db.close();
 });
 
+test("boundedAgentXml stops at first omitted root and truncates a single oversized thread", () => {
+  const root = {
+    id: "aaaa-root",
+    artifactId: "artifact",
+    versionId: "version",
+    replyToId: null,
+    contentText: "A".repeat(900),
+    blockText: "B".repeat(900),
+    prevBlockText: null,
+    nextBlockText: null,
+    anchorJson: anchor(0),
+    kind: "comment",
+    isResolved: false,
+    isDeleted: false,
+    createdByAgent: false,
+    createdByThreadId: null,
+    createdAt: 1,
+    updatedAt: 1,
+    anchor: { ...anchor(0), orphaned: false },
+  } satisfies CommentRecord;
+  const second = { ...root, id: "bbbb-root", contentText: "small", blockText: "small" } satisfies CommentRecord;
+  const page = {
+    threads: [{ root, replies: [] }, { root: second, replies: [] }],
+    total: 2,
+    nextOffset: null,
+    offset: 0,
+    idPrefixes: new Map([["aaaa-root", "aaaa"], ["bbbb-root", "bbbb"]]),
+  };
+  const xml = boundedAgentXml(page, 420);
+  assert.ok(Buffer.byteLength(xml, "utf8") <= 420);
+  assert.match(xml, /<thread id="aaaa" truncated="true">/);
+  assert.match(xml, /next_offset="1"/);
+  assert.match(xml, /hint="fetch again with offset 1"/);
+
+  const smallFirst = { ...root, id: "cccc-root", contentText: "small", blockText: "small" } satisfies CommentRecord;
+  const omitted = boundedAgentXml({
+    ...page,
+    threads: [{ root: smallFirst, replies: [] }, { root, replies: [] }, { root: second, replies: [] }],
+    total: 3,
+    idPrefixes: new Map([["cccc-root", "cccc"], ["aaaa-root", "aaaa"], ["bbbb-root", "bbbb"]]),
+  }, 430);
+  assert.match(omitted, /<thread id="cccc">/);
+  assert.doesNotMatch(omitted, /<thread id="bbbb">/);
+  assert.match(omitted, /next_offset="1"/);
+});
+
 test("resolveTruncatedId reports ambiguity and not found", () => {
   const db = makeDb();
   const taskId = seedTask(db);
@@ -146,6 +260,37 @@ test("resolveTruncatedId reports ambiguity and not found", () => {
   assert.deepEqual(resolveTruncatedId(db, saved.artifact.id, "abcdef12"), { ok: false, code: "ambiguous" });
   assert.deepEqual(resolveTruncatedId(db, saved.artifact.id, "missing"), { ok: false, code: "not_found" });
   assert.deepEqual(resolveTruncatedId(db, saved.artifact.id, "abcdef12-o"), { ok: true, id: "abcdef12-one" });
+  db.close();
+});
+
+test("comment updates restore only the requested deleted id and resolve roots only", () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  const saved = upsertArtifact(db, taskId, "notes.md", "A", { createdBy: "test", operation: "test" });
+  const version = db.prepare("SELECT id FROM artifact_versions WHERE artifact_id = ?").get(saved.artifact.id) as { id: string };
+  const root = createComment(db, saved.artifact.id, version.id, {
+    contentText: "root",
+    blockText: "A",
+    anchorJson: anchor(0, "A"),
+  });
+  const reply = createComment(db, saved.artifact.id, version.id, {
+    contentText: "reply",
+    blockText: "A",
+    anchorJson: anchor(0, "A"),
+    replyToId: root.id,
+  });
+
+  softDeleteComments(db, [root.id], saved.artifact.id);
+  assert.equal((db.prepare("SELECT is_deleted FROM comments WHERE id = ?").get(root.id) as { is_deleted: number }).is_deleted, 1);
+  assert.equal((db.prepare("SELECT is_deleted FROM comments WHERE id = ?").get(reply.id) as { is_deleted: number }).is_deleted, 1);
+  assert.deepEqual(restoreComments(db, [root.id], saved.artifact.id), [{ input: root.id, id: root.id, ok: true }]);
+  assert.equal((db.prepare("SELECT is_deleted FROM comments WHERE id = ?").get(root.id) as { is_deleted: number }).is_deleted, 0);
+  assert.equal((db.prepare("SELECT is_deleted FROM comments WHERE id = ?").get(reply.id) as { is_deleted: number }).is_deleted, 1);
+  assert.deepEqual(restoreComments(db, [reply.id], saved.artifact.id), [{ input: reply.id, id: reply.id, ok: true }]);
+  assert.deepEqual(setCommentsResolved(db, [root.id], true, saved.artifact.id), [{ input: root.id, id: root.id, ok: true }]);
+  assert.deepEqual(setCommentsResolved(db, [reply.id], true, saved.artifact.id), [{ input: reply.id, ok: false, code: "not_a_root" }]);
+  assert.deepEqual(setCommentsResolved(db, [root.id], false, saved.artifact.id), [{ input: root.id, id: root.id, ok: true }]);
+  assert.equal((db.prepare("SELECT is_resolved FROM comments WHERE id = ?").get(root.id) as { is_resolved: number }).is_resolved, 0);
   db.close();
 });
 
@@ -195,4 +340,117 @@ test("send-and-resolve resolves only after threads.send succeeds", async () => {
   );
   assert.equal(listComments(db, saved.artifact.id).threads[0]?.root.isResolved, false);
   await harness.lifecycle.dispose();
+});
+
+test("comment RPC validates version ownership, roots, edit ownership, and realtime kinds", async () => {
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "humanlayer",
+    sdk: { subscribe: () => () => undefined },
+  });
+  await plugin(bb);
+  const created = await harness.behavior.callRpc("createTask", {
+    request: { text: "prompt", projectId: "proj_1", workflowType: "freeform", worktreeTiming: "never", permissionMode: "default", autoAdvance: false },
+    name: "Task",
+    draft: true,
+  }) as { taskId: string };
+  const saved = await harness.behavior.callRpc("saveArtifact", { taskId: created.taskId, fileName: "notes.md", content: "A\n\nB" }) as { artifact: { id: string } };
+  const other = await harness.behavior.callRpc("saveArtifact", { taskId: created.taskId, fileName: "other.md", content: "C" }) as { artifact: { id: string } };
+  const db = bb.storage.database();
+  const version = db.prepare("SELECT id FROM artifact_versions WHERE artifact_id = ?").get(saved.artifact.id) as { id: string };
+  const otherVersion = db.prepare("SELECT id FROM artifact_versions WHERE artifact_id = ?").get(other.artifact.id) as { id: string };
+
+  await assert.rejects(harness.behavior.callRpc("createComment", {
+    artifactId: saved.artifact.id,
+    versionId: otherVersion.id,
+    contentText: "wrong version",
+    blockText: "A",
+    anchorJson: anchor(0, "A"),
+  }), /version does not belong to artifact/);
+  await assert.rejects(harness.behavior.callRpc("createComment", {
+    artifactId: saved.artifact.id,
+    versionId: version.id,
+    contentText: "bad block",
+    blockText: "A",
+    anchorJson: anchor(9, "A"),
+  }), /anchor blockIndex out of range/);
+
+  const rootResult = await harness.behavior.callRpc("createComment", {
+    artifactId: saved.artifact.id,
+    versionId: version.id,
+    contentText: "root",
+    blockText: "A",
+    anchorJson: anchor(0, "A"),
+  }) as { comment: { id: string } };
+  const createdSignal = harness.inspection.realtimeSignals.at(-2);
+  assert.equal(createdSignal?.channel, "hl:comments");
+  assert.equal((createdSignal?.payload as { kind?: string }).kind, "created");
+
+  const replyResult = await harness.behavior.callRpc("replyComment", {
+    artifactId: saved.artifact.id,
+    commentId: rootResult.comment.id,
+    content: "reply",
+  }) as { comment: { id: string } };
+  const repliedSignal = harness.inspection.realtimeSignals.at(-2);
+  assert.equal((repliedSignal?.payload as { kind?: string }).kind, "replied");
+  await assert.rejects(harness.behavior.callRpc("replyComment", {
+    artifactId: saved.artifact.id,
+    commentId: replyResult.comment.id,
+    content: "reply to reply",
+  }), /not_a_root/);
+  await assert.rejects(harness.behavior.callRpc("resolveComments", {
+    artifactId: saved.artifact.id,
+    commentIds: [replyResult.comment.id],
+    resolved: true,
+  }), /not_a_root/);
+
+  db.prepare("UPDATE comments SET created_by_agent = 1 WHERE id = ?").run(rootResult.comment.id);
+  await assert.rejects(harness.behavior.callRpc("editComment", {
+    commentId: rootResult.comment.id,
+    content: "edit",
+  }), /cannot edit agent comments/);
+  await harness.lifecycle.dispose();
+});
+
+test("sendCommentsToSession splits selected roots without dropping requested ids", async () => {
+  const sent: string[] = [];
+  const bb = {
+    sdk: {
+      threads: {
+        send: async (input: { input: Array<{ text: string }> }) => {
+          sent.push(input.input[0]!.text);
+        },
+      },
+    },
+  } as unknown as Parameters<typeof sendCommentsToSession>[0];
+  const db = makeDb();
+  const taskId = seedTask(db);
+  const saved = upsertArtifact(db, taskId, "notes.md", "A\n\nB\n\nC", { createdBy: "test", operation: "test" });
+  db.prepare(`
+    INSERT INTO sessions (
+      thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
+      hl_status, hl_status_at, had_turn, interrupted, blocked_reason,
+      created_at, updated_at
+    ) VALUES ('thr_1', ?, NULL, NULL, 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, 1, 1)
+  `).run(taskId);
+  const version = db.prepare("SELECT id FROM artifact_versions WHERE artifact_id = ?").get(saved.artifact.id) as { id: string };
+  const comments = ["A", "B", "C"].map((blockText, index) => createComment(db, saved.artifact.id, version.id, {
+    contentText: `${blockText}${"x".repeat(120)}`,
+    blockText,
+    anchorJson: anchor(index, blockText),
+  }));
+  const result = await sendCommentsToSession(bb, db, "thr_1", saved.artifact.id, comments.map((item) => item.id), "send-and-resolve", {
+    requestId: "request-1",
+    byteLimit: 520,
+  });
+  assert.equal(result.sent, 3);
+  assert.equal(sent.length > 1, true);
+  assert.deepEqual(comments.map((item) => (db.prepare("SELECT is_resolved FROM comments WHERE id = ?").get(item.id) as { is_resolved: number }).is_resolved), [1, 1, 1]);
+  const sentCount = sent.length;
+  const duplicate = await sendCommentsToSession(bb, db, "thr_1", saved.artifact.id, comments.map((item) => item.id), "send-and-resolve", {
+    requestId: "request-1",
+    byteLimit: 520,
+  });
+  assert.equal(duplicate.sent, 3);
+  assert.equal(sent.length, sentCount);
+  db.close();
 });

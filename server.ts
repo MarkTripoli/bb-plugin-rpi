@@ -18,13 +18,13 @@ import {
   type CommentThread,
   editComment,
   listComments,
-  markdownBlocks,
   replyToComment,
   resolveTruncatedId,
   sendCommentsToSession,
   setCommentsResolved,
   softDeleteComments,
 } from "./comments";
+import { markdownBlocks } from "./blocks";
 import {
   forkSession,
   interruptSession,
@@ -65,8 +65,10 @@ function publishArtifacts(bb: BbPluginApi, taskId: string) {
   bb.realtime.publish("hl:artifacts", { taskId });
 }
 
-function publishComments(bb: BbPluginApi, taskId: string, artifactId: string, commentId: string | null, createdByAgent: boolean) {
-  bb.realtime.publish("hl:comments", { taskId, artifactId, commentId, createdByAgent });
+type CommentEventKind = "created" | "replied" | "edited" | "resolved" | "deleted";
+
+function publishComments(bb: BbPluginApi, taskId: string, artifactId: string, commentId: string | null, createdByAgent: boolean, kind: CommentEventKind) {
+  bb.realtime.publish("hl:comments", { taskId, artifactId, commentId, createdByAgent, kind });
   bb.realtime.publish("hl:artifacts", { taskId });
 }
 
@@ -84,11 +86,45 @@ function readArtifactTask(db: ReturnType<typeof openPluginDatabase>, artifactId:
   return artifact;
 }
 
+function readArtifactVersionForComment(db: ReturnType<typeof openPluginDatabase>, artifactId: string, versionId: string) {
+  const version = readRow<{ id: string; content: Buffer }>(
+    db,
+    "SELECT id, content FROM artifact_versions WHERE id = ? AND artifact_id = ?",
+    versionId,
+    artifactId,
+  );
+  if (!version) throw new Error("version does not belong to artifact");
+  return version;
+}
+
+function assertRootCommentForArtifact(db: ReturnType<typeof openPluginDatabase>, artifactId: string, commentId: string) {
+  const comment = readRow<{ id: string; replyToId: string | null; isDeleted: number | boolean }>(
+    db,
+    "SELECT id, reply_to_id AS replyToId, is_deleted AS isDeleted FROM comments WHERE id = ? AND artifact_id = ?",
+    commentId,
+    artifactId,
+  );
+  if (!comment || Boolean(comment.isDeleted)) throw new Error("comment not found");
+  if (comment.replyToId !== null) throw new Error("not_a_root");
+}
+
+function assertAnchorInVersion(content: Buffer, blockIndex: number) {
+  if (!markdownBlocks(content.toString("utf8"))[blockIndex]) throw new Error("anchor blockIndex out of range");
+}
+
+function stripCommentPage(page: ReturnType<typeof listComments>) {
+  return { threads: page.threads, total: page.total, nextOffset: page.nextOffset };
+}
+
 function commentCliLines(threads: CommentThread[]) {
   return threads.flatMap((thread) => [
-    `${thread.root.id.slice(0, 8)}\t${thread.root.isResolved ? "resolved" : "open"}\tblock ${thread.root.anchor?.orphaned ? "unanchored" : thread.root.anchor?.blockIndex ?? "?"}\t${thread.root.contentText}`,
-    ...thread.replies.map((reply) => `  ${reply.id.slice(0, 8)}\treply\t${reply.createdByAgent ? "agent" : "you"}\t${reply.contentText}`),
+    `${thread.root.id.slice(0, 8)}\t${thread.root.isResolved ? "resolved" : "open"}\tblock ${thread.root.anchor?.orphaned ? "unanchored" : thread.root.anchor?.blockIndex ?? "?"}\t${truncateCliComment(thread.root.contentText)}`,
+    ...thread.replies.map((reply) => `  ${reply.id.slice(0, 8)}\treply\t${reply.createdByAgent ? "agent" : "you"}\t${truncateCliComment(reply.contentText)}`),
   ]);
+}
+
+function truncateCliComment(value: string) {
+  return value.length > 500 ? `${value.slice(0, 500)}[truncated]` : value;
 }
 
 export default async function plugin(bb: BbPluginApi) {
@@ -289,9 +325,12 @@ export default async function plugin(bb: BbPluginApi) {
       publishArtifacts(bb, taskId);
       return { artifact: restored.artifact, mirror, outcome: restored.outcome };
     },
-    listComments: async ({ artifactId, includeResolved, limit, offset }) => listComments(db, artifactId, { includeResolved, limit, offset }),
+    listComments: async ({ artifactId, includeResolved, limit, offset }) => stripCommentPage(listComments(db, artifactId, { includeResolved, limit, offset })),
     createComment: async (input) => {
       const artifact = readArtifactTask(db, input.artifactId);
+      const version = readArtifactVersionForComment(db, input.artifactId, input.versionId);
+      assertAnchorInVersion(version.content, input.anchorJson.blockIndex);
+      if (input.replyToId) assertRootCommentForArtifact(db, input.artifactId, input.replyToId);
       const comment = createComment(db, input.artifactId, input.versionId, {
         contentText: input.contentText,
         blockText: input.blockText,
@@ -301,40 +340,45 @@ export default async function plugin(bb: BbPluginApi) {
         replyToId: input.replyToId ?? null,
         createdByAgent: false,
       });
-      publishComments(bb, artifact.taskId, input.artifactId, comment.id, false);
+      publishComments(bb, artifact.taskId, input.artifactId, comment.id, false, input.replyToId ? "replied" : "created");
       return { comment };
     },
     replyComment: async ({ artifactId, commentId, content }) => {
       const artifact = readArtifactTask(db, artifactId);
+      assertRootCommentForArtifact(db, artifactId, commentId);
       const comment = replyToComment(db, artifactId, commentId, content, { createdByAgent: false });
       if (!comment) throw new Error("comment not found");
-      publishComments(bb, artifact.taskId, artifactId, comment.id, false);
+      publishComments(bb, artifact.taskId, artifactId, comment.id, false, "replied");
       return { comment };
     },
     editComment: async ({ commentId, content }) => {
+      const existing = readRow<{ createdByAgent: number | boolean }>(db, "SELECT created_by_agent AS createdByAgent FROM comments WHERE id = ? AND is_deleted = 0", commentId);
+      if (existing && Boolean(existing.createdByAgent)) throw new Error("cannot edit agent comments");
       const comment = editComment(db, commentId, content);
       if (comment) {
         const artifact = readArtifactTask(db, comment.artifactId);
-        publishComments(bb, artifact.taskId, comment.artifactId, comment.id, comment.createdByAgent);
+        publishComments(bb, artifact.taskId, comment.artifactId, comment.id, comment.createdByAgent, "edited");
       }
       return { comment };
     },
     resolveComments: async ({ artifactId, commentIds, resolved }) => {
       const artifact = readArtifactTask(db, artifactId);
-      setCommentsResolved(db, commentIds, resolved, artifactId);
-      publishComments(bb, artifact.taskId, artifactId, null, false);
+      const results = setCommentsResolved(db, commentIds, resolved, artifactId);
+      const failed = results.find((result) => !result.ok);
+      if (failed) throw new Error(failed.code);
+      publishComments(bb, artifact.taskId, artifactId, null, false, "resolved");
       return { ok: true as const };
     },
     deleteComment: async ({ artifactId, commentIds }) => {
       const artifact = readArtifactTask(db, artifactId);
       softDeleteComments(db, commentIds, artifactId);
-      publishComments(bb, artifact.taskId, artifactId, null, false);
+      publishComments(bb, artifact.taskId, artifactId, null, false, "deleted");
       return { ok: true as const };
     },
-    sendCommentsToSession: async ({ threadId, artifactId, commentIds, mode }) => {
-      const result = await sendCommentsToSession(bb, db, threadId, artifactId, commentIds, mode);
+    sendCommentsToSession: async ({ threadId, artifactId, commentIds, mode, requestId, includeResolved }) => {
+      const result = await sendCommentsToSession(bb, db, threadId, artifactId, commentIds, mode, { requestId, includeResolved });
       const artifact = readArtifactTask(db, artifactId);
-      publishComments(bb, artifact.taskId, artifactId, null, false);
+      publishComments(bb, artifact.taskId, artifactId, null, false, "resolved");
       return result;
     },
     hydrateNow: async ({ taskId }) => {
@@ -533,7 +577,7 @@ export default async function plugin(bb: BbPluginApi) {
           if (!opts.task || !opts.file) return { exitCode: 2, stderr: "usage: bb humanlayer comments list --task <taskId> --file <fileName>\n" };
           const artifact = getArtifact(db, opts.task, opts.file);
           if (!artifact) return { exitCode: 1, stderr: "artifact not found\n" };
-          const page = listComments(db, artifact.id, { includeResolved: opts.resolved === "true", limit: parseBoundedInt(opts.limit, 50, 1, 100), offset: parseBoundedInt(opts.offset, 0, 0, 100000) });
+          const page = stripCommentPage(listComments(db, artifact.id, { includeResolved: opts.resolved === "true", limit: parseBoundedInt(opts.limit, 50, 1, 50), offset: parseBoundedInt(opts.offset, 0, 0, 100000) }));
           if (json) return { exitCode: 0, stdout: `${JSON.stringify(page)}\n` };
           return { exitCode: 0, stdout: commentCliLines(page.threads).join("\n") + "\n" };
         }
@@ -556,7 +600,7 @@ export default async function plugin(bb: BbPluginApi) {
             anchorJson: { v: 1, blockIndex: block.index, start: block.start, end: block.end, selectedText: block.text },
             createdByAgent: false,
           });
-          publishComments(bb, opts.task, result.artifact.id, comment.id, false);
+          publishComments(bb, opts.task, result.artifact.id, comment.id, false, "created");
           return { exitCode: 0, stdout: json ? `${JSON.stringify({ comment })}\n` : `${comment.id.slice(0, 8)}\tblock ${block.index}\n` };
         }
         if (argv[0] === "comments" && argv[1] === "resolve") {
@@ -566,8 +610,10 @@ export default async function plugin(bb: BbPluginApi) {
           if (!artifact) return { exitCode: 1, stderr: "artifact not found\n" };
           const match = resolveTruncatedId(db, artifact.id, opts.id);
           if (!match.ok) return { exitCode: 1, stderr: `${match.code}\n` };
-          setCommentsResolved(db, [match.id], true);
-          publishComments(bb, opts.task, artifact.id, match.id, false);
+          const results = setCommentsResolved(db, [match.id], true, artifact.id);
+          const failed = results.find((result) => !result.ok);
+          if (failed) return { exitCode: 1, stderr: `${failed.code}\n` };
+          publishComments(bb, opts.task, artifact.id, match.id, false, "resolved");
           return { exitCode: 0, stdout: json ? `${JSON.stringify({ id: match.id, resolved: true })}\n` : `${match.id.slice(0, 8)}\tresolved\n` };
         }
         return { exitCode: 2, stderr: "usage: bb humanlayer {tasks|sessions|artifacts|comments} ...\n" };
