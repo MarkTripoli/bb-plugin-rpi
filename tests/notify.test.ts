@@ -210,3 +210,21 @@ test("retention sweeps only archived-task notifications and suppressions once ol
   assert.deepEqual(suppressionKeys, [{ threadId: "thr_active", completedTurnKey: "turn_unconsumed" }]);
   db.close();
 });
+
+test("retention also sweeps individually archived threads (task open) and rows with no session at all", () => {
+  const db = makeDb();
+  const oldCreatedAt = 1;
+  seedSessionForRetention(db, "thr_open_active", false);
+  seedSessionForRetention(db, "thr_open_thread_archived", false);
+  db.prepare("UPDATE sessions SET thread_archived_at = ? WHERE thread_id = 'thr_open_thread_archived'").run(oldCreatedAt);
+
+  db.prepare("INSERT INTO notifications (id, thread_id, kind, dedupe_key, reason, sound, created_at) VALUES ('n1', 'thr_open_active', 'ready_for_input', 'ready:thr_open_active:1', 'notify', 0, ?)").run(oldCreatedAt);
+  db.prepare("INSERT INTO notifications (id, thread_id, kind, dedupe_key, reason, sound, created_at) VALUES ('n2', 'thr_open_thread_archived', 'ready_for_input', 'ready:thr_open_thread_archived:1', 'notify', 0, ?)").run(oldCreatedAt);
+  db.prepare("INSERT INTO notifications (id, thread_id, kind, dedupe_key, reason, sound, created_at) VALUES ('n3', 'thr_never_had_a_session', 'ready_for_input', 'ready:thr_never_had_a_session:1', 'notify', 0, ?)").run(oldCreatedAt);
+
+  sweepOldNotifications(db, 24 * 60 * 60 * 1000);
+
+  const notificationIds = (db.prepare("SELECT id FROM notifications ORDER BY id").all() as Array<{ id: string }>).map((row) => row.id);
+  assert.deepEqual(notificationIds, ["n1"]);
+  db.close();
+});

@@ -87,6 +87,8 @@ export type NotificationRecord = {
   toastBody: string | null;
   createdAt: number;
   deliveredAt: number | null;
+  synthetic: boolean;
+  supersededAt: number | null;
 };
 
 const DEFAULT_KIND_PREFS: Record<NotificationKind, boolean> = {
@@ -185,7 +187,10 @@ export function truncateOneLine(input: string, max: number) {
   return line.length > max ? `${line.slice(0, Math.max(0, max - 3))}...` : line;
 }
 
-export function approvalFromInteractions(interactions: readonly unknown[]): ApprovalNotificationInfo | null {
+// Returns every pending approval interaction, not just the first, so a snapshot with two
+// simultaneous pending approvals notifies for both instead of silently dropping the second.
+export function approvalsFromInteractions(interactions: readonly unknown[]): ApprovalNotificationInfo[] {
+  const approvals: ApprovalNotificationInfo[] = [];
   for (const raw of interactions) {
     const interaction = raw as {
       id?: string;
@@ -212,9 +217,13 @@ export function approvalFromInteractions(interactions: readonly unknown[]): Appr
     const subject = interaction.payload.subject;
     const toolName = interaction.payload.toolName ?? interaction.payload.tool_name ?? subject?.toolName ?? subject?.tool_name ?? subject?.kind ?? null;
     const toolInput = interaction.payload.toolInput ?? interaction.payload.tool_input ?? subject?.input ?? subject?.command ?? subject?.actions?.[0]?.command ?? null;
-    return { id: interaction.id, toolName, toolInput: stringifyToolInput(toolInput) };
+    approvals.push({ id: interaction.id, toolName, toolInput: stringifyToolInput(toolInput) });
   }
-  return null;
+  return approvals;
+}
+
+export function approvalFromInteractions(interactions: readonly unknown[]): ApprovalNotificationInfo | null {
+  return approvalsFromInteractions(interactions)[0] ?? null;
 }
 
 function stringifyToolInput(input: unknown) {
@@ -231,15 +240,32 @@ export function notificationAlreadyRecorded(db: Database, dedupeKey: string) {
   return Boolean(readRow<{ id: string }>(db, "SELECT id FROM notifications WHERE dedupe_key = ?", dedupeKey));
 }
 
-export function recordNotificationDecision(db: Database, event: NotificationEvent, kind: StoredNotificationKind, dedupeKey: string, decision: NotificationDecision) {
+// The normal ready_for_input path (dedupe key `ready:<thread>:<turnKey>`) and the failed-advance
+// recovery path (`ready-recover:<thread>:<turnKey>`) both notify for the same completed turn.
+// Without this check, whichever one runs second still finds its own dedupe key unused and
+// publishes a duplicate. Checking both keys for the same turn makes the two paths mutually
+// exclusive: whichever fires first wins, the other is a no-op.
+export function readyTurnAlreadyHandled(db: Database, threadId: string, turnKey: string) {
+  return Boolean(
+    readRow<{ id: string }>(
+      db,
+      "SELECT id FROM notifications WHERE thread_id = ? AND dedupe_key IN (?, ?)",
+      threadId,
+      `ready:${threadId}:${turnKey}`,
+      `ready-recover:${threadId}:${turnKey}`,
+    ),
+  );
+}
+
+export function recordNotificationDecision(db: Database, event: NotificationEvent, kind: StoredNotificationKind, dedupeKey: string, decision: NotificationDecision, synthetic = false) {
   const timestamp = nowMs();
   const id = randomUUID();
   writeRow(
     db,
     `
     INSERT OR IGNORE INTO notifications (
-      id, thread_id, kind, dedupe_key, reason, sound, toast_title, toast_body, created_at, delivered_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, thread_id, kind, dedupe_key, reason, sound, toast_title, toast_body, created_at, delivered_at, synthetic
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     id,
     event.threadId,
@@ -251,6 +277,7 @@ export function recordNotificationDecision(db: Database, event: NotificationEven
     decision.toast?.body ?? null,
     timestamp,
     decision.sound || decision.toast ? timestamp : null,
+    synthetic ? 1 : 0,
   );
 }
 
@@ -268,6 +295,12 @@ export async function decideAndPublishNotification(
       alreadyNotified: false,
       autoAdvanceSuppressed: false,
     });
+  }
+  // A ready_for_input turn already has a row under the sibling dedupe key (recovery vs. normal
+  // path): return the already_notified decision without writing a second audit row under this
+  // event's own dedupe key, so exactly one row and one publish exist per completed turn.
+  if (kind === "ready_for_input" && event.type === "status_transition" && event.completedTurnKey && readyTurnAlreadyHandled(db, event.threadId, event.completedTurnKey)) {
+    return decideNotification(event, { ...state, alreadyNotified: true, autoAdvanceSuppressed: false });
   }
   const alreadyNotified = notificationAlreadyRecorded(db, dedupeKey);
   const autoAdvanceSuppressed = !alreadyNotified && event.type === "status_transition" && kind === "ready_for_input" && event.completedTurnKey
@@ -305,6 +338,8 @@ export function listNotificationRecords(db: Database, limit: number): Notificati
     toastBody: string | null;
     createdAt: number;
     deliveredAt: number | null;
+    synthetic: number | boolean;
+    supersededAt: number | null;
   }>(
     db,
     `
@@ -318,17 +353,30 @@ export function listNotificationRecords(db: Database, limit: number): Notificati
       toast_title AS toastTitle,
       toast_body AS toastBody,
       created_at AS createdAt,
-      delivered_at AS deliveredAt
+      delivered_at AS deliveredAt,
+      synthetic,
+      superseded_at AS supersededAt
     FROM notifications
     ORDER BY created_at DESC
     LIMIT ?
     `,
     limit,
-  ).map((row) => ({ ...row, sound: Boolean(row.sound) }));
+  ).map((row) => ({ ...row, sound: Boolean(row.sound), synthetic: Boolean(row.synthetic) }));
 }
 
-// Retention keeps rows for threads whose owning task is not archived, regardless of age;
-// only archived-task threads are swept once their notifications are old enough.
+// Retention keeps rows for threads whose owning task is open and whose session is still live,
+// regardless of age. A row is swept once old enough when its owning task is archived, its own
+// thread was individually archived or deleted (task still open; sessions rows are never deleted),
+// or its session row no longer exists at all.
+const SWEEPABLE_THREAD_CLAUSE = `
+  thread_id NOT IN (SELECT thread_id FROM sessions)
+  OR thread_id IN (
+    SELECT sessions.thread_id FROM sessions
+    JOIN tasks ON tasks.id = sessions.task_id
+    WHERE tasks.archived = 1 OR sessions.thread_archived_at IS NOT NULL
+  )
+`;
+
 export function sweepOldNotifications(db: Database, olderThanMs = 30 * 24 * 60 * 60 * 1000) {
   const cutoff = nowMs() - olderThanMs;
   return writeRow(
@@ -336,11 +384,7 @@ export function sweepOldNotifications(db: Database, olderThanMs = 30 * 24 * 60 *
     `
     DELETE FROM notifications
     WHERE created_at < ?
-      AND thread_id IN (
-        SELECT sessions.thread_id FROM sessions
-        JOIN tasks ON tasks.id = sessions.task_id
-        WHERE tasks.archived = 1
-      )
+      AND (${SWEEPABLE_THREAD_CLAUSE})
     `,
     cutoff,
   ).changes;
@@ -355,11 +399,7 @@ export function sweepOldSuppressions(db: Database, olderThanMs = 7 * 24 * 60 * 6
     WHERE created_at < ?
       AND (
         consumed_at IS NOT NULL
-        OR thread_id IN (
-          SELECT sessions.thread_id FROM sessions
-          JOIN tasks ON tasks.id = sessions.task_id
-          WHERE tasks.archived = 1
-        )
+        OR (${SWEEPABLE_THREAD_CLAUSE})
       )
     `,
     cutoff,
@@ -379,6 +419,7 @@ export async function recoverReadyAfterFailedAdvance(
   prefs: NotificationPrefs,
   params: { threadId: string; completedTurnKey: string; failedSkillLabel: string | null },
 ) {
+  if (readyTurnAlreadyHandled(db, params.threadId, params.completedTurnKey)) return null;
   const consumed = consumeSuppression(db, params.threadId, params.completedTurnKey);
   if (!consumed) return null;
   const dedupeKey = `ready-recover:${params.threadId}:${params.completedTurnKey}`;
@@ -447,6 +488,7 @@ export function publishSyntheticTestNotification(
     "ready_for_input",
     dedupeKey,
     decision,
+    true,
   );
   if (sound || toast) {
     bb.realtime.publish("hl:notify", {
@@ -461,6 +503,24 @@ export function publishSyntheticTestNotification(
     });
   }
   return decision;
+}
+
+/**
+ * Marks the most recent, not-yet-superseded ready_after_failed_advance notification for a thread
+ * as superseded (append-only `superseded_at` column) and tells the UI to dismiss its toast. Called
+ * when a later action (e.g. adopting an orphaned thread for the failed launch attempt) resolves
+ * what the recovery toast was warning about, so its now-stale instructions do not linger.
+ */
+export function supersedeReadyRecoverNotification(bb: BbPluginApi, db: Database, threadId: string) {
+  const row = readRow<{ id: string }>(
+    db,
+    "SELECT id FROM notifications WHERE thread_id = ? AND kind = 'ready_after_failed_advance' AND superseded_at IS NULL ORDER BY created_at DESC LIMIT 1",
+    threadId,
+  );
+  if (!row) return false;
+  writeRow(db, "UPDATE notifications SET superseded_at = ? WHERE id = ?", nowMs(), row.id);
+  bb.realtime.publish("hl:notify", { kind: "dismiss", notificationId: row.id });
+  return true;
 }
 
 export function notificationSummaryFromSession(session: SessionRow) {
