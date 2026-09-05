@@ -1,0 +1,171 @@
+import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import type Database from "better-sqlite3";
+
+export const MIGRATIONS = [
+  `
+  CREATE TABLE tasks (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL UNIQUE,
+    draft_prompt TEXT NOT NULL DEFAULT '',
+    workflow_type TEXT NOT NULL DEFAULT 'rpi',
+    worktree_timing TEXT NOT NULL DEFAULT 'later',
+    is_draft INTEGER NOT NULL DEFAULT 1,
+    archived INTEGER NOT NULL DEFAULT 0,
+    host_id TEXT,
+    default_directory TEXT,
+    provider_id TEXT,
+    model TEXT,
+    reasoning_level TEXT,
+    service_tier TEXT,
+    permission_mode TEXT,
+    auto_advance INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )
+  `,
+  `
+  CREATE TABLE sessions (
+    thread_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    label TEXT,
+    skill_id TEXT,
+    launched_by TEXT NOT NULL,
+    forked_from_thread_id TEXT,
+    hl_status TEXT NOT NULL DEFAULT 'draft',
+    hl_status_at INTEGER NOT NULL,
+    had_turn INTEGER NOT NULL DEFAULT 0,
+    interrupted INTEGER NOT NULL DEFAULT 0,
+    next_step_json TEXT,
+    summary_json TEXT,
+    advanced_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )
+  `,
+  `
+  CREATE TABLE artifacts (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    file_name TEXT NOT NULL,
+    frontmatter_json TEXT NOT NULL DEFAULT '{}',
+    content_type TEXT NOT NULL DEFAULT 'text/markdown',
+    is_deleted INTEGER NOT NULL DEFAULT 0,
+    current_version INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(task_id, file_name)
+  )
+  `,
+  `
+  CREATE TABLE artifact_versions (
+    id TEXT PRIMARY KEY,
+    artifact_id TEXT NOT NULL REFERENCES artifacts(id),
+    version INTEGER NOT NULL,
+    content BLOB NOT NULL,
+    sha256 TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    created_by TEXT NOT NULL,
+    operation TEXT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(artifact_id, version)
+  )
+  `,
+  `
+  CREATE TABLE comments (
+    id TEXT PRIMARY KEY,
+    artifact_id TEXT NOT NULL REFERENCES artifacts(id),
+    version_id TEXT NOT NULL,
+    reply_to_id TEXT,
+    content_text TEXT NOT NULL,
+    block_text TEXT,
+    prev_block_text TEXT,
+    next_block_text TEXT,
+    anchor_json TEXT,
+    kind TEXT NOT NULL DEFAULT 'comment',
+    is_resolved INTEGER NOT NULL DEFAULT 0,
+    is_deleted INTEGER NOT NULL DEFAULT 0,
+    created_by_agent INTEGER NOT NULL DEFAULT 0,
+    created_by_thread_id TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )
+  `,
+  `
+  CREATE TABLE notified (
+    id TEXT PRIMARY KEY,
+    created_at INTEGER NOT NULL
+  )
+  `,
+  `
+  CREATE TABLE scratch_pads (
+    task_id TEXT PRIMARY KEY REFERENCES tasks(id),
+    text TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  )
+  `,
+  `
+  CREATE TABLE task_ui_state (
+    task_id TEXT PRIMARY KEY REFERENCES tasks(id),
+    json TEXT NOT NULL
+  )
+  `,
+  `
+  ALTER TABLE sessions ADD COLUMN hydrated_at INTEGER
+  `,
+  `
+  CREATE TABLE launch_attempts (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    from_thread_id TEXT NOT NULL,
+    skill_id TEXT,
+    status TEXT NOT NULL CHECK(status IN ('pending', 'spawned', 'uncertain', 'failed')),
+    thread_id TEXT,
+    created_at INTEGER NOT NULL
+  )
+  `,
+] as const;
+
+export function openPluginDatabase(bb: BbPluginApi): Database {
+  const db = bb.storage.database();
+  db.pragma("foreign_keys = ON");
+  bb.storage.migrate(db, MIGRATIONS);
+  return db;
+}
+
+export function nowMs() {
+  return Date.now();
+}
+
+export function parseJson<T>(input: string | null | undefined, fallback: T): T {
+  if (input === null || input === undefined || input === "") return fallback;
+  try {
+    return JSON.parse(input) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+export function stringifyJson(value: unknown): string {
+  return JSON.stringify(value);
+}
+
+export function readRows<T>(db: Database, sql: string, ...params: unknown[]): T[] {
+  return db.prepare(sql).all(...params) as T[];
+}
+
+export function readRow<T>(db: Database, sql: string, ...params: unknown[]): T | undefined {
+  return db.prepare(sql).get(...params) as T | undefined;
+}
+
+export function writeRow(db: Database, sql: string, ...params: unknown[]) {
+  return db.prepare(sql).run(...params);
+}
+
+export function transaction<TArgs extends unknown[], TResult>(
+  db: Database,
+  fn: (...args: TArgs) => TResult,
+) {
+  return db.transaction(fn);
+}

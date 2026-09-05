@@ -23,8 +23,14 @@
   "include": [
     "server.ts",
     "app.tsx",
+    "contract.ts",
+    "db.ts",
+    "tasks.ts",
+    "transitions.ts",
     "components",
     "lib",
-    "hooks"
+    "hooks",
+    "ui",
+    "**/*.test.ts"
   ]
 }
