@@ -29,13 +29,21 @@ import type {
   WorkspaceViewRecord,
   CommentThreadRecord,
 } from "../contract";
-import { AUTO_ADVANCE, BOARD_COLUMNS, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS, computeSuggestedNext, normalizePhaseLabel, type PhaseLabel, type SuggestedNext, type SuggestedNextExtraction } from "../transitions";
+import { AUTO_ADVANCE, BOARD_COLUMNS, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS, suggestedNextForSession, type SuggestedNext } from "../transitions";
 import { markdownBlocks } from "../blocks";
+import { ScratchPadSync } from "../scratch-pad-sync";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+
+// Launch RPCs (launchDraft, launchSkill, proceed, resolveLaunchAttempt retry) can reject with a
+// LaunchRejectedError (launch.ts), e.g. code `no_source_host` when a task has no project source
+// and no host. Show its message instead of failing silently.
+function reportLaunchError(error: unknown) {
+  toast.error(error instanceof Error ? error.message : "Failed to launch");
+}
 
 function relativeTime(ms: number) {
   const diff = Date.now() - ms;
@@ -469,29 +477,11 @@ function nextStep(session: Pick<SessionView, "nextStepJson">) {
   }
 }
 
-function parsedExtraction(session: Pick<SessionView, "nextStepJson">): SuggestedNextExtraction {
-  if (!session.nextStepJson) return null;
-  try {
-    const parsed = JSON.parse(session.nextStepJson) as NextStepSuggestionsRecord;
-    return parsed.extraction.type === "next_step_found"
-      ? { type: "next_step_found", nextStepType: parsed.extraction.nextStepType }
-      : { type: "no_next_step" };
-  } catch {
-    return null;
-  }
-}
-
-// Suggested-next precondition (plan §2.9): the session must actually be at rest, ready for
-// input, nothing blocking it, and its completed turn already fully processed (summarized),
-// before computeSuggestedNext's extraction-vs-workflow comparison means anything. A
-// mid-processing or blocked session has no meaningful "suggested next" yet.
+// Decision logic (precondition gating, extraction parsing, comparison against the workflow's
+// canonical next skill) lives in transitions.ts (suggestedNextForSession), covered by
+// tests/transitions.test.ts; this is just the UI's call site.
 function suggestedNextFor(session: Pick<SessionView, "hlStatus" | "blockedReason" | "completedTurnKey" | "lastSummarizedTurnKey" | "label" | "workflowType" | "nextStepJson">): SuggestedNext | null {
-  if (session.hlStatus !== "ready_for_input") return null;
-  if (session.blockedReason) return null;
-  if (!session.completedTurnKey || session.completedTurnKey !== session.lastSummarizedTurnKey) return null;
-  const label = normalizePhaseLabel(session.label) as PhaseLabel | null;
-  const result = computeSuggestedNext(label, session.workflowType, parsedExtraction(session));
-  return result.visible ? result : null;
+  return suggestedNextForSession(session);
 }
 
 function TaskTable({ tasks }: { tasks: TaskRow[] }) {
@@ -882,6 +872,8 @@ function NewTaskPage({
       });
       const launched = await rpc.call("launchDraft", { taskId: created.taskId });
       navigate.toThread(launched.threadId);
+    } catch (error) {
+      reportLaunchError(error);
     } finally {
       setBusy(false);
     }
@@ -1051,6 +1043,8 @@ function RecoverLaunchRow({ attempt, onResolved }: { attempt: LaunchAttemptRecor
     try {
       await rpc.call("resolveLaunchAttempt", { id: attempt.id, action });
       onResolved();
+    } catch (error) {
+      reportLaunchError(error);
     } finally {
       setBusy(false);
     }
@@ -1339,44 +1333,60 @@ function ScratchPadPanel({ taskId }: { taskId: string }) {
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const textRef = useRef(text);
   textRef.current = text;
-  const revisionRef = useRef(0);
+  const syncRef = useRef(new ScratchPadSync());
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const cancelPendingFlush = () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
     setLoaded(false);
+    cancelPendingFlush();
     rpc.call("getTaskUiState", { taskId }).then((state) => {
       if (cancelled) return;
       setText(state.scratch ?? "");
-      revisionRef.current = state.scratchRevision ?? 0;
+      syncRef.current.reload(state.scratchRevision ?? 0);
       setLoaded(true);
     });
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskId, rpc]);
 
-  const save = (value: string) => {
-    return rpc.call("saveScratchPad", { taskId, text: value, expectedRevision: revisionRef.current }).then((result) => {
+  // Only submits the text captured when the flush was scheduled, with the revision that was
+  // current at that time; see scratch-pad-sync.ts for why a stale flush must not overwrite a
+  // conflict reload that happened after it was queued.
+  const save = (value: string, generation: number) => {
+    const sync = syncRef.current;
+    return rpc.call("saveScratchPad", { taskId, text: value, expectedRevision: sync.currentRevision() }).then((result) => {
       if (result.outcome === "conflict") {
-        revisionRef.current = result.scratchRevision ?? 0;
+        sync.applyConflict(result.scratchRevision ?? 0);
         setText(result.scratch ?? "");
+        cancelPendingFlush();
         toast.info("Updated elsewhere, reloaded");
         return;
       }
-      revisionRef.current = result.scratchRevision ?? revisionRef.current + 1;
+      if (!sync.applyOk(generation, result.scratchRevision ?? sync.currentRevision() + 1)) return;
       setSavedAt(Date.now());
     }, (error: unknown) => {
+      if (!sync.shouldFlush(generation)) return;
       toast.error(error instanceof Error ? error.message : "Failed to save scratch pad");
     });
   };
 
   // Flush a pending debounce on unmount (task switch, panel close) so the last keystroke is not
-  // silently lost.
+  // silently lost, unless a conflict reload since made it stale.
   useEffect(() => () => {
     if (timerRef.current) {
       clearTimeout(timerRef.current);
-      void save(textRef.current);
+      const generation = syncRef.current.stampEdit();
+      if (syncRef.current.shouldFlush(generation)) void save(textRef.current, generation);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskId]);
@@ -1384,10 +1394,12 @@ function ScratchPadPanel({ taskId }: { taskId: string }) {
   const onChange = (value: string) => {
     const bounded = value.slice(0, SCRATCH_PAD_MAX_CHARS);
     setText(bounded);
-    if (timerRef.current) clearTimeout(timerRef.current);
+    cancelPendingFlush();
+    const generation = syncRef.current.stampEdit();
     timerRef.current = setTimeout(() => {
       timerRef.current = null;
-      void save(bounded);
+      if (!syncRef.current.shouldFlush(generation)) return; // superseded by a conflict reload
+      void save(bounded, generation);
     }, SCRATCH_PAD_SAVE_DEBOUNCE_MS);
   };
 
@@ -2044,8 +2056,12 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
           <Button
             type="button"
             onClick={async () => {
-              const result = await rpc.call("launchDraft", { taskId });
-              navigate.toThread(result.threadId);
+              try {
+                const result = await rpc.call("launchDraft", { taskId });
+                navigate.toThread(result.threadId);
+              } catch (error) {
+                reportLaunchError(error);
+              }
             }}
           >
             <Icon name="Play" className="size-4" />
@@ -2571,16 +2587,15 @@ export function HumanLayerThreadHeaderAction({ threadId }: { threadId: string; p
   useRealtime("hl:ui-state", refetch);
 
   // Archive-current-task hotkey (⌘E), gated on `session` so it is only live while a HumanLayer
-  // task session is the thread actually being viewed. This injected header action has no DOM root
-  // of its own to scope a listener to (bb owns the surrounding thread page), so it deliberately
-  // uses `document.documentElement` as the narrowest available root through the same
-  // `usePanelHotkeys` owner pattern T/g-t use on their own panel root, rather than a bespoke
-  // listener, not `document` + `capture:true`, which fired regardless of what had focus
-  // ("outside the panel") and could out-race any other handler on the page. Skips a combo that
-  // collides with the user's configured jump hotkey so it always wins.
+  // task session is the thread actually being viewed. Scoped to this component's own rendered
+  // root (`actionRootRef`, set on the wrapping div below) through the same `usePanelHotkeys` owner
+  // pattern T/g-t use on their own panel root, not `document`/`document.documentElement` +
+  // `capture:true`, which fired regardless of what had focus ("outside the panel") and could
+  // out-race any other handler on the page. Skips a combo that collides with the user's
+  // configured jump hotkey so it always wins.
   const jumpHotkeyForArchive = useConfiguredJumpHotkey();
-  const documentRootRef = useRef<HTMLElement | null>(typeof document === "undefined" ? null : document.documentElement);
-  usePanelHotkeys(documentRootRef, (event) => {
+  const actionRootRef = useRef<HTMLDivElement | null>(null);
+  usePanelHotkeys(actionRootRef, (event) => {
     if (!session) return;
     if (shouldHandleHotkey(event, jumpHotkeyForArchive)) return;
     if (!shouldHandleHotkey(event, "mod+e")) return;
@@ -2596,7 +2611,7 @@ export function HumanLayerThreadHeaderAction({ threadId }: { threadId: string; p
   const contextWarningDismissed = Boolean(uiState.contextWarningDismissed?.[threadId]);
 
   return (
-    <div className="flex items-center gap-2">
+    <div ref={actionRootRef} className="flex items-center gap-2">
       <HumanLayerNotificationBridge />
       {settings?.showTaskPhaseLabels === false ? null : (
         <span className={pillClassName(session.label ? "step" : "ghost")}>{session.label ?? "freeform"}</span>
@@ -2624,8 +2639,12 @@ export function HumanLayerThreadHeaderAction({ threadId }: { threadId: string; p
         className="h-7 px-2 text-xs"
         disabled={!extracted}
         onClick={async () => {
-          const result = await rpc.call("proceed", { threadId });
-          if (result.threadId) navigate.toThread(result.threadId);
+          try {
+            const result = await rpc.call("proceed", { threadId });
+            if (result.threadId) navigate.toThread(result.threadId);
+          } catch (error) {
+            reportLaunchError(error);
+          }
         }}
       >
         {extracted?.nextStepSummary ?? "Proceed"}
@@ -2638,8 +2657,12 @@ export function HumanLayerThreadHeaderAction({ threadId }: { threadId: string; p
             className="h-7 px-2 text-xs"
             disabled={hasPendingLaunchAttempt}
             onClick={async () => {
-              const result = await rpc.call("launchSkill", { taskId: session.taskId, skillId: suggested.skillId! });
-              navigate.toThread(result.threadId);
+              try {
+                const result = await rpc.call("launchSkill", { taskId: session.taskId, skillId: suggested.skillId! });
+                navigate.toThread(result.threadId);
+              } catch (error) {
+                reportLaunchError(error);
+              }
             }}
           >
             Suggested next: {suggested.buttonText}
@@ -2800,6 +2823,10 @@ export function HumanLayerPanel({ subPath }: { subPath: string }) {
       onSwitch("new");
     }
   }, [jumpHotkey, navigate]);
+  // Dispose the pending chord timer on unmount (task switch, panel close), same reasoning as the
+  // scratch pad's debounce cleanup: an in-flight "g" wait must not leak a timer past the panel's
+  // own lifetime.
+  useEffect(() => clearChordRef.current, []);
 
   return (
     <div ref={panelRootRef} className="flex h-full min-h-0 flex-col gap-4 overflow-hidden p-4">
