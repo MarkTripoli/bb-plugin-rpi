@@ -103,16 +103,22 @@ dedupe/suppression state.
 
 | Key | Action |
 |---|---|
-| `T` | New task (while the HumanLayer panel is focused, not while typing) |
-| `g` then `t` | Go to the tasks list |
+| `T` | New task (while the HumanLayer panel is mounted and has focus, not while typing) |
+| `g` then `t` | Go to the tasks list (same scoping as `T`) |
 | `⌘E` | Archive the current task (confirms first) |
-| `⌘⇧U` | Jump to the oldest outstanding notified session (configurable) |
+| `⌘⇧U` | Jump to the oldest outstanding notified session (configurable, works anywhere in bb) |
 | `⌘⇧P` | bb's command palette — lists "HumanLayer: Open Artifacts / Open Scratch pad / Archive current task" |
 
-`T`, `g t`, and `⌘E` are owned by the same keydown listener pattern as the
-jump hotkey (see `ui/humanlayer.tsx`): they no-op while focus is in an
-editable field, and `⌘E` and the palette's archive action both ask for
-confirmation before archiving.
+`T` and `g t` are scoped to the HumanLayer panel's own root DOM element (a
+keydown listener on that element, not `document`), so they only fire while
+focus is somewhere inside the panel and never `preventDefault` on a keypress
+elsewhere in bb. `⌘E` has no panel root of its own to scope to (it is
+injected into bb's native thread header), so it stays gated on the session
+actually being viewed. All three share one hook (`usePanelHotkeys` in
+`ui/humanlayer.tsx`), no-op while focus is in an editable field
+(`shouldHandleHotkey`), and skip a combo that collides with the configured
+jump hotkey so a rebound jump hotkey always wins. `⌘E` and the palette's
+archive action both ask for confirmation before archiving.
 
 ## Licensing
 

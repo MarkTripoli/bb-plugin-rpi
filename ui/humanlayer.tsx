@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent } from "react";
+import type { FormEvent, RefObject } from "react";
 import {
   Markdown,
   experimental_SourceCode as SourceCode,
@@ -283,6 +283,36 @@ function shouldHandleHotkey(event: KeyboardEvent, hotkey: string) {
   if (event.altKey !== wantsAlt) return false;
   const key = [...parts].find((part) => !["mod", "shift", "alt", "ctrl", "meta"].includes(part));
   return key ? event.key.toLowerCase() === key : false;
+}
+
+// Shared by every panel-local hotkey owner (T, g-then-t, ⌘E): the configured jump hotkey (default
+// ⌘⇧U) always wins a collision, so a user who rebinds it to e.g. "t" never fights this panel's own
+// bindings. Panels that only need the collision check (not the jump hotkey's own global behavior)
+// use this instead of duplicating HumanLayerNotificationBridge's full owner-queue machinery.
+function useConfiguredJumpHotkey() {
+  const rpc = useRpc<RpcContract>();
+  const [jumpHotkey, setJumpHotkey] = useState(DEFAULT_NOTIFICATION_PREFS.jumpHotkey);
+  const refresh = () => {
+    rpc.call("getPrefs", {}).then((next) => setJumpHotkey(normalizeClientNotificationPrefs(next.notifications).jumpHotkey));
+  };
+  useEffect(refresh, []);
+  useRealtime("prefs", refresh);
+  return jumpHotkey;
+}
+
+// Single keydown owner for one panel-local hotkey set. Scoped to `rootRef`'s own DOM subtree (not
+// `document`), so a key press is only ever seen — and only ever `preventDefault`-ed — while focus is
+// inside this panel; it never fires (and never fights other bb surfaces) while some other part of
+// the app has focus. `handler` still runs `shouldHandleHotkey` itself so it can check multiple
+// bindings (e.g. the g-then-t chord) with its own state.
+function usePanelHotkeys(rootRef: RefObject<HTMLElement | null>, handler: (event: KeyboardEvent) => void, deps: unknown[]) {
+  useEffect(() => {
+    const node = rootRef.current;
+    if (!node) return;
+    node.addEventListener("keydown", handler);
+    return () => node.removeEventListener("keydown", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
 }
 
 export function HumanLayerNotificationBridge() {
@@ -2497,20 +2527,24 @@ export function HumanLayerThreadHeaderAction({ threadId }: { threadId: string; p
   useRealtime("hl:sessions", refetch);
   useRealtime("hl:ui-state", refetch);
 
-  // Archive-current-task hotkey (⌘E). Scoped to this thread's own header instance so it only
-  // fires while a HumanLayer task session is the visible thread; reuses `shouldHandleHotkey`'s
-  // not-in-editable guard rather than a bespoke check.
-  useEffect(() => {
+  // Archive-current-task hotkey (⌘E), gated on `session` so it is only live while a HumanLayer
+  // task session is the thread actually being viewed. This injected header action has no DOM root
+  // of its own to scope a listener to (bb owns the surrounding thread page), so it deliberately
+  // uses `document.documentElement` as the narrowest available root through the same
+  // `usePanelHotkeys` owner pattern T/g-t use on their own panel root, rather than a bespoke
+  // listener — not `document` + `capture:true`, which fired regardless of what had focus
+  // ("outside the panel") and could out-race any other handler on the page. Skips a combo that
+  // collides with the user's configured jump hotkey so it always wins.
+  const jumpHotkeyForArchive = useConfiguredJumpHotkey();
+  const documentRootRef = useRef<HTMLElement | null>(typeof document === "undefined" ? null : document.documentElement);
+  usePanelHotkeys(documentRootRef, (event) => {
     if (!session) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!shouldHandleHotkey(event, "mod+e")) return;
-      event.preventDefault();
-      if (!window.confirm("Archive this task? Sessions stay but the task leaves the active list.")) return;
-      void rpc.call("archiveTask", { taskId: session.taskId }).then(() => navigate.toPluginPanel("humanlayer", { subPath: "" }));
-    };
-    document.addEventListener("keydown", onKeyDown, { capture: true });
-    return () => document.removeEventListener("keydown", onKeyDown, { capture: true });
-  }, [session, rpc, navigate]);
+    if (shouldHandleHotkey(event, jumpHotkeyForArchive)) return;
+    if (!shouldHandleHotkey(event, "mod+e")) return;
+    event.preventDefault();
+    if (!window.confirm("Archive this task? Sessions stay but the task leaves the active list.")) return;
+    void rpc.call("archiveTask", { taskId: session.taskId }).then(() => navigate.toPluginPanel("humanlayer", { subPath: "" }));
+  }, [session, jumpHotkeyForArchive, rpc, navigate]);
 
   if (!session) return null;
   const extracted = nextStep(session);
@@ -2680,45 +2714,43 @@ export function HumanLayerPanel({ subPath }: { subPath: string }) {
     navigate.toPluginPanel("humanlayer", { subPath: next === "tasks" ? "" : "drafts" });
   };
 
-  // T (new task) and the g-then-t chord (go to tasks) while this panel is focused. Scoped to this
-  // component instance (the nav panel mounts once), reusing `shouldHandleHotkey`'s not-in-editable
-  // guard so typing in the composer textarea elsewhere on the panel never triggers either one.
-  useEffect(() => {
-    let awaitingT = false;
-    let awaitingTimer: ReturnType<typeof setTimeout> | null = null;
-    const clearChord = () => {
-      awaitingT = false;
-      if (awaitingTimer) clearTimeout(awaitingTimer);
-      awaitingTimer = null;
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (awaitingT) {
-        clearChord();
-        if (shouldHandleHotkey(event, "t")) {
-          event.preventDefault();
-          onSwitch("tasks");
-        }
-        return;
-      }
-      if (shouldHandleHotkey(event, "g")) {
-        awaitingT = true;
-        awaitingTimer = setTimeout(clearChord, 800);
-        return;
-      }
+  // T (new task) and the g-then-t chord (go to tasks) while this panel has focus. Scoped to this
+  // panel's own root element (`panelRootRef`), never `document`, so the key is only ever seen — and
+  // only ever preventDefault-ed — while focus is inside this panel; `shouldHandleHotkey`'s
+  // not-in-editable guard still applies so typing in the composer textarea never triggers either
+  // one. Skips a combo that collides with the user's configured jump hotkey so it always wins.
+  const jumpHotkey = useConfiguredJumpHotkey();
+  const panelRootRef = useRef<HTMLDivElement | null>(null);
+  const awaitingTRef = useRef(false);
+  const chordTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearChordRef = useRef(() => {
+    awaitingTRef.current = false;
+    if (chordTimerRef.current) clearTimeout(chordTimerRef.current);
+    chordTimerRef.current = null;
+  });
+  usePanelHotkeys(panelRootRef, (event) => {
+    if (shouldHandleHotkey(event, jumpHotkey)) return;
+    if (awaitingTRef.current) {
+      clearChordRef.current();
       if (shouldHandleHotkey(event, "t")) {
         event.preventDefault();
-        onSwitch("new");
+        onSwitch("tasks");
       }
-    };
-    document.addEventListener("keydown", onKeyDown, { capture: true });
-    return () => {
-      document.removeEventListener("keydown", onKeyDown, { capture: true });
-      clearChord();
-    };
-  }, [navigate]);
+      return;
+    }
+    if (shouldHandleHotkey(event, "g")) {
+      awaitingTRef.current = true;
+      chordTimerRef.current = setTimeout(clearChordRef.current, 800);
+      return;
+    }
+    if (shouldHandleHotkey(event, "t")) {
+      event.preventDefault();
+      onSwitch("new");
+    }
+  }, [jumpHotkey, navigate]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-4 overflow-hidden p-4">
+    <div ref={panelRootRef} className="flex h-full min-h-0 flex-col gap-4 overflow-hidden p-4">
       <HumanLayerNotificationBridge />
       <div className="flex items-center justify-between gap-3">
         <div>
