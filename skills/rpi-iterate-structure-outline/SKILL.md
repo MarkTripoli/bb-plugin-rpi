@@ -1,28 +1,108 @@
 ---
 name: rpi-iterate-structure-outline
-description: Only use when the user explicitly invokes /rpi-iterate-structure-outline. Revise an implementation outline.
+description: Only use when the user explicitly invokes /rpi-iterate-structure-outline. Revise a phased implementation outline.
 ---
 
 # Iterate Structure Outline
 
+You are revising a structure outline from user feedback, comments, or new evidence. Keep the outline phased, vertical, and independently verifiable.
+
+## Input
+
+- If no artifact is named, use `hl_task_context` and the artifact manifest to find the structure outline.
+- If more than one outline could be intended, ask the user to choose.
+- A ticket or comment file may contain feedback; read it fully if provided.
+
+## Initial Check
+
+If the user gives no feedback and no artifact target, ask for feedback and wait:
+
+```text
+I can revise the structure outline now. Send the phase, scope, validation, or open-question change you want handled first.
+```
+
+## bb Task Setup
+
+0. Call `hl_task_context` before reading files, spawning child threads, or choosing an artifact path. Use its task directory, task slug, artifact manifest, repository, branch, thread id, provider, and model preferences. If it fails, stop.
+1. Use the task directory returned by the tool. Do not guess a sibling under `.humanlayer/tasks` from an old session or a remembered slug.
+2. Locate this installed skill through the skills tier listing, then read reference files relative to this skill directory: `references/structure_outline_template.md`, `references/structure_outline_final_answer.md`, `references/structure_outline_final_answer.md`.
+3. After every artifact write or edit, call `hl_artifact_save` with the relative file name and keep the returned `::hl-artifact{...}` directive for the final answer.
+
 ## Steps
 
-0. Call hl_task_context and read its output before any file read. Use the returned task directory, task slug, artifact list, and model hints.
-1. Resolve the @<file> argument, read that artifact fully, then fetch comments with hl_get_artifact_comments when comments are relevant.
-2. If an artifact number is needed, call hl_next_artifact_number and use the returned number in NN-structure-outline-short-slug.md.
-3. Read references/structure_outline_template.md and draft the artifact in that shape.
-4. Write or update the artifact under .humanlayer/tasks/<slug>/.
-5. Call hl_artifact_save with the artifact file name immediately after writing. Save the returned ::hl-artifact{...} line for your final answer.
-6. Read references/structure_outline_final_answer.md and answer using that structure exactly. The final answer must end with one fenced text block containing /rpi-implement-outline.
+1. **Read all input documents fully**:
+   - Read the current outline, completed research, design discussion, PRD, TDD, task or ticket, and user-mentioned files.
+   - Understand current implementation patterns from the research.
+   - Do not read research-question artifacts unless asked.
 
-## Rules
+2. **Check related task content**:
+   - List mentioned task paths with `ls -La`.
+   - Read relevant artifacts and source files fully.
 
-- Do not open unrelated task artifacts. Use only task.md, ticket.md, @ files, and comments the user asked you to inspect.
-- For child research, spawn codebase-locator, codebase-analyzer, codebase-pattern-finder, and web-search-researcher as useful. Use:
+3. **Verify user input**:
+   - Do not accept corrections blindly.
+   - Use direct reads or child research to confirm file paths, existing patterns, and validation commands.
+   - If comments are relevant, call `hl_get_artifact_comments` for the outline artifact.
 
-  bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <cheap research model from hl_task_context prefs> --prompt "/rpi-agent-<role> <short assignment>"
-  bb thread wait <id>
-  bb thread output <id>
+4. **Spawn follow-up research if needed**:
 
-- Spawn all independent child threads first, then wait for each one and summarize only their results.
-- Treat tool or CLI errors as blockers, not as permission to write untracked side files.
+Use child threads only when a missing fact would change the artifact. Spawn independent assignments first, then wait for them and read their final messages:
+
+```text
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-codebase-locator <assignment>"
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-codebase-analyzer <assignment>"
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-codebase-pattern-finder <assignment>"
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-web-search-researcher <assignment>"
+bb thread wait <thread-id>
+bb thread output <thread-id>
+```
+
+Role mapping: locator finds files and tests, analyzer explains current behavior, pattern finder finds local precedents, and web researcher checks external behavior or current documentation. The child thread's final message is the deliverable. Use only findings you have read from `bb thread output`.
+
+Do not rely on hidden background work. Wait for each child and read its final output before using it.
+
+5. **Process the feedback**:
+   - Reorganize phases when requested or when verification shows the current split is wrong.
+   - Update scope and What we're not doing when the user adds or removes work.
+   - Remove answered open questions and incorporate the answer into the relevant phase.
+   - Keep frontmatter and the template's major sections.
+
+Each phase should remain a vertical slice where possible. Avoid grouping by all schema, all API, all UI, then all tests. A phase should include the layers and checks needed for a verifiable increment. Do not make Phase N depend on Phase N+1 to prove it works.
+
+6. **Update the document**:
+   - Edit the same artifact path.
+   - Rework the Implementation Overview checkbox list.
+   - Update phase overviews, change outlines, test changes, validation steps, and Open Questions.
+   - Keep trees small and use proper tree glyphs when a file tree is needed.
+   - Use diff notation only when it clarifies additions, removals, or changed ownership.
+
+7. **Update the user**:
+   - Check the current git directory with `git rev-parse --git-dir`.
+   - If it includes `.git/worktrees/`, read `references/structure_outline_final_answer.md`. Otherwise read `references/structure_outline_setup_answer.md`.
+   - Never suggest worktree setup when already inside a worktree.
+   - Save with `hl_artifact_save` and respond with the selected template exactly.
+
+## Artifact and Reading Rules
+
+- Read task artifacts fully. Do not use partial reads for task files, user-mentioned files, or the artifact you are editing.
+- List task directories with `ls -La <task-dir>`. Avoid plain `ls`, `ls -l`, search, and glob expansion inside `.humanlayer/tasks` because the path may be a linked directory.
+- Do not read research-question artifacts during design, outline, or plan work. They guide the research phase only; use completed research instead.
+- Do not inspect unrelated task directories unless the user explicitly asks.
+- Treat failed artifact saves, failed comment calls, or unavailable task context as blockers. Do not work around them by writing untracked side files.
+- Use `hl_next_artifact_number` when creating a new numbered artifact. The file name format is `NN-<type>-<2-4-word-kebab-slug>.md`.
+
+## Phase Validation Design
+
+Use automated verification whenever the repo can check the behavior. Manual verification should be specific and valuable, not filler. If a phase has no useful manual check and no automated check, reconsider whether the slice is independently verifiable.
+
+## Markdown Formatting
+
+When an artifact needs to show markdown that itself contains fenced code, wrap the outer example in four backticks so inner three-backtick blocks remain valid.
+
+## Document Precedence
+
+When documents disagree, the latest phase artifact wins:
+
+**structure outline > TDD > PRD > design discussion > research > ticket**
+
+Earlier material provides context. The artifact from this phase records the current decision and should absorb later user feedback instead of leaving contradictions in place.
