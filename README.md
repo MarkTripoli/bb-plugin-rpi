@@ -88,6 +88,34 @@ show task phase labels, diff style, default editor, phase tips and other tip
 toggles, confirm-before-interrupting-subagents, batch queue delivery
 (default off; see `PARITY.md`).
 
+## Model guidance
+
+Each phase skill's final-answer template (a fenced `/rpi-<skill> [args]` command
+block) is parsed deterministically, not with an LLM (Fable §7). A model that
+does not reliably reproduce that exact template on request will finish the
+turn with no machine-readable next step.
+
+| Phase | Recommended | Notes |
+|---|---|---|
+| Design, plan, implementation orchestration (the phases that decide what to build and drive the multi-step implementation) | Sonnet-class or gpt-5.4 (non-mini) | These phases carry the most judgment and the most template discipline; a mini-class model dropping the template here costs the most rework. |
+| Research questions, bounded research children (the 7 `rpi-agent-*` skills), `describe-pr` | mini-class acceptable | Narrower, more mechanical tasks; a dropped template here is cheap to recover from. |
+
+A mini-class model frequently drops the final-answer template even when asked
+for it directly. When that happens the session still finishes correctly, it
+just extracts to `no_next_step` (see "A skill's Proceed button is disabled"
+below); the thread header then shows **Suggested next: `<button text>`**, the
+workflow's own canonical next skill for that phase, one click away through
+`launchSkill` (same per-task launch mutex as Proceed and auto-advance). This
+is the same affordance that appears when the model's extraction disagrees
+with what the workflow expects, and for a human-gated phase, which is manual
+regardless. Auto-advance itself is unaffected: it only ever fires on an exact
+extraction match, never on a Suggested-next fallback.
+
+This plugin does not pre-seed model ids anywhere (`prefs.defaults`,
+`prefs.workflowDefaults`, or the bb settings default-model keys all start
+empty/unset); the table above is guidance for what to pick in Settings ->
+HumanLayer -> Defaults, not a shipped default.
+
 ## Notifications
 
 A toast (8s) and/or a chime fires when a session becomes `ready_for_input`,
@@ -176,8 +204,12 @@ deterministic (Fable §7): the final-answer block must be an exact
 `/rpi-<skill> [args]` (or legacy `/rpi:<skill>`) fenced `text` block. A
 freeform reply, a missing/renamed artifact reference, or a template the
 model altered will not parse; the session still finished, it just has no
-machine-readable next step (`no_next_step`) - start the next phase manually
-with `bb humanlayer launch-skill`.
+machine-readable next step (`no_next_step`; mini-class models drop this
+template more often, see "Model guidance" above). The thread header shows a
+**Suggested next** button in that case (and whenever extraction disagrees
+with what the workflow expects) instead of leaving you to guess; it launches
+the workflow's own next skill in one click. `bb humanlayer launch-skill` is
+still available for launching a different skill than the suggested one.
 
 ## Development
 
