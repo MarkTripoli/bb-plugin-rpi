@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import {
   Markdown,
@@ -112,11 +112,12 @@ function SessionStatus({ status }: { status: string }) {
 
 type NotifySignal = {
   id: string;
-  kind: "ready_for_input" | "needs_approval" | "comment";
+  kind: "ready_for_input" | "needs_approval" | "comment" | "ready_after_failed_advance";
   threadId: string;
   sound: boolean;
   toast: { title: string; body: string; threadId: string } | null;
   volume?: number;
+  synthetic?: boolean;
 };
 
 const DEFAULT_NOTIFICATION_PREFS: Prefs["notifications"] = {
@@ -126,14 +127,59 @@ const DEFAULT_NOTIFICATION_PREFS: Prefs["notifications"] = {
   volume: 0.2,
   jumpHotkey: "mod+shift+u",
 };
+
+// Bounded (roughly LRU by insertion order: oldest id is evicted first once the cap is hit) so a
+// long session does not grow this set forever.
+const SEEN_NOTIFICATION_LIMIT = 500;
 const seenNotificationIds = new Set<string>();
-const pendingToastThreads: string[] = [];
-const pendingToastIds = new Map<string, string>();
+function markNotificationSeen(id: string) {
+  if (seenNotificationIds.has(id)) return true;
+  seenNotificationIds.add(id);
+  if (seenNotificationIds.size > SEEN_NOTIFICATION_LIMIT) {
+    const oldest = seenNotificationIds.values().next().value;
+    if (oldest !== undefined) seenNotificationIds.delete(oldest);
+  }
+  return false;
+}
+
+// All active toast ids, per thread, so the jump queue and view-dismissal logic cover every
+// outstanding toast instead of only the most recently seen one per thread.
+type PendingToastEntry = { id: string; threadId: string };
+const pendingToastQueue: PendingToastEntry[] = [];
+function dequeuePendingToast(id: string) {
+  const index = pendingToastQueue.findIndex((entry) => entry.id === id);
+  if (index >= 0) pendingToastQueue.splice(index, 1);
+}
+
 let notificationAudio: HTMLAudioElement | null = null;
 let audioUnlocked = false;
 let warnedAudioBlocked = false;
 let lastChimeAt = 0;
 let hotkeyCycleIndex = 0;
+
+let audioUnlockBlocked = false;
+const audioUnlockSubscribers = new Set<() => void>();
+function setAudioUnlockBlocked(blocked: boolean) {
+  if (audioUnlockBlocked === blocked) return;
+  audioUnlockBlocked = blocked;
+  for (const listener of audioUnlockSubscribers) listener();
+}
+function useAudioUnlockBlocked() {
+  const [blocked, setBlocked] = useState(audioUnlockBlocked);
+  useEffect(() => {
+    const listener = () => setBlocked(audioUnlockBlocked);
+    audioUnlockSubscribers.add(listener);
+    return () => {
+      audioUnlockSubscribers.delete(listener);
+    };
+  }, []);
+  return blocked;
+}
+
+// Mount-order queue for the jump hotkey: only the earliest-mounted bridge instance still alive
+// owns the listener. Ownership is re-read live from this queue inside the keydown handler (not
+// captured once at registration time), so handoff on unmount needs no extra plumbing.
+const hotkeyOwnerOrder: object[] = [];
 
 function normalizeClientNotificationPrefs(input: Prefs["notifications"] | null | undefined): Prefs["notifications"] {
   return {
@@ -184,13 +230,21 @@ async function playNotificationSound(volume: number, force = false) {
 
 function shouldHandleHotkey(event: KeyboardEvent, hotkey: string) {
   const target = event.target as HTMLElement | null;
-  if (target?.closest("input, textarea, select, [contenteditable=true]")) return false;
+  const tagName = target?.tagName;
+  if (target?.isContentEditable || tagName === "INPUT" || tagName === "TEXTAREA" || tagName === "SELECT") return false;
   const parts = new Set(hotkey.toLowerCase().split("+").map((part) => part.trim()).filter(Boolean));
-  const modPressed = /mac|iphone|ipad/i.test(navigator.platform) ? event.metaKey : event.ctrlKey;
-  if (parts.has("mod") && !modPressed) return false;
-  if (parts.has("shift") !== event.shiftKey) return false;
-  if (parts.has("alt") !== event.altKey) return false;
-  const key = [...parts].find((part) => !["mod", "shift", "alt", "ctrl"].includes(part));
+  const isMac = /mac|iphone|ipad/i.test(navigator.platform);
+  // "mod" maps to the platform-native primary modifier; every modifier is checked exactly
+  // (present or absent) against the configured combo, not just the ones it happens to mention.
+  const wantsMeta = parts.has("mod") ? isMac : parts.has("meta");
+  const wantsCtrl = parts.has("mod") ? !isMac : parts.has("ctrl");
+  const wantsShift = parts.has("shift");
+  const wantsAlt = parts.has("alt");
+  if (event.metaKey !== wantsMeta) return false;
+  if (event.ctrlKey !== wantsCtrl) return false;
+  if (event.shiftKey !== wantsShift) return false;
+  if (event.altKey !== wantsAlt) return false;
+  const key = [...parts].find((part) => !["mod", "shift", "alt", "ctrl", "meta"].includes(part));
   return key ? event.key.toLowerCase() === key : false;
 }
 
@@ -199,6 +253,8 @@ export function HumanLayerNotificationBridge() {
   const navigate = useBbNavigate();
   const { threadId } = useBbContext();
   const [prefs, setPrefs] = useState<Prefs["notifications"]>(DEFAULT_NOTIFICATION_PREFS);
+  const hotkeyTokenRef = useRef<object | null>(null);
+  if (!hotkeyTokenRef.current) hotkeyTokenRef.current = {};
 
   const refetchPrefs = () => {
     rpc.call("getPrefs", {}).then((next) => setPrefs(normalizeClientNotificationPrefs(next.notifications)));
@@ -211,10 +267,36 @@ export function HumanLayerNotificationBridge() {
   useRealtime("hl:sessions", () => undefined);
   useRealtime("hl:comments", () => undefined);
 
+  // First-mounted bridge wins the jump hotkey; later instances (e.g. a brief remount overlap)
+  // never register. Handoff on unmount is automatic since ownership is read live from this queue.
+  useEffect(() => {
+    const token = hotkeyTokenRef.current!;
+    hotkeyOwnerOrder.push(token);
+    return () => {
+      const index = hotkeyOwnerOrder.indexOf(token);
+      if (index >= 0) hotkeyOwnerOrder.splice(index, 1);
+    };
+  }, []);
+
   useEffect(() => {
     const unlock = () => {
-      audioUnlocked = true;
-      ensureAudio();
+      if (audioUnlocked) return;
+      // Actually probe playback (muted) inside the gesture handler instead of assuming success;
+      // only the resolved play() promise unlocks sound, a rejection keeps it locked and surfaces
+      // a hint in settings (see HumanLayerNotificationSettings / useAudioUnlockBlocked).
+      const audio = ensureAudio();
+      const priorVolume = audio.volume;
+      audio.volume = 0;
+      audio.currentTime = 0;
+      audio.play().then(() => {
+        audio.pause();
+        audio.currentTime = 0;
+        audio.volume = priorVolume;
+        audioUnlocked = true;
+        setAudioUnlockBlocked(false);
+      }).catch(() => {
+        setAudioUnlockBlocked(true);
+      });
     };
     document.addEventListener("pointerdown", unlock, { once: true });
     document.addEventListener("keydown", unlock, { once: true });
@@ -226,19 +308,21 @@ export function HumanLayerNotificationBridge() {
 
   useEffect(() => {
     if (!threadId) return;
-    const toastId = pendingToastIds.get(threadId);
-    if (!toastId) return;
-    toast.dismiss(toastId);
-    pendingToastIds.delete(threadId);
+    for (const entry of pendingToastQueue.filter((item) => item.threadId === threadId)) {
+      toast.dismiss(entry.id);
+      dequeuePendingToast(entry.id);
+    }
   }, [threadId]);
 
   useEffect(() => {
+    const token = hotkeyTokenRef.current!;
     const onKeyDown = (event: KeyboardEvent) => {
+      if (hotkeyOwnerOrder[0] !== token) return;
       if (!shouldHandleHotkey(event, prefs.jumpHotkey)) return;
       event.preventDefault();
-      const pendingThread = pendingToastThreads.shift();
-      if (pendingThread) {
-        navigate.toThread(pendingThread);
+      const pending = pendingToastQueue.shift();
+      if (pending) {
+        navigate.toThread(pending.threadId);
         return;
       }
       rpc.call("listSessions", { taskId: null }).then(({ sessions }) => {
@@ -258,20 +342,23 @@ export function HumanLayerNotificationBridge() {
 
   useRealtime("hl:notify", (payload) => {
     const signal = payload as NotifySignal;
-    if (!signal?.id || seenNotificationIds.has(signal.id)) return;
-    seenNotificationIds.add(signal.id);
+    if (!signal?.id || markNotificationSeen(signal.id)) return;
     if (signal.sound) void playNotificationSound(signal.volume ?? prefs.volume);
     if (!signal.toast) return;
-    pendingToastThreads.push(signal.toast.threadId);
     const id = signal.id;
-    pendingToastIds.set(signal.toast.threadId, id);
-    toast(signal.toast.title, {
+    pendingToastQueue.push({ id, threadId: signal.toast.threadId });
+    toast(signal.synthetic ? `Test: ${signal.toast.title}` : signal.toast.title, {
       id,
       description: signal.toast.body,
       duration: 8000,
+      onDismiss: () => dequeuePendingToast(id),
+      onAutoClose: () => dequeuePendingToast(id),
       action: {
         label: `Jump to Session ${displayHotkey(prefs.jumpHotkey)}`,
-        onClick: () => navigate.toThread(signal.toast!.threadId),
+        onClick: () => {
+          dequeuePendingToast(id);
+          navigate.toThread(signal.toast!.threadId);
+        },
       },
     });
   });
@@ -1843,6 +1930,7 @@ function NotificationCheckbox({
 export function HumanLayerNotificationSettings() {
   const rpc = useRpc<RpcContract>();
   const [prefs, setPrefs] = useState<Prefs["notifications"]>(DEFAULT_NOTIFICATION_PREFS);
+  const audioUnlockBlocked = useAudioUnlockBlocked();
 
   const refresh = () => {
     rpc.call("getPrefs", {}).then((next) => setPrefs(normalizeClientNotificationPrefs(next.notifications)));
@@ -1894,6 +1982,9 @@ export function HumanLayerNotificationSettings() {
           <Input value={prefs.jumpHotkey} onChange={(event) => save({ ...prefs, jumpHotkey: event.currentTarget.value })} />
         </label>
       </div>
+      {audioUnlockBlocked ? (
+        <p className="text-xs text-destructive">Sound is blocked by the browser. Click Test sound to allow it.</p>
+      ) : null}
       <Button type="button" variant="outline" onClick={() => void playNotificationSound(prefs.volume, true)}>
         <Icon name="Play" className="size-4" />
         Test sound
