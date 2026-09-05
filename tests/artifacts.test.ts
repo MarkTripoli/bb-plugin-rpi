@@ -95,5 +95,26 @@ test("artifact size cap and path confinement reject unsafe writes", () => {
   assert.throws(() => upsertArtifact(db, taskId, "big.bin", Buffer.alloc(ARTIFACT_SIZE_LIMIT_BYTES + 1), { createdBy: "t", operation: "test" }), /10 MB/);
   assert.throws(() => assertSafeArtifactFileName("../escape.md"), /invalid artifact file name/);
   assert.throws(() => assertSafeArtifactFileName("/tmp/escape.md"), /invalid artifact file name/);
+  assert.throws(() => assertSafeArtifactFileName(".trash-note.md"), /invalid artifact file name/);
+  assert.throws(() => assertSafeArtifactFileName("bad\0name.md"), /invalid artifact file name/);
+  assert.throws(() => assertSafeArtifactFileName("bad\uD800name.md"), /invalid artifact file name/);
+  assert.throws(() => assertSafeArtifactFileName(`${"x".repeat(256)}.md`), /invalid artifact file name/);
   db.close();
+});
+
+test("file validation rejects case-insensitive live collisions", () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  upsertArtifact(db, taskId, "Notes.md", "a", { createdBy: "t", operation: "test" });
+  assert.throws(() => upsertArtifact(db, taskId, "notes.md", "b", { createdBy: "t", operation: "test" }), /collides/);
+  db.prepare("UPDATE artifacts SET is_deleted = 1 WHERE file_name = ?").run("Notes.md");
+  assert.doesNotThrow(() => upsertArtifact(db, taskId, "notes.md", "b", { createdBy: "t", operation: "test" }));
+  db.close();
+});
+
+test("frontmatter and type inference handle eof fences, quoted scalars, and longest prefixes", () => {
+  assert.deepEqual(parseFrontmatter("---\ntype: \"research\"\ncount: \"2\"\n---"), { type: "research", count: "2" });
+  assert.equal(artifactType("01-research-questions-cache.md", {}), "research-questions");
+  assert.equal(artifactType("02-pr-description-cache.md", {}), "pr-description");
+  assert.equal(artifactType("03-unknown-cache.md", {}), "other");
 });

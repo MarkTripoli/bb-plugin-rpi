@@ -67,20 +67,47 @@ const CONTENT_TYPES: Record<string, string> = {
   ".pdf": "application/pdf",
 };
 
+export function mimeFor(fileName: string) {
+  return CONTENT_TYPES[path.extname(fileName).toLowerCase()] ?? "application/octet-stream";
+}
+
+function hasUnpairedSurrogate(value: string) {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function assertSafeArtifactFileName(fileName: string) {
+  const segments = fileName.split(/[\\/]/);
   if (fileName.trim() !== fileName || fileName.length === 0) throw new Error("invalid artifact file name");
-  if (path.isAbsolute(fileName) || fileName.includes("\\") || fileName.includes("/")) throw new Error("invalid artifact file name");
-  if (fileName === "." || fileName === ".." || fileName.includes("..")) throw new Error("invalid artifact file name");
+  if (path.posix.isAbsolute(fileName) || path.win32.isAbsolute(fileName)) throw new Error("invalid artifact file name");
+  if (fileName.includes("\\") || fileName.includes("/") || fileName.includes("\0")) throw new Error("invalid artifact file name");
+  if (segments.some((segment) => segment === "." || segment === "..")) throw new Error("invalid artifact file name");
+  if (/[\u0000-\u001f\u007f]/.test(fileName) || hasUnpairedSurrogate(fileName)) throw new Error("invalid artifact file name");
+  if (fileName.toLowerCase().startsWith(".trash")) throw new Error("invalid artifact file name");
+  if (Buffer.byteLength(fileName, "utf8") > 255) throw new Error("invalid artifact file name");
   return fileName;
 }
+
+export const validateFileName = assertSafeArtifactFileName;
 
 export function parseFrontmatter(input: string | Buffer): Frontmatter {
   const text = Buffer.isBuffer(input) ? input.toString("utf8") : input;
   if (!text.startsWith("---\n") && !text.startsWith("---\r\n")) return {};
   const newline = text.startsWith("---\r\n") ? "\r\n" : "\n";
   const end = text.indexOf(`${newline}---${newline}`, 4);
-  if (end === -1) return {};
-  const body = text.slice(4, end);
+  const eofEnd = text.endsWith(`${newline}---`) ? text.length - `${newline}---`.length : -1;
+  const fenceEnd = end === -1 ? eofEnd : end;
+  if (fenceEnd === -1) return {};
+  const body = text.slice(4, fenceEnd);
   const result: Frontmatter = {};
   for (const line of body.split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -88,8 +115,10 @@ export function parseFrontmatter(input: string | Buffer): Frontmatter {
     const colon = trimmed.indexOf(":");
     if (colon <= 0) continue;
     const key = trimmed.slice(0, colon).trim();
-    let raw: string | number | boolean = trimmed.slice(colon + 1).trim().replace(/^["']|["']$/g, "");
-    if (raw === "true") raw = true;
+    let raw: string | number | boolean = trimmed.slice(colon + 1).trim();
+    const quoted = (raw.startsWith("\"") && raw.endsWith("\"")) || (raw.startsWith("'") && raw.endsWith("'"));
+    if (quoted) raw = raw.slice(1, -1);
+    else if (raw === "true") raw = true;
     else if (raw === "false") raw = false;
     else if (/^-?\d+(\.\d+)?$/.test(raw)) raw = Number(raw);
     result[key] = raw;
@@ -101,7 +130,12 @@ export function artifactType(fileName: string, frontmatter: Frontmatter) {
   const fromFrontmatter = frontmatter.type;
   if (typeof fromFrontmatter === "string" && fromFrontmatter.trim() !== "") return fromFrontmatter.trim();
   const match = /^(\d{2})-([a-z0-9]+(?:-[a-z0-9]+)*)-.+\.md$/i.exec(fileName);
-  return match?.[2]?.toLowerCase() ?? "other";
+  const prefix = match?.[2]?.toLowerCase();
+  if (!prefix) return "other";
+  return [...ARTIFACT_TYPE_ORDER]
+    .filter((type) => type !== "other")
+    .sort((left, right) => right.length - left.length)
+    .find((type) => prefix === type || prefix.startsWith(`${type}-`)) ?? "other";
 }
 
 export function parseArtifactNumber(fileName: string) {
@@ -122,7 +156,7 @@ export function groupByType<T extends { type: string }>(artifacts: T[]) {
 
 export function inferContentType(fileName: string, contentType?: string | null) {
   if (contentType?.trim()) return contentType.trim();
-  return CONTENT_TYPES[path.extname(fileName).toLowerCase()] ?? "application/octet-stream";
+  return mimeFor(fileName);
 }
 
 export function isTextArtifact(fileName: string, contentType: string) {
@@ -308,6 +342,14 @@ export function upsertArtifact(
   const digest = sha256(buffer);
   const save = transaction(db, () => {
     const timestamp = nowMs();
+    const collision = readRow<{ fileName: string }>(
+      db,
+      "SELECT file_name AS fileName FROM artifacts WHERE task_id = ? AND is_deleted = 0 AND lower(file_name) = lower(?) AND file_name <> ? LIMIT 1",
+      taskId,
+      fileName,
+      fileName,
+    );
+    if (collision) throw new Error(`artifact file name collides with existing artifact ${collision.fileName}`);
     let artifact = getArtifact(db, taskId, fileName);
     if (!artifact) {
       const id = randomUUID();
@@ -328,6 +370,7 @@ export function upsertArtifact(
       artifact = getArtifact(db, taskId, fileName);
     }
     if (!artifact) throw new Error("failed to create artifact");
+    if (artifact.isDeleted) throw new Error("artifact is deleted; restore before saving");
     if (artifact.currentSha256 === digest) {
       return { artifact, version: artifact.currentVersion, changed: false };
     }

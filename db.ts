@@ -156,6 +156,16 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE sessions ADD COLUMN last_reconcile_seq INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE sessions ADD COLUMN last_summarized_turn_key TEXT`,
   `ALTER TABLE sessions ADD COLUMN completed_turn_key TEXT`,
+  `
+  CREATE TABLE mirror_state (
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    file_name TEXT NOT NULL,
+    last_written_sha TEXT,
+    last_seen_sha TEXT,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (task_id, file_name)
+  )
+  `,
 ];
 
 export function openPluginDatabase(bb: BbPluginApi): Database {
