@@ -254,7 +254,34 @@ async function selectEnvironment(bb: BbPluginApi, task: TaskRecord, skillId: str
       role: "base" as const,
     };
   }
+  // `{type:"project-default"}` is a composer-seeding concept (bb-plugin-sdk-app.d.ts:
+  // ExperimentalProviderModelPickerRouting docs) whose actual server-side resolution is the
+  // project's own ambient default, which some projects configure to always spawn a managed
+  // worktree for a new thread. `worktreeTiming` "never"/"later" is this plugin's own guarantee
+  // that no worktree exists until the plan calls for one, so a base-role spawn must not gamble on
+  // that ambient default. An explicit unmanaged host workspace (`path: null` = "the host's
+  // configured checkout") is a deterministic non-worktree environment whenever any host is
+  // resolvable; `project-default` is the last-resort fallback only when no host can be found at
+  // all (found live: a bare `bb humanlayer tasks create` with no `--host` on a project whose
+  // ambient default happened to be a managed worktree silently broke `worktreeTiming: "later"`).
+  const hostId = task.hostId ?? await firstAvailableHostId(bb);
+  if (hostId) {
+    return {
+      environment: { type: "host" as const, hostId, workspace: { type: "unmanaged" as const, path: null } },
+      stores: "base" as const,
+      role: "base" as const,
+    };
+  }
   return { environment: { type: "project-default" as const }, stores: "base" as const, role: "base" as const };
+}
+
+async function firstAvailableHostId(bb: BbPluginApi): Promise<string | null> {
+  try {
+    const hosts = await bb.sdk.hosts.list();
+    return hosts[0]?.id ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function hostIdFromBaseEnvironment(bb: BbPluginApi, task: TaskRecord) {

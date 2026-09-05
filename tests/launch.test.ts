@@ -410,9 +410,9 @@ test("late spawn return cannot bind a resolved attempt", () => {
 
 test("launchPhase selects environments by worktree timing and phase", async () => {
   const cases = [
-    { timing: "never", skillId: "create-research", expected: "project-default" },
+    { timing: "never", skillId: "create-research", expected: "unmanaged" },
     { timing: "now", skillId: "create-research", expected: "managed-worktree" },
-    { timing: "later", skillId: "create-research", expected: "project-default" },
+    { timing: "later", skillId: "create-research", expected: "unmanaged" },
     { timing: "later", skillId: "implement-outline", expected: "managed-worktree" },
   ] as const;
   for (const item of cases) {
@@ -456,4 +456,81 @@ test("launchPhase selects environments by worktree timing and phase", async () =
     else assert.equal(stored.base_environment_id, "env_1");
     db.close();
   }
+});
+
+// Regression: a base-role task with no hostId and no defaultDirectory must never gamble on
+// `{type:"project-default"}`, whose actual resolution is the project's own ambient default and can
+// silently be a managed worktree (found live: worktreeTiming "later" was bypassed this way on a
+// project whose default happened to be worktree-per-thread). It must resolve a host and spawn an
+// explicit unmanaged workspace instead, which is deterministically never a worktree.
+test("a hostless base-role task resolves a real host into an unmanaged workspace, never project-default", async () => {
+  const db = makeDb();
+  const taskId = createDraftTask(db, {
+    projectId: "proj_1",
+    prompt: "prompt",
+    name: "Task",
+    workflowType: "rpi",
+    worktreeTiming: "later",
+    permissionMode: "default",
+    autoAdvance: false,
+    providerId: null,
+    model: null,
+    reasoningLevel: null,
+    serviceTier: null,
+  }).taskId;
+  const task = db.prepare("SELECT id, project_id AS projectId, name, slug, draft_prompt AS draftPrompt, workflow_type AS workflowType, worktree_timing AS worktreeTiming, is_draft AS isDraft, archived, host_id AS hostId, base_environment_id AS baseEnvironmentId, worktree_environment_id AS worktreeEnvironmentId, default_directory AS defaultDirectory, provider_id AS providerId, model, reasoning_level AS reasoningLevel, service_tier AS serviceTier, permission_mode AS permissionMode, auto_advance AS autoAdvance, aa_questions_to_research, aa_research_to_design, aa_plan_to_worktree, aa_worktree_to_implementation, aa_implementation_to_pr, created_at AS createdAt, updated_at AS updatedAt FROM tasks WHERE id = ?").get(taskId) as never;
+  let environment: unknown;
+  const bb = {
+    realtime: { publish: () => undefined },
+    sdk: {
+      hosts: { list: async () => [{ id: "host_auto", name: "Local", status: "connected" }] },
+      threads: {
+        spawn: async (input: { environment: unknown }) => {
+          environment = input.environment;
+          return makeThreadResponse({ id: "thr_new", environmentId: null, projectId: "proj_1", originPluginId: "humanlayer" });
+        },
+        get: async () => makeThreadResponse({ id: "thr_new", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }),
+      },
+    },
+    log: { warn: () => undefined },
+  };
+  await launchPhase(bb as never, db, new Map(), createLaunchBindingMirror(), task, { skillId: "create-research", launchedBy: "user", fromThreadId: null });
+  assert.deepEqual(environment, { type: "host", hostId: "host_auto", workspace: { type: "unmanaged", path: null } });
+  db.close();
+});
+
+test("project-default is only used when no host can be resolved at all", async () => {
+  const db = makeDb();
+  const taskId = createDraftTask(db, {
+    projectId: "proj_1",
+    prompt: "prompt",
+    name: "Task",
+    workflowType: "rpi",
+    worktreeTiming: "never",
+    permissionMode: "default",
+    autoAdvance: false,
+    providerId: null,
+    model: null,
+    reasoningLevel: null,
+    serviceTier: null,
+  }).taskId;
+  const task = db.prepare("SELECT id, project_id AS projectId, name, slug, draft_prompt AS draftPrompt, workflow_type AS workflowType, worktree_timing AS worktreeTiming, is_draft AS isDraft, archived, host_id AS hostId, base_environment_id AS baseEnvironmentId, worktree_environment_id AS worktreeEnvironmentId, default_directory AS defaultDirectory, provider_id AS providerId, model, reasoning_level AS reasoningLevel, service_tier AS serviceTier, permission_mode AS permissionMode, auto_advance AS autoAdvance, aa_questions_to_research, aa_research_to_design, aa_plan_to_worktree, aa_worktree_to_implementation, aa_implementation_to_pr, created_at AS createdAt, updated_at AS updatedAt FROM tasks WHERE id = ?").get(taskId) as never;
+  let environment: unknown;
+  const bb = {
+    realtime: { publish: () => undefined },
+    sdk: {
+      hosts: { list: async () => [] },
+      threads: {
+        spawn: async (input: { environment: unknown }) => {
+          environment = input.environment;
+          return makeThreadResponse({ id: "thr_new", environmentId: null, projectId: "proj_1", originPluginId: "humanlayer" });
+        },
+        get: async () => makeThreadResponse({ id: "thr_new", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }),
+      },
+    },
+    log: { warn: () => undefined },
+  };
+  await launchPhase(bb as never, db, new Map(), createLaunchBindingMirror(), task, { skillId: "create-research", launchedBy: "user", fromThreadId: null });
+  assert.deepEqual(environment, { type: "project-default" });
+  db.close();
 });
