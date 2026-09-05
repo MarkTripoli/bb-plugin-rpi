@@ -301,7 +301,7 @@ function useConfiguredJumpHotkey() {
 }
 
 // Single keydown owner for one panel-local hotkey set. Scoped to `rootRef`'s own DOM subtree (not
-// `document`), so a key press is only ever seen — and only ever `preventDefault`-ed — while focus is
+// `document`), so a key press is only ever seen, and only ever `preventDefault`-ed, while focus is
 // inside this panel; it never fires (and never fights other bb surfaces) while some other part of
 // the app has focus. `handler` still runs `shouldHandleHotkey` itself so it can check multiple
 // bindings (e.g. the g-then-t chord) with its own state.
@@ -481,8 +481,8 @@ function parsedExtraction(session: Pick<SessionView, "nextStepJson">): Suggested
   }
 }
 
-// Suggested-next precondition (plan §2.9): the session must actually be at rest — ready for
-// input, nothing blocking it, and its completed turn already fully processed (summarized) —
+// Suggested-next precondition (plan §2.9): the session must actually be at rest, ready for
+// input, nothing blocking it, and its completed turn already fully processed (summarized),
 // before computeSuggestedNext's extraction-vs-workflow comparison means anything. A
 // mid-processing or blocked session has no meaningful "suggested next" yet.
 function suggestedNextFor(session: Pick<SessionView, "hlStatus" | "blockedReason" | "completedTurnKey" | "lastSummarizedTurnKey" | "label" | "workflowType" | "nextStepJson">): SuggestedNext | null {
@@ -2530,6 +2530,14 @@ export function HumanLayerDefaultsSettings() {
 export function HumanLayerThreadHeaderAction({ threadId }: { threadId: string; projectId: string; isCompactViewport: boolean }) {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
+  const { values: settings } = useSettings();
+  const iterate = async () => {
+    // showIterateConfirmation (item 8: wired, was stored-but-unread): true is bb's own default, so
+    // omitted/unloaded settings keep today's confirm-first behavior.
+    if (settings?.showIterateConfirmation !== false && !window.confirm("Start a fresh session from here? The current session keeps running.")) return;
+    const result = await rpc.call("iterateInFreshSession", { threadId });
+    navigate.toThread(result.threadId);
+  };
   const [session, setSession] = useState<SessionView | null>(null);
   const [uiState, setUiState] = useState<TaskUiState>({});
 
@@ -2567,7 +2575,7 @@ export function HumanLayerThreadHeaderAction({ threadId }: { threadId: string; p
   // of its own to scope a listener to (bb owns the surrounding thread page), so it deliberately
   // uses `document.documentElement` as the narrowest available root through the same
   // `usePanelHotkeys` owner pattern T/g-t use on their own panel root, rather than a bespoke
-  // listener — not `document` + `capture:true`, which fired regardless of what had focus
+  // listener, not `document` + `capture:true`, which fired regardless of what had focus
   // ("outside the panel") and could out-race any other handler on the page. Skips a combo that
   // collides with the user's configured jump hotkey so it always wins.
   const jumpHotkeyForArchive = useConfiguredJumpHotkey();
@@ -2590,20 +2598,15 @@ export function HumanLayerThreadHeaderAction({ threadId }: { threadId: string; p
   return (
     <div className="flex items-center gap-2">
       <HumanLayerNotificationBridge />
-      <span className={pillClassName(session.label ? "step" : "ghost")}>{session.label ?? "freeform"}</span>
+      {settings?.showTaskPhaseLabels === false ? null : (
+        <span className={pillClassName(session.label ? "step" : "ghost")}>{session.label ?? "freeform"}</span>
+      )}
       <SessionStatus status={session.hlStatus} />
       <ContextGauge usage={session.contextUsage} />
       {gauge?.warn && !contextWarningDismissed ? (
         <span className="inline-flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning">
           Context high
-          <button
-            type="button"
-            className="font-semibold underline"
-            onClick={async () => {
-              const result = await rpc.call("iterateInFreshSession", { threadId });
-              navigate.toThread(result.threadId);
-            }}
-          >
+          <button type="button" className="font-semibold underline" onClick={iterate}>
             Iterate in fresh session
           </button>
           <button
@@ -2648,15 +2651,7 @@ export function HumanLayerThreadHeaderAction({ threadId }: { threadId: string; p
           ) : null}
         </span>
       ) : null}
-      <Button
-        type="button"
-        variant="outline"
-        className="h-7 px-2 text-xs"
-        onClick={async () => {
-          const result = await rpc.call("iterateInFreshSession", { threadId });
-          navigate.toThread(result.threadId);
-        }}
-      >
+      <Button type="button" variant="outline" className="h-7 px-2 text-xs" onClick={iterate}>
         Iterate
       </Button>
       <Button
@@ -2772,8 +2767,8 @@ export function HumanLayerPanel({ subPath }: { subPath: string }) {
   };
 
   // T (new task) and the g-then-t chord (go to tasks) while this panel has focus. Scoped to this
-  // panel's own root element (`panelRootRef`), never `document`, so the key is only ever seen — and
-  // only ever preventDefault-ed — while focus is inside this panel; `shouldHandleHotkey`'s
+  // panel's own root element (`panelRootRef`), never `document`, so the key is only ever seen, and
+  // only ever preventDefault-ed, while focus is inside this panel; `shouldHandleHotkey`'s
   // not-in-editable guard still applies so typing in the composer textarea never triggers either
   // one. Skips a combo that collides with the user's configured jump hotkey so it always wins.
   const jumpHotkey = useConfiguredJumpHotkey();
