@@ -126,3 +126,73 @@ The multi-KB reply confirms `thread.idle.lastAssistantText` was not truncated fo
 - Check that no status path invents `lost` without `runtime.displayStatus` evidence.
 - Check that launch attempts require explicit recovery after `uncertain`.
 - Check that `bb.agents.configure` and `bb.agents.contributeInstructions` remain synchronous and mirror-backed.
+
+## Review fixes
+
+Commit: `d2ffad5139454288339cb4d0f21f35b4ffb304d0`
+
+- Finding 1: added launch correlation markers, pre-spawn pending bindings, earliest dispatch/spawn-return binding, and buffered lifecycle replay.
+- Finding 2: restored active-only interaction precedence while preserving idle `user_question` blocked reasons.
+- Finding 3: serialized reconciliation per thread and persisted monotonic `last_reconcile_seq`, with stale-snapshot refusal.
+- Finding 4: gated summaries behind completed non-blocked idle turns, deduped by `last_summarized_turn_key`, and added `completed_turn_key`.
+- Finding 5: made adoption reject already-bound threads transactionally, persist `base_environment_id`, insert the session, mark the attempt spawned, and reconcile.
+- Finding 6: made retry/adopt/dismiss claim only unresolved attempts and return current state for resolved replays.
+- Finding 7: added startup and 60s stale pending launch sweep, and rendered pending rows as `launching...`.
+- Finding 8: changed interrupted derivation to ordered recent thread events instead of cached display status.
+- Finding 9: added the gated hydration `hydrateSession` stub path that sets `hydrated_at`, logs, proceeds on failure, and waits once per thread.
+- Finding 10: bounded `sessions list` with `--limit` default 50 and `--offset`, and truncated CLI summary history to the last 3 entries of 200 chars.
+
+Verification after fixes:
+
+```text
+npm test
+...
+tests 22
+pass 22
+fail 0
+```
+
+```text
+npx tsc --noEmit
+exit 0
+```
+
+```text
+bb plugin build
+dist/server.js
+dist/server.js.map
+dist/server.meta.json
+dist/app.js
+dist/app.css
+dist/app.meta.json
+```
+
+Live check:
+
+```text
+bb plugin install . --yes
+Installed:
+humanlayer@0.1.0  running
+  service launch-attempt-sweep: running
+
+bb humanlayer tasks create --name "Phase 2 review fixes live check" --project proj_v36xq75qse --prompt "Reply with a short plain-text confirmation that the HumanLayer session status live check reached the model. Do not run commands or edit files." --launch --provider codex --model gpt-5.4-mini --json
+{"taskId":"ff22ec4f-f617-4b41-af2c-cdf4c9ddf48b","threadId":"thr_628nfms6n4"}
+
+bb humanlayer sessions list --task ff22ec4f-f617-4b41-af2c-cdf4c9ddf48b --json
+hlStatus "running", hadTurn true, lastReconcileSeq 4
+
+bb thread wait thr_628nfms6n4 --status idle --timeout 300 --json
+"matched": true
+
+bb humanlayer sessions list --task ff22ec4f-f617-4b41-af2c-cdf4c9ddf48b --json
+hlStatus "ready_for_input", summaryHistory ["HumanLayer session status live check reached the model."], completedTurnKey "events:1788605291970"
+
+bb thread output thr_628nfms6n4
+HumanLayer session status live check reached the model.
+
+bb thread archive thr_628nfms6n4
+Thread thr_628nfms6n4 archived
+
+bb plugin remove humanlayer
+Removed humanlayer.
+```
