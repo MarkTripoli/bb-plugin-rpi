@@ -4,8 +4,8 @@ Artifact saved:
 Summary:
 {summary}
 
-The next session can start with:
+The implementation commit step is complete. Continue with:
 
 ```text
-/rpi-describe-pr
+/rpi-describe-pr @{artifact_file}
 ```

@@ -1,13 +1,22 @@
-# Commit Note
+# Commit Receipt
 
-## Staged Files
--
+## Task
+- slug:
+- implementation artifact:
 
-## Commit
-- sha:
+## Git State
+- branch:
+- before:
+- after:
+
+## Commits
+- hash:
 - subject:
+- files:
 
-## Verification Before Commit
--
+## Verification
+- command:
+- result:
 
-Do not include .humanlayer/tasks mirror data unless the user explicitly asked for those artifacts to be committed.
+## Skipped Files
+List unrelated, generated, or task-mirror files that were intentionally left unstaged.

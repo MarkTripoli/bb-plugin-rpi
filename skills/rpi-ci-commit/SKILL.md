@@ -1,28 +1,57 @@
 ---
 name: rpi-ci-commit
-description: Only use when the user explicitly invokes /rpi-ci-commit. Commit implementation changes.
+description: Only use when the user explicitly invokes /rpi-ci-commit. Create focused commits for completed work.
 ---
 
-# Ci Commit
+# Commit Changes
 
-## Steps
+You create git commits for completed task work. Do not pause for another approval; this skill is the commit step.
 
-0. Call hl_task_context and read its output before any file read. Use the returned task directory, task slug, artifact list, and model hints.
-1. Read task.md or ticket.md from the task directory, plus every explicit @-mentioned file in full.
-2. If an artifact number is needed, call hl_next_artifact_number and use the returned number in NN-commit-note-short-slug.md.
-3. Read references/commit_template.md and draft the artifact in that shape.
-4. Write or update the artifact under .humanlayer/tasks/<slug>/.
-5. Call hl_artifact_save with the artifact file name immediately after writing. Save the returned ::hl-artifact{...} line for your final answer.
-6. Read references/commit_final_answer.md and answer using that structure exactly. The final answer must end with one fenced text block containing /rpi-describe-pr.
+## Process
 
-## Rules
+### 0. Load task context
 
-- Do not open unrelated task artifacts. Use only task.md, ticket.md, @ files, and comments the user asked you to inspect.
-- For child research, spawn codebase-locator, codebase-analyzer, codebase-pattern-finder, and web-search-researcher as useful. Use:
+Call `hl_task_context` before reading task files. Use its task directory, slug, artifact list, environment, and links. Read only files needed for the work.
 
-  bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <cheap research model from hl_task_context prefs> --prompt "/rpi-agent-<role> <short assignment>"
-  bb thread wait <id>
-  bb thread output <id>
+### 1. Understand what changed
 
-- Spawn all independent child threads first, then wait for each one and summarize only their results.
-- Treat tool or CLI errors as blockers, not as permission to write untracked side files.
+Review repository state:
+
+- Run `git status --short --branch`.
+- Run `git diff` for unstaged changes.
+- Inspect staged changes if anything is already staged.
+- Read enough changed files to understand the behavior.
+- Decide whether one or several commits are needed.
+
+Do not stage `.humanlayer/tasks/`, task mirror symlinks, scratch files, dummy scripts, one-off tests, or unrelated generated output.
+
+### 2. Plan the commit or commits
+
+Group files by purpose. Use imperative commit subjects and prefer reason over file lists.
+
+Leave unrelated edits unstaged and mention them. If one file mixes task work with unrelated edits, ask how to split it unless the split is obvious.
+
+### 3. Execute the commits
+
+Use explicit paths:
+
+```bash
+git add <path> <path>
+git commit -m "<subject>"
+```
+
+Never use `git add -A`, `git add .`, or broad staging. Verify with `git status --short --branch`.
+
+### 4. Save the receipt
+
+If a task receipt is useful, call `hl_next_artifact_number`, write `NN-commit-*.md` from `references/commit_template.md`, then call `hl_artifact_save`.
+
+Read `references/commit_final_answer.md` and use it exactly. End with its single fenced `text` command.
+
+## Remember
+
+- Use current session context; do not ask the user to restate it.
+- Keep commits focused.
+- Do not commit the task artifact directory.
+- Do not commit unrelated files.
+- Treat failed tests or unsafe git state as blockers.
