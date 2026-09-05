@@ -263,6 +263,9 @@ export const MIGRATIONS: string[] = [
     delivered_at INTEGER
   )
   `,
+  `ALTER TABLE notifications ADD COLUMN synthetic INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE notifications ADD COLUMN superseded_at INTEGER`,
+  `ALTER TABLE sessions ADD COLUMN thread_archived_at INTEGER`,
 ];
 
 export function openPluginDatabase(bb: BbPluginApi): Database {
