@@ -4,6 +4,8 @@ import type * as BetterSqlite3 from "better-sqlite3";
 import type { TaskRecord } from "./contract";
 import { nowMs, readRow, readRows, writeRow } from "./db";
 import { getTask } from "./tasks";
+import { FIRST_SKILL_BY_WORKFLOW, skillInfo, type SkillId } from "./transitions";
+import { workspaceBaseBranch, workspaceDisabled } from "./workspace";
 import {
   bindPendingLaunch,
   clearPendingLaunch,
@@ -36,16 +38,7 @@ function readTaskOrThrow(db: Database, taskId: string) {
   return result.task;
 }
 
-function assertLaunchableTask(task: TaskRecord, skillId: string | null) {
-  if (task.worktreeTiming !== "never") {
-    throw new Error("Only worktree_timing=never launches are available in this phase.");
-  }
-  if (skillId !== null || (task.workflowType !== "freeform" && task.workflowType !== "oneshot")) {
-    throw new Error("available in a later release");
-  }
-}
-
-function activeAttempt(db: Database, taskId: string) {
+export function activeLaunchAttempt(db: Database, taskId: string) {
   return readRow<LaunchAttemptRow>(
     db,
     `
@@ -121,6 +114,74 @@ function optionalExecution(task: TaskRecord) {
   };
 }
 
+function canonicalSkill(skillId: string | null) {
+  if (skillId === null) return null;
+  const info = skillInfo(skillId);
+  if (!info) throw new Error(`Unknown skill ${skillId}`);
+  return info;
+}
+
+function labelTitle(skillId: string | null) {
+  const info = canonicalSkill(skillId);
+  return info?.label ?? "freeform";
+}
+
+function commandFor(skillId: string | null, commandLine?: string | null) {
+  if (commandLine?.trim()) return commandLine.trim();
+  const info = canonicalSkill(skillId);
+  return info ? info.command : null;
+}
+
+function shouldCreateWorktree(task: TaskRecord, skillId: string | null, disabled: boolean) {
+  if (disabled || task.worktreeTiming === "never") return false;
+  if (task.worktreeTiming === "now") return task.worktreeEnvironmentId === null;
+  const label = labelTitle(skillId);
+  return task.worktreeEnvironmentId === null && (label === "worktree-setup" || label === "implementation");
+}
+
+async function selectEnvironment(bb: BbPluginApi, task: TaskRecord, skillId: string | null) {
+  const disabled = await workspaceDisabled(bb, task);
+  if (task.worktreeEnvironmentId && !disabled && task.worktreeTiming !== "never") {
+    return { environment: { type: "reuse" as const, environmentId: task.worktreeEnvironmentId }, stores: "none" as const };
+  }
+  if (shouldCreateWorktree(task, skillId, disabled)) {
+    const hostId = task.hostId ?? await hostIdFromBaseEnvironment(bb, task);
+    if (!hostId) throw new Error("hostId is required to create a managed worktree");
+    return {
+      environment: {
+        type: "host" as const,
+        hostId,
+        workspace: { type: "managed-worktree" as const, baseBranch: await workspaceBaseBranch(bb, task) },
+      },
+      stores: "worktree" as const,
+    };
+  }
+  if (task.baseEnvironmentId) return { environment: { type: "reuse" as const, environmentId: task.baseEnvironmentId }, stores: "none" as const };
+  if (task.hostId && task.defaultDirectory) {
+    return {
+      environment: { type: "host" as const, hostId: task.hostId, workspace: { type: "unmanaged" as const, path: task.defaultDirectory } },
+      stores: "base" as const,
+    };
+  }
+  return { environment: { type: "project-default" as const }, stores: "base" as const };
+}
+
+async function hostIdFromBaseEnvironment(bb: BbPluginApi, task: TaskRecord) {
+  if (!task.baseEnvironmentId) return null;
+  try {
+    return (await bb.sdk.environments.get({ environmentId: task.baseEnvironmentId })).hostId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function promptFor(task: TaskRecord, input: { skillId: string | null; prompt?: string; commandLine?: string | null }) {
+  const command = commandFor(input.skillId, input.commandLine);
+  const body = command ?? input.prompt ?? task.draftPrompt;
+  const suffix = `Task artifact directory: .humanlayer/tasks/${task.slug}`;
+  return `${body}\n\n${suffix}`;
+}
+
 export function listLaunchAttempts(db: Database, taskId: string) {
   return readRows<LaunchAttemptRow>(
     db,
@@ -147,12 +208,13 @@ export async function launchPhase(
   mirror: Map<string, SessionMirrorRow>,
   bindings: LaunchBindingMirror,
   task: TaskRecord,
-  input: { skillId: string | null; prompt: string; launchedBy: string; fromThreadId: string | null },
+  input: { skillId: string | null; prompt?: string; commandLine?: string | null; launchedBy: string; fromThreadId: string | null },
 ) {
-  assertLaunchableTask(task, input.skillId);
-  const existing = activeAttempt(db, task.id);
+  canonicalSkill(input.skillId);
+  const existing = activeLaunchAttempt(db, task.id);
   if (existing) throw new Error(`Resolve launch attempt ${existing.id} before launching again.`);
 
+  const selected = await selectEnvironment(bb, task, input.skillId);
   const attemptId = insertAttempt(db, task, input.fromThreadId, input.skillId);
   registerPendingLaunch(bindings, {
     token: attemptId,
@@ -163,17 +225,13 @@ export async function launchPhase(
     threadId: null,
   });
   try {
-    const environment = task.baseEnvironmentId
-      ? { type: "reuse" as const, environmentId: task.baseEnvironmentId }
-      : task.worktreeTiming === "never" && task.hostId && task.defaultDirectory
-        ? { type: "host" as const, hostId: task.hostId, workspace: { type: "unmanaged" as const, path: task.defaultDirectory } }
-        : { type: "project-default" as const };
     const thread = await bb.sdk.threads.spawn({
       projectId: task.projectId,
-      environment,
-      prompt: `${launchMarker(attemptId)}\n${TASK_CONTEXT_FIRST_ACTION}\n${input.prompt}`,
-      title: task.name,
+      environment: selected.environment,
+      prompt: `${launchMarker(attemptId)}\n${TASK_CONTEXT_FIRST_ACTION}\n${promptFor(task, input)}`,
+      title: `${labelTitle(input.skillId)}: ${task.name}`,
       visibility: "visible",
+      ...(input.fromThreadId ? { parentThreadId: input.fromThreadId } : {}),
       executionInputSources: {
         providerId: task.providerId ? "explicit" : undefined,
         model: task.model ? "explicit" : undefined,
@@ -192,8 +250,10 @@ export async function launchPhase(
     const hydratedThread = await bb.sdk.threads.get({ threadId: thread.id, include: "environment" });
     const environmentId = hydratedThread.environmentId ?? thread.environmentId ?? null;
     const timestamp = nowMs();
-    if (!task.baseEnvironmentId && environmentId) {
+    if (selected.stores === "base" && !task.baseEnvironmentId && environmentId) {
       writeRow(db, "UPDATE tasks SET base_environment_id = ?, updated_at = ? WHERE id = ?", environmentId, timestamp, task.id);
+    } else if (selected.stores === "worktree" && environmentId) {
+      writeRow(db, "UPDATE tasks SET worktree_environment_id = ?, updated_at = ? WHERE id = ?", environmentId, timestamp, task.id);
     }
     mirrorSession(db, mirror, thread.id);
     bb.realtime.publish("hl:sessions", { taskId: task.id, threadId: thread.id });
@@ -209,9 +269,10 @@ export async function launchPhase(
 
 export async function launchDraft(bb: BbPluginApi, db: Database, mirror: Map<string, SessionMirrorRow>, bindings: LaunchBindingMirror, taskId: string) {
   const task = readTaskOrThrow(db, taskId);
+  const firstSkill = FIRST_SKILL_BY_WORKFLOW[task.workflowType] as SkillId | null;
   const result = await launchPhase(bb, db, mirror, bindings, task, {
-    skillId: null,
-    prompt: task.draftPrompt,
+    skillId: firstSkill,
+    prompt: firstSkill ? undefined : task.draftPrompt,
     launchedBy: "user",
     fromThreadId: null,
   });
@@ -327,10 +388,11 @@ export async function resolveLaunchAttempt(
           thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
           hl_status, hl_status_at, had_turn, interrupted, blocked_reason,
           created_at, updated_at
-        ) VALUES (?, ?, NULL, ?, 'user', ?, 'launching', ?, 0, 0, NULL, ?, ?)
+        ) VALUES (?, ?, ?, ?, 'user', ?, 'launching', ?, 0, 0, NULL, ?, ?)
         `,
         action.threadId,
         task.id,
+        attempt.skillId ? labelTitle(attempt.skillId) : null,
         attempt.skillId,
         attempt.fromThreadId,
         timestamp,

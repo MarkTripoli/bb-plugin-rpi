@@ -27,6 +27,12 @@ import {
 } from "./comments";
 import { markdownBlocks } from "./blocks";
 import {
+  iterateInFreshSession,
+  launchSkill,
+  onCompletedTurn,
+  proceed,
+} from "./advance";
+import {
   forkSession,
   interruptSession,
   launchDraft,
@@ -53,6 +59,7 @@ import {
   updateTask,
 } from "./tasks";
 import { ARTIFACT_TOOL_NAMES, registerArtifactTools } from "./tools";
+import { getWorkspaceView, rerunWorkspaceSetup } from "./workspace";
 
 const PREFS_KEY = "prefs:structured-defaults";
 const SECURITY_HEADERS = {
@@ -150,7 +157,7 @@ export default async function plugin(bb: BbPluginApi) {
     defaultWorkflowType: {
       type: "select",
       label: "Default workflow type",
-      options: ["rpi", "prd_tdd", "oneshot", "freeform"],
+      options: ["rpi", "outline_only", "prd_tdd", "oneshot", "freeform"],
       default: "rpi",
     },
     defaultWorktreeTiming: {
@@ -244,9 +251,6 @@ export default async function plugin(bb: BbPluginApi) {
       });
       bb.realtime.publish("tasks", { taskId: result.taskId });
       if (!draft) {
-        if (request.workflowType !== "freeform" && request.workflowType !== "oneshot") {
-          return { ...result, note: "available in a later release" };
-        }
         const launched = await launchDraft(bb, db, sessionMirror, launchBindings, result.taskId);
         return { ...result, threadId: launched.threadId };
       }
@@ -263,6 +267,9 @@ export default async function plugin(bb: BbPluginApi) {
       return { task };
     },
     launchDraft: async ({ taskId }) => launchDraft(bb, db, sessionMirror, launchBindings, taskId),
+    proceed: async ({ threadId }) => proceed(bb, db, sessionMirror, launchBindings, threadId),
+    launchSkill: async ({ taskId, skillId, commandLine }) => launchSkill(bb, db, sessionMirror, launchBindings, taskId, skillId, commandLine ?? null),
+    iterateInFreshSession: async ({ threadId }) => iterateInFreshSession(bb, db, sessionMirror, launchBindings, threadId),
     listSessions: async ({ taskId }) => ({
       sessions: await Promise.all(listSessions(db, taskId ?? null).map((session) => sessionView(bb, session))),
     }),
@@ -392,6 +399,16 @@ export default async function plugin(bb: BbPluginApi) {
       if (!threadId) throw new Error("No task session is available for ingest.");
       return ingest(bb, db, taskId, threadId, { threadId });
     },
+    getWorkspace: async ({ taskId }) => {
+      const result = getTask(db, taskId);
+      if (!result) throw new Error(`No task found for id ${taskId}`);
+      return { workspace: await getWorkspaceView(bb, db, result.task) };
+    },
+    rerunWorkspaceSetup: async ({ taskId }) => {
+      const result = getTask(db, taskId);
+      if (!result) throw new Error(`No task found for id ${taskId}`);
+      return rerunWorkspaceSetup(bb, db, result.task);
+    },
     listProjects: async ({ includePersonal }) =>
       bb.sdk.projects.list({ includePersonal: includePersonal ?? true }).then((projects) =>
         projects.map((project) => ({
@@ -488,6 +505,26 @@ export default async function plugin(bb: BbPluginApi) {
         summary: "Resolve artifact comments by id prefix",
         usage: "bb humanlayer comments resolve --task <taskId> --file <fileName> --id <prefix> [--json]",
       },
+      {
+        name: "launch-skill",
+        summary: "Launch a HumanLayer task session with an RPI skill",
+        usage: "bb humanlayer launch-skill --task <taskId> --skill <skillId> [--prompt <text>] [--command-line <text>] [--provider <id>] [--model <id>] [--json]",
+      },
+      {
+        name: "launch-attempts",
+        summary: "List HumanLayer launch attempts for a task",
+        usage: "bb humanlayer launch-attempts --task <taskId> [--json] | bb humanlayer launch-attempts dismiss --id <attemptId>",
+      },
+      {
+        name: "suppressions",
+        summary: "List HumanLayer notification suppressions for a thread",
+        usage: "bb humanlayer suppressions --thread <threadId> [--json]",
+      },
+      {
+        name: "workspace",
+        summary: "Show HumanLayer workspace state for a task",
+        usage: "bb humanlayer workspace --task <taskId> [--json]",
+      },
     ],
     async run(argv) {
       try {
@@ -505,10 +542,10 @@ export default async function plugin(bb: BbPluginApi) {
             name: opts.name,
             hostId: opts.host ?? null,
             defaultDirectory: opts.directory ?? null,
-            workflowType: "freeform",
-            worktreeTiming: "never",
+            workflowType: workflowTypeOption(opts.workflow ?? opts.workflowType),
+            worktreeTiming: worktreeTimingOption(opts.worktree ?? opts.worktreeTiming),
             permissionMode: "default",
-            autoAdvance: false,
+            autoAdvance: opts.autoAdvance === "true" || opts.auto === "true",
             providerId: opts.provider ?? null,
             model: opts.model ?? null,
             reasoningLevel: opts.effort ?? null,
@@ -517,6 +554,60 @@ export default async function plugin(bb: BbPluginApi) {
           const launched = opts.launch === "true" ? await launchDraft(bb, db, sessionMirror, launchBindings, result.taskId) : null;
           const body = { ...result, ...(launched ?? {}) };
           return { exitCode: 0, stdout: json ? `${JSON.stringify(body)}\n` : `${body.taskId}${launched ? ` ${launched.threadId}` : ""}\n` };
+        }
+        if (argv[0] === "launch-skill") {
+          const opts = parseArgs(argv.slice(1));
+          if (!opts.task || !opts.skill) return { exitCode: 2, stderr: "usage: bb humanlayer launch-skill --task <taskId> --skill <skillId> [--prompt <text>] [--command-line <text>] [--provider <id>] [--model <id>]\n" };
+          if (opts.provider || opts.model || opts.effort) {
+            updateTask(db, opts.task, {
+              providerId: opts.provider ?? undefined,
+              model: opts.model ?? undefined,
+              reasoningLevel: opts.effort ?? undefined,
+            });
+          }
+          const commandLine = opts.commandLine ?? opts["command-line"] ?? (opts.prompt ? `/rpi-${opts.skill}\n\n${opts.prompt}` : null);
+          const result = await launchSkill(bb, db, sessionMirror, launchBindings, opts.task, opts.skill, commandLine);
+          return { exitCode: 0, stdout: json ? `${JSON.stringify(result)}\n` : `${result.threadId}\n` };
+        }
+        if (argv[0] === "launch-attempts") {
+          if (argv[1] === "dismiss") {
+            const opts = parseArgs(argv.slice(2));
+            if (!opts.id) return { exitCode: 2, stderr: "usage: bb humanlayer launch-attempts dismiss --id <attemptId>\n" };
+            const result = await resolveLaunchAttempt(bb, db, sessionMirror, launchBindings, opts.id, { type: "dismiss" });
+            return { exitCode: 0, stdout: json ? `${JSON.stringify(result)}\n` : "dismissed\n" };
+          }
+          const opts = parseArgs(argv.slice(1));
+          if (!opts.task) return { exitCode: 2, stderr: "usage: bb humanlayer launch-attempts --task <taskId>\n" };
+          const attempts = listLaunchAttempts(db, opts.task);
+          return { exitCode: 0, stdout: json ? `${JSON.stringify({ attempts })}\n` : attempts.map((attempt) => `${attempt.id}\t${attempt.status}\t${attempt.skillId ?? ""}\t${attempt.threadId ?? ""}`).join("\n") + "\n" };
+        }
+        if (argv[0] === "suppressions") {
+          const opts = parseArgs(argv.slice(1));
+          if (!opts.thread) return { exitCode: 2, stderr: "usage: bb humanlayer suppressions --thread <threadId>\n" };
+          const rows = readRow<{ threadId: string; reason: string; createdAt: number }>(
+            db,
+            "SELECT thread_id AS threadId, reason, created_at AS createdAt FROM notification_suppressions WHERE thread_id = ?",
+            opts.thread,
+          );
+          return { exitCode: 0, stdout: json ? `${JSON.stringify({ suppressions: rows ? [rows] : [] })}\n` : rows ? `${rows.threadId}\t${rows.reason}\n` : "" };
+        }
+        if (argv[0] === "workspace") {
+          const opts = parseArgs(argv.slice(1));
+          if (!opts.task) return { exitCode: 2, stderr: "usage: bb humanlayer workspace --task <taskId> [--json]\n" };
+          const result = getTask(db, opts.task);
+          if (!result) return { exitCode: 1, stderr: "task not found\n" };
+          const workspace = await getWorkspaceView(bb, db, result.task);
+          if (json) return { exitCode: 0, stdout: `${JSON.stringify({ workspace })}\n` };
+          return {
+            exitCode: 0,
+            stdout: [
+              `environment\t${workspace.environment.id ?? ""}\t${workspace.environment.status ?? ""}\t${workspace.environment.kind ?? ""}`,
+              `path\t${workspace.environment.path ?? ""}`,
+              `branch\t${workspace.environment.branch ?? ""}`,
+              `baseBranch\t${workspace.environment.baseBranch ?? ""}`,
+              `events\t${workspace.provisioningEventKinds.join(",")}`,
+            ].join("\n") + "\n",
+          };
         }
         if (argv[0] === "tasks" && argv[1] === "list") {
           const tasks = listTasks(db, { archived: false });
@@ -617,7 +708,7 @@ export default async function plugin(bb: BbPluginApi) {
           publishComments(bb, opts.task, artifact.id, match.id, false, "resolved");
           return { exitCode: 0, stdout: json ? `${JSON.stringify({ id: match.id, resolved: true })}\n` : `${match.id.slice(0, 8)}\tresolved\n` };
         }
-        return { exitCode: 2, stderr: "usage: bb humanlayer {tasks|sessions|artifacts|comments} ...\n" };
+        return { exitCode: 2, stderr: "usage: bb humanlayer {tasks|sessions|artifacts|comments|launch-skill|launch-attempts|suppressions|workspace} ...\n" };
       } catch (error) {
         return { exitCode: 1, stderr: `${String(error instanceof Error ? error.message : error)}\n` };
       }
@@ -654,7 +745,7 @@ export default async function plugin(bb: BbPluginApi) {
     return row ? taskInstructions(row) : null;
   });
 
-  registerSessionRuntime(bb, db, sessionMirror, launchBindings);
+  registerSessionRuntime(bb, db, sessionMirror, launchBindings, (row) => onCompletedTurn(bb, db, sessionMirror, launchBindings, row));
 
   bb.background.service("launch-attempt-sweep", {
     async start(signal) {
@@ -719,6 +810,14 @@ function parseBoundedInt(input: string | undefined, fallback: number, min: numbe
   const value = input === undefined ? fallback : Number.parseInt(input, 10);
   if (!Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, value));
+}
+
+function workflowTypeOption(input: string | undefined) {
+  return input === "rpi" || input === "outline_only" || input === "prd_tdd" || input === "oneshot" || input === "freeform" ? input : "freeform";
+}
+
+function worktreeTimingOption(input: string | undefined) {
+  return input === "now" || input === "later" || input === "never" ? input : "never";
 }
 
 function sessionCliView(session: ReturnType<typeof readSession> extends infer T ? NonNullable<T> : never) {

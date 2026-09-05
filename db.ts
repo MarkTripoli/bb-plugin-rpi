@@ -180,6 +180,13 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE send_receipts ADD COLUMN status TEXT NOT NULL DEFAULT 'done'`,
   `ALTER TABLE send_receipts ADD COLUMN delivered_chunk_indexes_json TEXT NOT NULL DEFAULT '[]'`,
   `ALTER TABLE send_receipts ADD COLUMN completed_at INTEGER`,
+  `
+  CREATE TABLE notification_suppressions (
+    thread_id TEXT PRIMARY KEY,
+    reason TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )
+  `,
 ];
 
 export function openPluginDatabase(bb: BbPluginApi): Database {

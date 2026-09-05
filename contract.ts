@@ -4,7 +4,7 @@ import { z } from "zod";
 export const workflowTypeSchema = z.enum(["rpi", "outline_only", "prd_tdd", "oneshot", "freeform"]);
 export type WorkflowType = z.infer<typeof workflowTypeSchema>;
 
-export const composerWorkflowTypeSchema = z.enum(["rpi", "prd_tdd", "oneshot", "freeform"]);
+export const composerWorkflowTypeSchema = z.enum(["rpi", "outline_only", "prd_tdd", "oneshot", "freeform"]);
 
 export const worktreeTimingSchema = z.enum(["now", "later", "never"]);
 export const permissionModeSchema = z.enum(["default", "accept_edits", "auto", "bypass"]);
@@ -117,6 +117,24 @@ export const launchAttemptRowSchema = z
   .strict();
 export type LaunchAttemptRecord = z.infer<typeof launchAttemptRowSchema>;
 
+export const nextStepExtractionSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("next_step_found"),
+    nextStepPrompt: z.string(),
+    nextStepSummary: z.string(),
+    nextStepType: z.string(),
+    taskReference: z.string().nullable(),
+    suggestedDirectory: z.null(),
+  }).strict(),
+  z.object({ type: z.literal("no_next_step"), reason: z.string() }).strict(),
+]);
+export const nextStepSuggestionsSchema = z.object({
+  parsedAt: z.number().int(),
+  extraction: nextStepExtractionSchema,
+  extractionError: z.string().optional(),
+}).strict();
+export type NextStepSuggestionsRecord = z.infer<typeof nextStepSuggestionsSchema>;
+
 export const sessionViewSchema = sessionRowSchema
   .extend({
     title: z.string().nullable(),
@@ -146,6 +164,46 @@ export const workspaceStateSchema = z
   })
   .strict();
 export type TaskWorkspaceState = z.infer<typeof workspaceStateSchema>;
+
+export const workspaceRepoViewSchema = z.object({
+  localPath: z.string().nullable(),
+  description: z.string().nullable(),
+  primary: z.boolean(),
+  sourceRef: z.string().nullable(),
+  setupCommand: z.string().nullable(),
+  copyGlobs: z.array(z.string()),
+}).strict();
+
+export const workspaceViewSchema = z.object({
+  taskId: z.string(),
+  environment: z.object({
+    id: z.string().nullable(),
+    status: z.string().nullable(),
+    path: z.string().nullable(),
+    branch: z.string().nullable(),
+    baseBranch: z.string().nullable(),
+    kind: z.string().nullable(),
+  }).strict(),
+  worktreeThreadId: z.string().nullable(),
+  repos: z.array(workspaceRepoViewSchema),
+  primary: workspaceRepoViewSchema.nullable(),
+  pathTemplate: z.object({ requested: z.string().nullable(), resolved: z.string().nullable() }).strict(),
+  branchTemplate: z.object({ requested: z.string().nullable(), resolved: z.string().nullable() }).strict(),
+  sourceRef: z.string().nullable(),
+  setupCommand: z.string().nullable(),
+  copyGlobs: z.array(z.string()),
+  disabled: z.boolean(),
+  warnings: z.array(z.string()),
+  provisioningEvents: z.array(z.object({
+    seq: z.number().int(),
+    createdAt: z.number().int(),
+    status: z.string().nullable(),
+    kind: z.string(),
+    text: z.string(),
+  }).strict()),
+  provisioningEventKinds: z.array(z.string()),
+}).strict();
+export type WorkspaceViewRecord = z.infer<typeof workspaceViewSchema>;
 
 export const artifactGroupSchema = z.enum([
   "research-questions",
@@ -336,6 +394,13 @@ export const listTasksInputSchema = z
 export const getTaskInputSchema = z.object({ taskId: z.string().min(1) }).strict();
 export const archiveTaskInputSchema = z.object({ taskId: z.string().min(1) }).strict();
 export const launchDraftInputSchema = z.object({ taskId: z.string().min(1) }).strict();
+export const proceedInputSchema = z.object({ threadId: z.string().min(1) }).strict();
+export const launchSkillInputSchema = z.object({
+  taskId: z.string().min(1),
+  skillId: z.string().min(1),
+  commandLine: z.string().trim().min(1).max(10000).nullable().optional(),
+}).strict();
+export const rerunWorkspaceSetupInputSchema = z.object({ taskId: z.string().min(1) }).strict();
 export const listSessionsInputSchema = z.object({ taskId: z.string().min(1).nullable().optional() }).strict();
 export const getSessionInputSchema = z.object({ threadId: z.string().min(1) }).strict();
 export const forkSessionInputSchema = z
@@ -405,6 +470,18 @@ export const rpcContract = defineRpcContract({
   },
   launchDraft: {
     input: launchDraftInputSchema,
+    output: z.object({ threadId: z.string() }).strict(),
+  },
+  proceed: {
+    input: proceedInputSchema,
+    output: z.object({ threadId: z.string().nullable().optional() }).strict(),
+  },
+  launchSkill: {
+    input: launchSkillInputSchema,
+    output: z.object({ threadId: z.string() }).strict(),
+  },
+  iterateInFreshSession: {
+    input: proceedInputSchema,
     output: z.object({ threadId: z.string() }).strict(),
   },
   listSessions: {
@@ -498,6 +575,14 @@ export const rpcContract = defineRpcContract({
   ingestNow: {
     input: artifactTaskInputSchema,
     output: z.object({ ingested: z.number().int().nonnegative(), skipped: z.number().int().nonnegative() }).strict(),
+  },
+  getWorkspace: {
+    input: artifactTaskInputSchema,
+    output: z.object({ workspace: workspaceViewSchema }).strict(),
+  },
+  rerunWorkspaceSetup: {
+    input: rerunWorkspaceSetupInputSchema,
+    output: z.object({ threadId: z.string() }).strict(),
   },
   listProjects: {
     input: z

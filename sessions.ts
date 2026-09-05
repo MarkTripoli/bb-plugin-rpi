@@ -1,9 +1,11 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type * as BetterSqlite3 from "better-sqlite3";
 import { nowMs, parseJson, readRow, readRows, stringifyJson, writeRow } from "./db";
+import { extractNextStep } from "./extraction";
 import { hydrate, ingest } from "./mirror";
 import type { SessionRow } from "./contract";
 import { TASK_CONTEXT_FIRST_ACTION } from "./instructions";
+import { skillInfo } from "./transitions";
 
 type Database = BetterSqlite3.Database;
 type ThreadLike = {
@@ -135,10 +137,11 @@ export function bindPendingLaunch(
           thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
           hl_status, hl_status_at, had_turn, interrupted, blocked_reason,
           created_at, updated_at
-        ) VALUES (?, ?, NULL, ?, ?, ?, 'launching', ?, 0, 0, NULL, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, 'launching', ?, 0, 0, NULL, ?, ?)
         `,
         threadId,
         binding.taskId,
+        binding.skillId ? skillInfo(binding.skillId)?.label ?? null : null,
         binding.skillId,
         binding.launchedBy,
         binding.fromThreadId,
@@ -455,23 +458,55 @@ export function appendSessionSummary(
   lastAssistantText: string | null,
 ) {
   if (!lastAssistantText) return;
-  const row = readSession(db, thread.id);
+  const row = mirror.get(thread.id) ?? mirrorSession(db, mirror, thread.id) ?? readSession(db, thread.id);
   if (!row) return;
   const key = turnKey(thread);
   if (row.lastSummarizedTurnKey === key) return;
   const summary = parseJson<{ summaryHistory?: string[] }>(row.summaryJson, {});
   const summaryHistory = Array.isArray(summary.summaryHistory) ? summary.summaryHistory : [];
   summaryHistory.push(lastAssistantText.slice(0, 600));
+  const liveArtifactNames = liveArtifacts(db, row.taskId);
+  const taskSlug = (row as Partial<SessionMirrorRow>).taskSlug ?? null;
+  const nextStep = extractNextStep(lastAssistantText, { liveArtifactNames, taskSlug });
+  const relevantRPIDocuments = relevantDocuments(lastAssistantText, row.taskId, taskSlug, liveArtifactNames);
   writeRow(
     db,
-    "UPDATE sessions SET summary_json = ?, last_summarized_turn_key = ?, completed_turn_key = ?, updated_at = ? WHERE thread_id = ?",
-    stringifyJson({ ...summary, summaryHistory }),
+    "UPDATE sessions SET summary_json = ?, next_step_json = ?, last_summarized_turn_key = ?, completed_turn_key = ?, updated_at = ? WHERE thread_id = ?",
+    stringifyJson({ ...summary, summaryHistory, ...(relevantRPIDocuments.length > 0 ? { relevantRPIDocuments } : {}) }),
+    stringifyJson(nextStep),
     key,
     key,
     nowMs(),
     thread.id,
   );
   mirrorSession(db, mirror, thread.id);
+}
+
+function liveArtifacts(db: Database, taskId: string) {
+  return readRows<{ fileName: string }>(
+    db,
+    "SELECT file_name AS fileName FROM artifacts WHERE task_id = ? AND is_deleted = 0",
+    taskId,
+  ).map((artifact) => artifact.fileName);
+}
+
+function relevantDocuments(text: string, taskId: string, taskSlug: string | null, liveArtifactNames: string[]) {
+  if (!taskSlug) return [];
+  const live = new Set(liveArtifactNames);
+  const found = new Set<string>();
+  const prefix = `.humanlayer/tasks/${escapeRegExp(taskSlug)}/`;
+  for (const match of text.matchAll(new RegExp(`${prefix}([^\\s),;:"']+)`, "g"))) {
+    const fileName = match[1]!;
+    if (live.has(fileName)) found.add(fileName);
+  }
+  return [...found].map((fileName) => ({
+    localpath: `.humanlayer/tasks/${taskSlug}/${fileName}`,
+    permalink: `::hl-artifact{task="${taskId}" file="${fileName}"}`,
+  }));
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export async function recordIdleCompletion(
@@ -525,7 +560,13 @@ export async function reconcileSession(
   return applyStatusDerivation(db, mirror, thread as ThreadLike, interactions as InteractionLike[], sequence);
 }
 
-export function registerSessionRuntime(bb: BbPluginApi, db: Database, mirror: Map<string, SessionMirrorRow>, bindings: LaunchBindingMirror) {
+export function registerSessionRuntime(
+  bb: BbPluginApi,
+  db: Database,
+  mirror: Map<string, SessionMirrorRow>,
+  bindings: LaunchBindingMirror,
+  onCompletedTurn?: (row: SessionMirrorRow) => Promise<unknown>,
+) {
   const maxSeq = readRow<{ maxSeq: number }>(db, "SELECT COALESCE(MAX(last_reconcile_seq), 0) + 1 AS maxSeq FROM sessions")?.maxSeq ?? 1;
   let nextSeq = maxSeq;
   const reconcileState = new Map<string, Promise<void>>();
@@ -646,8 +687,12 @@ export function registerSessionRuntime(bb: BbPluginApi, db: Database, mirror: Ma
       nextSeq += 1;
       const interactions = await bb.sdk.threads.interactions.list({ threadId: thread.id });
       if (!mirror.has(thread.id) || retiredThreads.has(thread.id)) return;
-      applyStatusDerivation(db, mirror, thread, interactions as InteractionLike[], sequence);
+      const result = applyStatusDerivation(db, mirror, thread, interactions as InteractionLike[], sequence);
       publish(thread.id);
+      const completed = mirror.get(thread.id);
+      if (completed?.hlStatus === "ready_for_input" && !completed.blockedReason) {
+        await onCompletedTurn?.(completed);
+      }
     });
   };
 

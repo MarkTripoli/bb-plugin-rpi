@@ -4,6 +4,7 @@ import {
   HumanLayerArtifactThreadPanel,
   HumanLayerPanel,
   HumanLayerThreadHeaderAction,
+  HumanLayerWorkspaceThreadPanel,
 } from "./ui/humanlayer";
 
 export default definePluginApp((app) => {
@@ -25,6 +26,13 @@ export default definePluginApp((app) => {
     icon: "Code",
     layout: "flush",
     component: HumanLayerArtifactThreadPanel,
+  });
+  app.slots.threadPanelAction({
+    id: "workspace",
+    title: "Workspace",
+    icon: "Folder",
+    layout: "flush",
+    component: HumanLayerWorkspaceThreadPanel,
   });
   app.slots.messageDirective({
     id: "hl-artifact",

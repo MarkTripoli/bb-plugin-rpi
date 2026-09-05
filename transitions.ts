@@ -59,6 +59,49 @@ export const WORKFLOW_GRAPH_LABELS = {
   freeform: "Freeform",
 } as const;
 
+export type SkillId = (typeof SKILLS)[number][1];
+export type PhaseLabel = (typeof SKILLS)[number][2];
+
+export const SKILL_BY_ID = Object.fromEntries(
+  SKILLS.map(([command, skillId, label, buttonText]) => [skillId, { command, skillId, label, buttonText }]),
+) as Record<SkillId, { command: string; skillId: SkillId; label: PhaseLabel; buttonText: string }>;
+
+export const SKILL_BY_LABEL = Object.fromEntries(
+  SKILLS.map(([, skillId, label, buttonText]) => [label, { skillId, label, buttonText }]),
+) as Partial<Record<PhaseLabel, { skillId: SkillId; label: PhaseLabel; buttonText: string }>>;
+
+export const ITERATE_SKILL_BY_LABEL: Partial<Record<PhaseLabel, SkillId>> = {
+  "research-questions": "iterate-research-questions",
+  research: "iterate-research",
+  design: "iterate-design-discussion",
+  "design-prd": "iterate-prd",
+  "design-tdd": "iterate-tdd",
+  structure: "iterate-structure-outline",
+  plan: "iterate-plan",
+  implementation: "iterate-implementation",
+};
+
+export const FIRST_SKILL_BY_WORKFLOW = {
+  rpi: "create-research-questions",
+  outline_only: "create-research-questions",
+  prd_tdd: "create-research",
+  oneshot: null,
+  freeform: null,
+} as const;
+
+export function normalizeSkillId(input: string) {
+  return ((ALIASES as Record<string, string>)[input] ?? input) as SkillId;
+}
+
+export function skillInfo(skillId: string) {
+  return SKILL_BY_ID[skillId as SkillId] ?? null;
+}
+
+export function normalizePhaseLabel(currentLabel: string | null | undefined) {
+  if (!currentLabel) return null;
+  return currentLabel.startsWith("rpi:") ? currentLabel.slice(4) : currentLabel;
+}
+
 export const BOARD_COLUMNS = ["todo_draft", "research_design", "planning", "implementation"] as const;
 
 export type BoardColumn = (typeof BOARD_COLUMNS)[number];
@@ -75,13 +118,9 @@ const PLANNING = new Set(["structure", "plan", "worktree-setup"]);
 // Ground truth does not specify rpi:review, so keep it in Implementation for now.
 const IMPLEMENTATION = new Set(["implementation", "implement-plan", "implement-outline", "describe-pr", "review"]);
 
-function normalizeLabel(currentLabel: string) {
-  return currentLabel.startsWith("rpi:") ? currentLabel.slice(4) : currentLabel;
-}
-
 export function deriveBoardColumn(currentLabel: string | null | undefined, isDraft: boolean): BoardColumn {
   if (isDraft || !currentLabel) return "todo_draft";
-  const normalized = normalizeLabel(currentLabel);
+  const normalized = normalizePhaseLabel(currentLabel) ?? currentLabel;
   if (RESEARCH_AND_DESIGN.has(normalized)) return "research_design";
   if (PLANNING.has(normalized)) return "planning";
   if (IMPLEMENTATION.has(normalized)) return "implementation";
@@ -90,5 +129,5 @@ export function deriveBoardColumn(currentLabel: string | null | undefined, isDra
 
 export function labelToStepLabel(currentLabel: string | null | undefined, isDraft: boolean) {
   if (isDraft || !currentLabel) return "Draft";
-  return normalizeLabel(currentLabel);
+  return normalizePhaseLabel(currentLabel) ?? currentLabel;
 }

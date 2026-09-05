@@ -219,6 +219,37 @@ test("idle summary deduplicates by completed turn key", async () => {
   db.close();
 });
 
+test("idle completion stores next step and relevant RPI documents", async () => {
+  const db = makeDb();
+  const mirror = new Map();
+  seedSession(db);
+  db.prepare("UPDATE tasks SET slug = 'task' WHERE id = (SELECT task_id FROM sessions WHERE thread_id = 'thr_1')").run();
+  const taskId = (db.prepare("SELECT task_id AS taskId FROM sessions WHERE thread_id = 'thr_1'").get() as { taskId: string }).taskId;
+  db.prepare(`
+    INSERT INTO artifacts (
+      id, task_id, file_name, frontmatter_json, content_type, is_deleted,
+      current_version, created_at, updated_at
+    ) VALUES ('artifact_1', ?, '01-research.md', '{}', 'text/markdown', 0, 1, 1, 1)
+  `).run(taskId);
+  mirrorSession(db, mirror, "thr_1");
+  const bb = { sdk: { threads: { interactions: { list: async () => [] } } } };
+  await recordIdleCompletion(
+    bb as never,
+    db,
+    mirror,
+    thread({ updatedAt: 2 }),
+    "Wrote .humanlayer/tasks/task/01-research.md\n```text\n/rpi-create-design-discussion @01-research.md\n```",
+  );
+  const stored = db.prepare("SELECT next_step_json, summary_json FROM sessions WHERE thread_id = ?").get("thr_1") as { next_step_json: string; summary_json: string };
+  const next = parseJson<{ extraction?: { type?: string; nextStepType?: string; nextStepPrompt?: string } }>(stored.next_step_json, {});
+  assert.equal(next.extraction?.type, "next_step_found");
+  assert.equal(next.extraction?.nextStepType, "create-design-discussion");
+  assert.equal(next.extraction?.nextStepPrompt, "/rpi-create-design-discussion @01-research.md");
+  const summary = parseJson<{ relevantRPIDocuments?: Array<{ localpath: string }> }>(stored.summary_json, {});
+  assert.deepEqual(summary.relevantRPIDocuments, [{ localpath: ".humanlayer/tasks/task/01-research.md", permalink: `::hl-artifact{task="${taskId}" file="01-research.md"}` }]);
+  db.close();
+});
+
 test("buffered idle replay preserves completion order", async () => {
   const db = makeDb();
   const mirror = new Map();

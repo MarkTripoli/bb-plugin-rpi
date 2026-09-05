@@ -13,14 +13,16 @@ import type {
   ArtifactRecord,
   ArtifactVersionRecord,
   LaunchAttemptRecord,
+  NextStepSuggestionsRecord,
   RpcContract,
   SessionView,
   TaskRecord,
   TaskRow,
   TaskWorkspaceState,
+  WorkspaceViewRecord,
   CommentThreadRecord,
 } from "../contract";
-import { BOARD_COLUMNS, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS } from "../transitions";
+import { AUTO_ADVANCE, BOARD_COLUMNS, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS } from "../transitions";
 import { markdownBlocks } from "../blocks";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -102,6 +104,16 @@ function SessionStatus({ status }: { status: string }) {
       {meta.text}
     </span>
   );
+}
+
+function nextStep(session: Pick<SessionView, "nextStepJson">) {
+  if (!session.nextStepJson) return null;
+  try {
+    const parsed = JSON.parse(session.nextStepJson) as NextStepSuggestionsRecord;
+    return parsed.extraction.type === "next_step_found" ? parsed.extraction : null;
+  } catch {
+    return null;
+  }
 }
 
 function TaskTable({ tasks }: { tasks: TaskRow[] }) {
@@ -240,16 +252,22 @@ function ComposerToolbarSelect({
 function WorkflowStrip({
   workflowType,
   worktreeTiming,
+  currentLabel,
 }: {
-  workflowType: "rpi" | "prd_tdd" | "oneshot" | "freeform";
+  workflowType: "rpi" | "outline_only" | "prd_tdd" | "oneshot" | "freeform";
   worktreeTiming: "now" | "later" | "never";
+  currentLabel?: string | null;
 }) {
   const steps =
     workflowType === "rpi"
       ? ["worktree", "questions", "research", "design", "outline", "implement", "PR"]
+      : workflowType === "outline_only"
+        ? ["questions", "research", "design", "outline", "implement", "PR"]
       : workflowType === "prd_tdd"
         ? ["research", "PRD", "TDD", "outline", "implement", "PR"]
         : ["single session"];
+  const currentStep = labelStep(currentLabel);
+  const currentIndex = steps.findIndex((step) => step === currentStep);
   return (
     <div className="rounded-xl border border-border bg-card/70 p-3">
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -266,7 +284,11 @@ function WorkflowStrip({
               key={`${step}-${index}`}
               className={cn(
                 "inline-flex min-w-[92px] items-center justify-center rounded-md border px-3 py-2 text-sm font-medium",
-                dashed ? "border-dashed border-border text-muted-foreground" : "border-border text-foreground",
+                currentIndex === index
+                  ? "border-foreground bg-card text-foreground"
+                  : currentIndex > index
+                    ? "border-border bg-muted text-foreground"
+                    : dashed ? "border-dashed border-border text-muted-foreground" : "border-border text-foreground",
               )}
             >
               {step}
@@ -276,6 +298,17 @@ function WorkflowStrip({
       </div>
     </div>
   );
+}
+
+function labelStep(label: string | null | undefined) {
+  const normalized = label?.startsWith("rpi:") ? label.slice(4) : label;
+  if (normalized === "research-questions") return "questions";
+  if (normalized === "structure") return "outline";
+  if (normalized === "implementation") return "implement";
+  if (normalized === "describe-pr") return "PR";
+  if (normalized === "design-prd") return "PRD";
+  if (normalized === "design-tdd") return "TDD";
+  return normalized ?? null;
 }
 
 function NewTaskPage({
@@ -295,7 +328,7 @@ function NewTaskPage({
   const [hostId, setHostId] = useState("");
   const [defaultDirectory, setDefaultDirectory] = useState("");
   const [permissionMode, setPermissionMode] = useState<"default" | "accept_edits" | "auto" | "bypass">("default");
-  const [workflowType, setWorkflowType] = useState<"rpi" | "prd_tdd" | "oneshot" | "freeform">("rpi");
+  const [workflowType, setWorkflowType] = useState<"rpi" | "outline_only" | "prd_tdd" | "oneshot" | "freeform">("rpi");
   const [worktreeTiming, setWorktreeTiming] = useState<"now" | "later" | "never">("later");
   const [autoAdvance, setAutoAdvance] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -337,6 +370,7 @@ function NewTaskPage({
     const workflowTypeSetting = settings?.defaultWorkflowType;
     if (
       workflowTypeSetting === "rpi" ||
+      workflowTypeSetting === "outline_only" ||
       workflowTypeSetting === "prd_tdd" ||
       workflowTypeSetting === "oneshot" ||
       workflowTypeSetting === "freeform"
@@ -355,7 +389,6 @@ function NewTaskPage({
   }, [settings, settingsLoading]);
 
   const draftTasks = useMemo(() => tasks.filter((task) => task.isDraft), [tasks]);
-  const canLaunch = (workflowType === "freeform" || workflowType === "oneshot") && worktreeTiming === "never";
   const createDraft = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (busy || projectId === "" || text.trim() === "") return;
@@ -382,7 +415,7 @@ function NewTaskPage({
     }
   };
   const createAndLaunch = async () => {
-    if (busy || projectId === "" || text.trim() === "" || !canLaunch) return;
+    if (busy || projectId === "" || text.trim() === "") return;
     setBusy(true);
     try {
       const created = await rpc.call("createTask", {
@@ -418,7 +451,7 @@ function NewTaskPage({
           What should we build today?
         </h1>
         <p className="max-w-3xl text-sm text-muted-foreground">
-          Save the draft now. Sessions launch in a later release.
+          Save a task or launch the first session.
         </p>
       </div>
 
@@ -485,9 +518,10 @@ function NewTaskPage({
             />
             <ComposerToolbarSelect
               value={workflowType}
-              onChange={(value) => setWorkflowType(value as "rpi" | "prd_tdd" | "oneshot" | "freeform")}
+              onChange={(value) => setWorkflowType(value as "rpi" | "outline_only" | "prd_tdd" | "oneshot" | "freeform")}
               options={[
                 { value: "rpi", label: "RPI" },
+                { value: "outline_only", label: "Outline" },
                 { value: "prd_tdd", label: "PRD / TDD" },
                 { value: "oneshot", label: "Oneshot" },
                 { value: "freeform", label: "Freeform" },
@@ -511,8 +545,8 @@ function NewTaskPage({
               <button
                 type="button"
                 onClick={createAndLaunch}
-                disabled={busy || text.trim() === "" || projectId === "" || !canLaunch}
-                title={canLaunch ? "Create and launch" : "This phase launches only freeform or oneshot tasks without a worktree"}
+                disabled={busy || text.trim() === "" || projectId === ""}
+                title="Create and launch"
                 className="inline-flex h-10 items-center gap-2 rounded-md border border-border bg-card px-4 text-sm font-semibold text-foreground transition hover:border-foreground/40 disabled:cursor-not-allowed disabled:text-muted-foreground disabled:opacity-60"
               >
                 <Icon name="Play" className="size-4" />
@@ -626,6 +660,7 @@ function SessionsTable({ sessions }: { sessions: SessionView[] }) {
                 <div className="flex flex-col gap-1">
                   <span className="font-medium text-foreground">{session.title ?? session.threadId}</span>
                   {session.blockedReason ? <span className="text-xs text-muted-foreground">blocked: {session.blockedReason}</span> : null}
+                  {nextStep(session) ? <span className="text-xs text-muted-foreground">Next: {nextStep(session)?.nextStepSummary}</span> : null}
                 </div>
               </td>
               <td className="px-4 py-3">{session.label ? <span className={pillClassName("step")}>{session.label}</span> : <span className={pillClassName("ghost")}>none</span>}</td>
@@ -635,6 +670,125 @@ function SessionsTable({ sessions }: { sessions: SessionView[] }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+const AUTO_ADVANCE_FLAGS = [
+  { label: "research-questions", field: "aa_questions_to_research", title: "Questions to research" },
+  { label: "research", field: "aa_research_to_design", title: "Research to design" },
+  { label: "plan", field: "aa_plan_to_worktree", title: "Plan to worktree" },
+  { label: "worktree-setup", field: "aa_worktree_to_implementation", title: "Worktree to implementation" },
+  { label: "implementation", field: "aa_implementation_to_pr", title: "Implementation to PR" },
+] as const;
+
+function AutoAdvancePanel({ task, onUpdated }: { task: TaskRecord; onUpdated: () => void }) {
+  const rpc = useRpc<RpcContract>();
+  const update = async (patch: Partial<TaskRecord>) => {
+    await rpc.call("updateTask", { taskId: task.id, patch });
+    onUpdated();
+  };
+  const humanGates = Object.entries(AUTO_ADVANCE).filter(([, value]) => value.flag === null);
+  return (
+    <div className="space-y-3">
+      <label className="flex items-center justify-between rounded-md border border-border bg-card p-3 text-sm">
+        <span className="font-medium text-foreground">Auto-advance</span>
+        <input type="checkbox" checked={task.autoAdvance} onChange={(event) => void update({ autoAdvance: event.target.checked })} />
+      </label>
+      <div className="grid gap-2 lg:grid-cols-2">
+        {AUTO_ADVANCE_FLAGS.map((flag) => (
+          <label key={flag.field} className="flex items-center justify-between rounded-md border border-border bg-card p-3 text-sm">
+            <span className="text-foreground">{flag.title}</span>
+            <input type="checkbox" checked={Boolean(task[flag.field])} disabled={!task.autoAdvance} onChange={(event) => void update({ [flag.field]: event.target.checked })} />
+          </label>
+        ))}
+      </div>
+      <div className="grid gap-2 lg:grid-cols-2">
+        {humanGates.map(([label, transition]) => (
+          <div key={label} className="flex items-center justify-between rounded-md border border-dashed border-border bg-card p-3 text-sm text-muted-foreground">
+            <span>{label} to {transition.to}</span>
+            <span>human gate</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function WorkspacePanel({ taskId }: { taskId: string }) {
+  const rpc = useRpc<RpcContract>();
+  const [workspace, setWorkspace] = useState<WorkspaceViewRecord | null>(null);
+  const [busy, setBusy] = useState(false);
+  const refetch = () => {
+    rpc.call("getWorkspace", { taskId }).then((result) => setWorkspace(result.workspace));
+  };
+  useEffect(() => {
+    refetch();
+  }, [taskId]);
+  useRealtime("hl:sessions", refetch);
+  if (!workspace) return <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">Loading workspace...</div>;
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 lg:grid-cols-4">
+        <WorkspaceStat label="Status" value={workspace.environment.status ?? "pending"} />
+        <WorkspaceStat label="Kind" value={workspace.environment.kind ?? "unresolved"} />
+        <WorkspaceStat label="Branch" value={workspace.environment.branch ?? "unresolved"} />
+        <WorkspaceStat label="Base" value={workspace.environment.baseBranch ?? workspace.sourceRef ?? "default"} />
+      </div>
+      <div className="rounded-md border border-border bg-card p-3">
+        <div className="mb-2 text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">Requested vs resolved</div>
+        <div className="grid gap-2 text-sm lg:grid-cols-2">
+          <div><span className="text-muted-foreground">Path requested </span><span className="text-foreground">{workspace.pathTemplate.requested ?? "default"}</span></div>
+          <div><span className="text-muted-foreground">Path resolved </span><span className="text-foreground">{workspace.pathTemplate.resolved ?? "pending"}</span></div>
+          <div><span className="text-muted-foreground">Branch requested </span><span className="text-foreground">{workspace.branchTemplate.requested ?? workspace.sourceRef ?? "default"}</span></div>
+          <div><span className="text-muted-foreground">Branch resolved </span><span className="text-foreground">{workspace.branchTemplate.resolved ?? "pending"}</span></div>
+        </div>
+      </div>
+      <div className="overflow-hidden rounded-md border border-border bg-card">
+        <table className="min-w-full border-collapse text-sm">
+          <thead className="border-b border-border text-left text-xs uppercase tracking-[0.22em] text-muted-foreground">
+            <tr><th className="px-3 py-2">Repo</th><th className="px-3 py-2">Primary</th><th className="px-3 py-2">Source</th><th className="px-3 py-2">Setup</th></tr>
+          </thead>
+          <tbody>
+            {workspace.repos.map((repo, index) => (
+              <tr key={`${repo.localPath ?? "repo"}-${index}`} className="border-b border-border last:border-b-0">
+                <td className="px-3 py-2 text-foreground">{repo.localPath ?? "default repo"}</td>
+                <td className="px-3 py-2 text-muted-foreground">{repo.primary ? "yes" : "no"}</td>
+                <td className="px-3 py-2 text-muted-foreground">{repo.sourceRef ?? "default"}</td>
+                <td className="px-3 py-2 text-muted-foreground">{repo.setupCommand ?? "none"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-card p-3">
+        <div className="text-sm text-muted-foreground">
+          Setup outcome: {workspace.provisioningEventKinds.length ? workspace.provisioningEventKinds.join(", ") : "no provisioning events"}
+        </div>
+        <Button type="button" variant="outline" disabled={busy || !workspace.worktreeThreadId} onClick={async () => {
+          setBusy(true);
+          try {
+            await rpc.call("rerunWorkspaceSetup", { taskId });
+            refetch();
+          } finally {
+            setBusy(false);
+          }
+        }}>
+          Re-run setup
+        </Button>
+      </div>
+      {workspace.warnings.length ? (
+        <div className="rounded-md border border-dashed border-border p-3 text-sm text-muted-foreground">{workspace.warnings.join(" ")}</div>
+      ) : null}
+    </div>
+  );
+}
+
+function WorkspaceStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-border bg-card p-3">
+      <div className="text-xs uppercase tracking-[0.22em] text-muted-foreground">{label}</div>
+      <div className="mt-1 truncate text-sm font-medium text-foreground">{value}</div>
     </div>
   );
 }
@@ -1174,7 +1328,7 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
   const [task, setTask] = useState<TaskRecord | null>(null);
   const [workspace, setWorkspace] = useState<TaskWorkspaceState | null>(null);
   const [sessions, setSessions] = useState<SessionView[]>([]);
-  const [tab, setTab] = useState<"sessions" | "artifacts">(artifactFileName ? "artifacts" : "sessions");
+  const [tab, setTab] = useState<"sessions" | "artifacts" | "workspace" | "auto-advance">(artifactFileName ? "artifacts" : "sessions");
 
   const refetch = () => {
     Promise.all([
@@ -1237,11 +1391,18 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
       <div className="flex items-center gap-2 border-b border-border pb-2 text-xs font-medium uppercase tracking-[0.24em] text-muted-foreground">
         <button type="button" onClick={() => setTab("sessions")} className={cn("rounded-md px-3 py-1.5", tab === "sessions" && "bg-card text-foreground")}>Sessions</button>
         <button type="button" onClick={() => setTab("artifacts")} className={cn("rounded-md px-3 py-1.5", tab === "artifacts" && "bg-card text-foreground")}>Artifacts</button>
+        <button type="button" onClick={() => setTab("workspace")} className={cn("rounded-md px-3 py-1.5", tab === "workspace" && "bg-card text-foreground")}>Workspace</button>
+        <button type="button" onClick={() => setTab("auto-advance")} className={cn("rounded-md px-3 py-1.5", tab === "auto-advance" && "bg-card text-foreground")}>Auto-advance</button>
       </div>
+      <WorkflowStrip workflowType={task.workflowType} worktreeTiming={task.worktreeTiming} currentLabel={workspace.currentLabel} />
       {tab === "artifacts" ? (
         <div className="min-h-[520px]">
           <ArtifactsPanel taskId={taskId} initialFileName={artifactFileName} />
         </div>
+      ) : tab === "workspace" ? (
+        <WorkspacePanel taskId={taskId} />
+      ) : tab === "auto-advance" ? (
+        <AutoAdvancePanel task={task} onUpdated={refetch} />
       ) : (
         <>
           {visibleAttempts.length > 0 ? (
@@ -1276,6 +1437,23 @@ export function HumanLayerArtifactThreadPanel({ threadId, params }: { threadId: 
   return (
     <div className="h-full min-h-0 p-3">
       <ArtifactsPanel taskId={session.taskId} initialFileName={initialFileName} />
+    </div>
+  );
+}
+
+export function HumanLayerWorkspaceThreadPanel({ threadId }: { threadId: string }) {
+  const rpc = useRpc<RpcContract>();
+  const [session, setSession] = useState<SessionView | null | undefined>(undefined);
+
+  useEffect(() => {
+    rpc.call("getSession", { threadId }).then(({ session: next }) => setSession(next));
+  }, [rpc, threadId]);
+
+  if (session === undefined) return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
+  if (!session) return <div className="p-4 text-sm text-muted-foreground">Not a HumanLayer task session</div>;
+  return (
+    <div className="h-full min-h-0 overflow-auto p-3">
+      <WorkspacePanel taskId={session.taskId} />
     </div>
   );
 }
@@ -1322,11 +1500,35 @@ export function HumanLayerThreadHeaderAction({ threadId }: { threadId: string; p
   useRealtime("hl:sessions", refetch);
 
   if (!session) return null;
+  const extracted = nextStep(session);
 
   return (
     <div className="flex items-center gap-2">
       <span className={pillClassName(session.label ? "step" : "ghost")}>{session.label ?? "freeform"}</span>
       <SessionStatus status={session.hlStatus} />
+      <Button
+        type="button"
+        variant={extracted ? "default" : "outline"}
+        className="h-7 px-2 text-xs"
+        disabled={!extracted}
+        onClick={async () => {
+          const result = await rpc.call("proceed", { threadId });
+          if (result.threadId) navigate.toThread(result.threadId);
+        }}
+      >
+        {extracted?.nextStepSummary ?? "Proceed"}
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        className="h-7 px-2 text-xs"
+        onClick={async () => {
+          const result = await rpc.call("iterateInFreshSession", { threadId });
+          navigate.toThread(result.threadId);
+        }}
+      >
+        Iterate
+      </Button>
       <Button
         type="button"
         variant="outline"
