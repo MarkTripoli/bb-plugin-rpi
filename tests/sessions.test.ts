@@ -421,7 +421,7 @@ test("ingest failure leaves the completed turn unrecorded for retry", async () =
   db.close();
 });
 
-test("idle publishes ready signal after auto-advance suppression exists", async () => {
+test("idle-first: auto-advance spawns exactly once, suppression is recorded, and no ready toast fires", async () => {
   const db = makeDb();
   const mirror = new Map();
   seedSession(db);
@@ -430,6 +430,7 @@ test("idle publishes ready signal after auto-advance suppression exists", async 
   db.prepare("UPDATE sessions SET label = 'research-questions' WHERE thread_id = 'thr_1'").run();
   const text = "done\n```text\n/rpi-create-research\n```";
   const publishChecks: boolean[] = [];
+  let spawns = 0;
   const { bb, handlers } = makeRuntimeBb({
     get: async ({ threadId }) => ({ ...makeThreadResponse({ id: threadId, status: "idle", updatedAt: 2, environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }), numEvents: 2 }),
     events: async () => [],
@@ -450,14 +451,21 @@ test("idle publishes ready signal after auto-advance suppression exists", async 
         { kind: "conversation", role: "assistant", text, turnId: "turn_1", sourceSeqStart: 2 },
       ],
     }),
-    spawn: async () => makeThreadResponse({ id: "thr_next", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }),
+    spawn: async () => {
+      spawns += 1;
+      return makeThreadResponse({ id: "thr_next", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" });
+    },
   });
   Object.assign(bb.sdk, { files: { listPaths: async () => [] } });
-  registerSessionRuntime(bb as never, db, mirror, createLaunchBindingMirror(), (row) => onCompletedTurn(bb as never, db, mirror, createLaunchBindingMirror(), row));
+  const onSnapshot = makeSnapshotHandler(db, mirror, bb);
+  registerSessionRuntime(bb as never, db, mirror, createLaunchBindingMirror(), (row) => onCompletedTurn(bb as never, db, mirror, createLaunchBindingMirror(), row), undefined, onSnapshot);
   mirrorSession(db, mirror, "thr_1");
   handlers.get("thread.idle")?.({ thread: thread({ numEvents: 2, updatedAt: 2 }), lastAssistantText: text } as never);
   for (let i = 0; i < 10 && publishChecks.length === 0; i += 1) await delay();
   assert.deepEqual(publishChecks, [true]);
+  assert.equal(spawns, 1, "auto-advance must spawn exactly once");
+  const rows = db.prepare("SELECT reason FROM notifications").all() as Array<{ reason: string }>;
+  assert.deepEqual(rows.map((row) => row.reason), ["auto_advance_suppressed"], "no user-visible ready toast for the auto-advanced turn");
   db.close();
 });
 
@@ -612,6 +620,126 @@ test("reconcile reconstructs a lost idle completion's completed_turn_key and del
   assert.equal(stored.completedTurnKey, "5:5");
   const rows = db.prepare("SELECT dedupe_key AS dedupeKey FROM notifications").all() as Array<{ dedupeKey: string }>;
   assert.deepEqual(rows.map((row) => row.dedupeKey), ["ready:thr_1:5:5"]);
+  db.close();
+});
+
+test("reconcile-first: a reconcile racing ahead of the idle event still auto-advances exactly once with no user toast", async () => {
+  const db = makeDb();
+  const mirror = new Map();
+  seedSession(db);
+  const taskId = (db.prepare("SELECT task_id AS taskId FROM sessions WHERE thread_id = 'thr_1'").get() as { taskId: string }).taskId;
+  db.prepare("UPDATE tasks SET workflow_type = 'rpi', auto_advance = 1, aa_questions_to_research = 1 WHERE id = ?").run(taskId);
+  db.prepare("UPDATE sessions SET label = 'research-questions' WHERE thread_id = 'thr_1'").run();
+  mirrorSession(db, mirror, "thr_1");
+  const publishedNotify: unknown[] = [];
+  let spawns = 0;
+  const text = "done\n```text\n/rpi-create-research\n```";
+  const captured: { subscribeCallback: ((event: { id: string; changes: string[] }) => void) | null } = { subscribeCallback: null };
+  const bb = {
+    pluginId: "humanlayer",
+    log: { warn: () => undefined, info: () => undefined },
+    realtime: { publish: (topic: string, payload: unknown) => { if (topic === "hl:notify") publishedNotify.push(payload); } },
+    onDispose: () => undefined,
+    experimental_hooks: { on: () => undefined },
+    events: { on: () => undefined },
+    sdk: {
+      subscribe: (opts: { callback: (event: { id: string; changes: string[] }) => void }) => {
+        captured.subscribeCallback = opts.callback;
+        return () => undefined;
+      },
+      threads: {
+        get: async ({ threadId }: { threadId: string }) => ({
+          ...makeThreadResponse({ id: threadId, status: "idle", updatedAt: 2, environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }),
+          numEvents: 2,
+        }),
+        interactions: { list: async () => [] },
+        timeline: async () => ({
+          rows: [
+            { kind: "conversation", role: "user", text: "start", turnId: "t1", sourceSeqStart: 1, senderThreadId: null, systemMessageKind: "unlabeled" },
+            { kind: "conversation", role: "assistant", text, turnId: "t1", sourceSeqStart: 2 },
+          ],
+        }),
+        spawn: async () => {
+          spawns += 1;
+          return makeThreadResponse({ id: "thr_next", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" });
+        },
+      },
+      files: { listPaths: async () => [] },
+    },
+  };
+  const onSnapshot = makeSnapshotHandler(db, mirror, bb);
+  registerSessionRuntime(
+    bb as never,
+    db,
+    mirror,
+    createLaunchBindingMirror(),
+    (row) => onCompletedTurn(bb as never, db, mirror, createLaunchBindingMirror(), row),
+    undefined,
+    onSnapshot,
+  );
+  // The idle event that would normally have driven this never fires here: only a thread:changed
+  // reconcile observes the thread already idle, with no completed_turn_key or processed_turn_key
+  // recorded yet. Before the fix, reconstructing only stamped the summary, so recordIdleCompletion
+  // (guarded on last_summarized_turn_key) never ran again for this key and auto-advance never
+  // happened.
+  captured.subscribeCallback?.({ id: "thr_1", changes: ["status-changed"] });
+  for (let i = 0; i < 20 && spawns === 0; i += 1) await delay();
+  assert.equal(spawns, 1, "reconcile alone must still trigger exactly one auto-advance spawn");
+  const suppression = db.prepare("SELECT consumed_at AS consumedAt FROM notification_suppressions WHERE thread_id = 'thr_1'").get() as { consumedAt: number | null } | undefined;
+  assert.ok(suppression, "an auto_advance suppression row must have been claimed");
+  const reasons = (db.prepare("SELECT reason FROM notifications WHERE thread_id = 'thr_1'").all() as Array<{ reason: string }>).map((row) => row.reason);
+  assert.deepEqual(reasons, ["auto_advance_suppressed"], "no user-visible toast for the auto-advanced turn");
+  assert.equal(publishedNotify.length, 0, "a suppressed decision never publishes hl:notify");
+  db.close();
+});
+
+test("startup replay does not re-run the completion pipeline for an already-processed turn", async () => {
+  const db = makeDb();
+  const mirror = new Map();
+  seedSession(db);
+  const taskId = (db.prepare("SELECT task_id AS taskId FROM sessions WHERE thread_id = 'thr_1'").get() as { taskId: string }).taskId;
+  db.prepare("UPDATE tasks SET workflow_type = 'rpi', auto_advance = 1, aa_questions_to_research = 1 WHERE id = ?").run(taskId);
+  // Pre-seed the mirror as if a prior run already fully processed this turn: ingest/extract done,
+  // the auto-advance suppression already claimed and consumed, and the ready notification already
+  // recorded (auto_advance_suppressed, so no toast).
+  db.prepare("UPDATE sessions SET label = 'research-questions', hl_status = 'ready_for_input', completed_turn_key = '2:2', processed_turn_key = '2:2', advanced_at = 1, advanced_attempt_id = 'attempt_1' WHERE thread_id = 'thr_1'").run();
+  db.prepare("INSERT INTO notification_suppressions (thread_id, completed_turn_key, reason, created_at, consumed_at) VALUES ('thr_1', '2:2', 'auto_advance', 1, 1)").run();
+  db.prepare("INSERT INTO notifications (id, thread_id, kind, dedupe_key, reason, sound, created_at, delivered_at) VALUES ('n1', 'thr_1', 'ready_for_input', 'ready:thr_1:2:2', 'auto_advance_suppressed', 0, 1, NULL)").run();
+  db.prepare("UPDATE sessions SET last_reconcile_seq = 40 WHERE thread_id = 'thr_1'").run();
+  const seeded = loadSessionMirror(db);
+  let spawns = 0;
+  let timelineCalls = 0;
+  const { bb } = makeRuntimeBb({
+    get: async ({ threadId }) => ({ ...makeThreadResponse({ id: threadId, status: "idle", updatedAt: 2, environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }), numEvents: 2 }),
+    events: async () => [],
+  });
+  Object.assign(bb.sdk.threads, {
+    ...bb.sdk.threads,
+    interactions: { list: async () => [] },
+    timeline: async () => {
+      timelineCalls += 1;
+      return { rows: [] };
+    },
+    spawn: async () => {
+      spawns += 1;
+      return makeThreadResponse({ id: "thr_next", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" });
+    },
+  });
+  const onSnapshot = makeSnapshotHandler(db, seeded, bb);
+  registerSessionRuntime(
+    bb as never,
+    db,
+    seeded,
+    createLaunchBindingMirror(),
+    (row) => onCompletedTurn(bb as never, db, seeded, createLaunchBindingMirror(), row),
+    undefined,
+    onSnapshot,
+  );
+  for (let i = 0; i < 10; i += 1) await delay();
+  assert.equal(spawns, 0, "an already-processed turn must not spawn again on startup replay");
+  assert.equal(timelineCalls, 0, "an already-processed turn must not re-fetch the last assistant message");
+  const notificationCount = (db.prepare("SELECT COUNT(*) AS count FROM notifications WHERE thread_id = 'thr_1'").get() as { count: number }).count;
+  assert.equal(notificationCount, 1, "no duplicate notification row on startup replay");
   db.close();
 });
 

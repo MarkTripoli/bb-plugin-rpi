@@ -266,6 +266,11 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE notifications ADD COLUMN synthetic INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE notifications ADD COLUMN superseded_at INTEGER`,
   `ALTER TABLE sessions ADD COLUMN thread_archived_at INTEGER`,
+  // Tracks whether the full completion pipeline (ingest, extract, advance claim, notification)
+  // has run for a turn key, distinct from last_summarized_turn_key (which only meant the summary
+  // was written). Lets reconcile and the idle handler share one idempotent pipeline instead of
+  // the idle handler's own guard being satisfied by a reconcile that only stamped a summary.
+  `ALTER TABLE sessions ADD COLUMN processed_turn_key TEXT`,
 ];
 
 export function openPluginDatabase(bb: BbPluginApi): Database {

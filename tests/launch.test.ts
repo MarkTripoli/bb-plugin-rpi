@@ -218,7 +218,7 @@ test("adopting a launch attempt supersedes its origin thread's failed-advance re
   await resolveLaunchAttempt(bb as never, db, new Map(), createLaunchBindingMirror(), "attempt_1", { type: "adopt", threadId: "thr_adopt" });
   const notification = db.prepare("SELECT superseded_at AS supersededAt FROM notifications WHERE id = 'n1'").get() as { supersededAt: number | null };
   assert.notEqual(notification.supersededAt, null);
-  assert.deepEqual(published, [{ kind: "dismiss", notificationId: "n1" }]);
+  assert.deepEqual(published, [{ kind: "dismiss", notificationId: "n1", dedupeKey: "ready-recover:thr_source:turn_1" }]);
   db.close();
 });
 

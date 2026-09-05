@@ -120,7 +120,7 @@ type NotifySignal =
       volume?: number;
       synthetic?: boolean;
     }
-  | { kind: "dismiss"; notificationId: string };
+  | { kind: "dismiss"; notificationId: string; dedupeKey: string };
 
 const DEFAULT_NOTIFICATION_PREFS: Prefs["notifications"] = {
   enabled: true,
@@ -326,18 +326,29 @@ export function HumanLayerNotificationBridge() {
       if (hotkeyOwnerOrder[0] !== token) return;
       if (!shouldHandleHotkey(event, prefs.jumpHotkey)) return;
       event.preventDefault();
-      // Peek, don't remove: dequeuing happens in exactly one place (the toast's onDismiss/
-      // onAutoClose below), so navigating here does not desync the queue from what is still
-      // visually displayed before the dismiss fires.
-      const pending = pendingToastQueue[0];
-      if (pending) {
-        toast.dismiss(pending.id);
-        navigate.toThread(pending.threadId);
-        return;
-      }
+      // Sonner does not reliably fire a toast's onDismiss for a programmatic toast.dismiss() call,
+      // so dequeuing must happen right here (not left to onDismiss) or the entry lingers in the
+      // queue forever. The peeked thread is also validated against the current sessions snapshot
+      // before navigating: a queued toast's thread may have left ready_for_input/needs_approval
+      // (advanced, resolved, archived) since the toast was queued, and jumping there would land on
+      // a stale target.
       rpc.call("listSessions", { taskId: null }).then(({ sessions }) => {
+        const readyThreadIds = new Set(
+          sessions
+            .filter((session) => session.hlStatus === "ready_for_input" || session.hlStatus === "needs_approval")
+            .map((session) => session.threadId),
+        );
+        while (pendingToastQueue.length > 0) {
+          const pending = pendingToastQueue[0];
+          dequeuePendingToast(pending.id);
+          toast.dismiss(pending.id);
+          if (readyThreadIds.has(pending.threadId)) {
+            navigate.toThread(pending.threadId);
+            return;
+          }
+        }
         const targets = sessions
-          .filter((session) => session.hlStatus === "ready_for_input" || session.hlStatus === "needs_approval")
+          .filter((session) => readyThreadIds.has(session.threadId))
           .sort((a, b) => a.hlStatusAt - b.hlStatusAt);
         if (targets.length === 0) return;
         hotkeyCycleIndex %= targets.length;
@@ -355,8 +366,12 @@ export function HumanLayerNotificationBridge() {
     // A later action (e.g. adopting an orphaned thread) superseded an earlier recovery toast;
     // dismiss it instead of leaving stale "Retry it from Launch Attempts" instructions visible.
     if (signal?.kind === "dismiss") {
-      toast.dismiss(signal.notificationId);
-      dequeuePendingToast(signal.notificationId);
+      // The toast was rendered with `id: dedupeKey`, not the notifications-table row id, so the
+      // dismiss must target dedupeKey to actually match a live toast (falling back to
+      // notificationId only for older payloads that predate this field).
+      const toastId = signal.dedupeKey ?? signal.notificationId;
+      toast.dismiss(toastId);
+      dequeuePendingToast(toastId);
       return;
     }
     if (!signal?.id || markNotificationSeen(signal.id)) return;

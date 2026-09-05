@@ -626,6 +626,29 @@ function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function readProcessedTurnKey(db: Database, threadId: string) {
+  return readRow<{ processedTurnKey: string | null }>(
+    db,
+    "SELECT processed_turn_key AS processedTurnKey FROM sessions WHERE thread_id = ?",
+    threadId,
+  )?.processedTurnKey ?? null;
+}
+
+function markProcessedTurnKey(db: Database, threadId: string, key: string) {
+  writeRow(db, "UPDATE sessions SET processed_turn_key = ?, updated_at = ? WHERE thread_id = ?", key, nowMs(), threadId);
+}
+
+/**
+ * The single completion pipeline for a finished turn: ingest task artifacts, extract the summary
+ * and next step, then mark the turn processed. Called identically by the idle handler (with the
+ * real lastAssistantText from thread.idle) and by reconcile (with its own reconstructed
+ * lastAssistantText, see reconstructMissingCompletedTurnKey below). Idempotent per turn key via
+ * the dedicated `processed_turn_key` column: whichever caller reaches a given key first runs the
+ * pipeline, the other is a no-op. This replaces the old design where `last_summarized_turn_key`
+ * (a narrower "summary was written" marker) doubled as the "already handled" guard: a reconcile
+ * that stamped only the summary for a turn made the idle handler's later real completion for that
+ * same turn silently no-op too, so its ingest/extract/advance-claim/notify pipeline never ran.
+ */
 export async function recordIdleCompletion(
   bb: BbPluginApi,
   db: Database,
@@ -633,6 +656,8 @@ export async function recordIdleCompletion(
   thread: ThreadLike,
   lastAssistantText: string | null,
 ) {
+  const key = turnKey(thread);
+  if (readProcessedTurnKey(db, thread.id) === key) return false;
   const interactions = await bb.sdk.threads.interactions.list({ threadId: thread.id });
   const blockedReason = pendingBlockedReason(interactions as InteractionLike[]);
   if (blockedReason !== null) {
@@ -644,15 +669,15 @@ export async function recordIdleCompletion(
   if (await initiatingMessageIsSystemInjected(bb, thread.id, lastAssistantText).catch(() => false)) {
     const row = mirror.get(thread.id) ?? mirrorSession(db, mirror, thread.id) ?? readSession(db, thread.id);
     if (!row) return false;
-    const key = turnKey(thread);
     if (row.lastSummarizedTurnKey === key) return false;
     const summary = parseJson<{ summaryHistory?: string[] }>(row.summaryJson, {});
     const summaryHistory = Array.isArray(summary.summaryHistory) ? summary.summaryHistory : [];
     summaryHistory.push(lastAssistantText.slice(0, 600));
     writeRow(
       db,
-      "UPDATE sessions SET summary_json = ?, last_summarized_turn_key = ?, updated_at = ? WHERE thread_id = ?",
+      "UPDATE sessions SET summary_json = ?, last_summarized_turn_key = ?, processed_turn_key = ?, updated_at = ? WHERE thread_id = ?",
       stringifyJson({ ...summary, summaryHistory }),
+      key,
       key,
       nowMs(),
       thread.id,
@@ -672,7 +697,16 @@ export async function recordIdleCompletion(
       return false;
     }
   }
-  return appendSessionSummary(db, mirror, thread, lastAssistantText);
+  const appended = appendSessionSummary(db, mirror, thread, lastAssistantText);
+  if (appended) {
+    markProcessedTurnKey(db, thread.id, key);
+  } else if ((mirror.get(thread.id) ?? readSession(db, thread.id))?.lastSummarizedTurnKey === key) {
+    // Data written by a pre-processed_turn_key build: the summary was already stamped for this
+    // exact key, so back-fill the marker without re-running advance (advance's own idempotency,
+    // e.g. advanced_at, already covers whatever ran the first time).
+    markProcessedTurnKey(db, thread.id, key);
+  }
+  return appended;
 }
 
 function turnKeyEventCount(key: string | null) {
@@ -696,26 +730,29 @@ async function lastAssistantMessageText(bb: BbPluginApi, threadId: string) {
 
 /**
  * Reconciliation (thread:changed, or the startup replay) never receives thread.idle's
- * lastAssistantText, so a dropped/lost idle event would otherwise leave completed_turn_key null
- * or stale forever, silently losing the ready_for_input notification. When the derived status is
- * ready_for_input and the persisted completed_turn_key is missing or older than the thread's
- * current event count, this reconstructs it the same way the idle handler does: by finding the
- * last assistant message and calling appendSessionSummary (recordIdleCompletion's own final step).
+ * lastAssistantText, so if the idle event that would have triggered recordIdleCompletion was
+ * ever dropped (crash/restart between idle firing and the handler running), the turn would
+ * otherwise never go through the completion pipeline at all: not just a missing
+ * completed_turn_key, but ingest, extraction, the auto-advance claim, and the notification
+ * decision would all silently never run for it. When the derived status is ready_for_input and
+ * the thread's current event count is ahead of the persisted processed_turn_key, this
+ * reconstructs the last assistant message the same way the idle handler does and runs it through
+ * the exact same pipeline (recordIdleCompletion), so reconcile and idle can never disagree about
+ * whether a turn was actually processed.
  */
 export async function reconstructMissingCompletedTurnKey(
   bb: BbPluginApi,
   db: Database,
   mirror: Map<string, SessionMirrorRow>,
   thread: ThreadLike,
-  row: Pick<SessionRow, "completedTurnKey">,
 ) {
   const currentEventCount = thread.numEvents ?? null;
   if (currentEventCount === null) return false;
-  const existingEventCount = turnKeyEventCount(row.completedTurnKey);
-  if (existingEventCount !== null && existingEventCount >= currentEventCount) return false;
+  const processedEventCount = turnKeyEventCount(readProcessedTurnKey(db, thread.id));
+  if (processedEventCount !== null && processedEventCount >= currentEventCount) return false;
   const lastAssistantText = await lastAssistantMessageText(bb, thread.id).catch(() => null);
   if (!lastAssistantText) return false;
-  return appendSessionSummary(db, mirror, thread, lastAssistantText);
+  return recordIdleCompletion(bb, db, mirror, thread, lastAssistantText);
 }
 
 export async function hydrateSession(bb: BbPluginApi, db: Database, mirror: Map<string, SessionMirrorRow>, threadId: string) {
@@ -804,13 +841,28 @@ export function registerSessionRuntime(
       const interactions = await bb.sdk.threads.interactions.list({ threadId });
       if (!mirror.has(threadId) || retiredThreads.has(threadId)) return;
       const result = applyStatusDerivation(db, mirror, thread as ThreadLike, interactions as InteractionLike[], sequence);
+      let completedNewTurn = false;
       if (result?.row?.hlStatus === "ready_for_input" && !result.row.blockedReason) {
-        await reconstructMissingCompletedTurnKey(bb, db, mirror, thread as ThreadLike, result.row).catch((error) =>
-          bb.log.warn(`Failed to reconstruct completed turn key for ${threadId}: ${String(error)}`),
-        );
+        completedNewTurn = await reconstructMissingCompletedTurnKey(bb, db, mirror, thread as ThreadLike).catch((error) => {
+          bb.log.warn(`Failed to reconstruct completed turn key for ${threadId}: ${String(error)}`);
+          return false;
+        });
+      }
+      if (completedNewTurn) {
+        const completed = mirror.get(threadId);
+        if (completed?.hlStatus === "ready_for_input" && !completed.blockedReason) {
+          try {
+            await onCompletedTurn?.(completed);
+          } catch (error) {
+            bb.log.warn(`HumanLayer auto-advance failed for ${threadId}: ${String(error)}`);
+            await onAdvanceFailed?.(completed).catch((recoveryError) =>
+              bb.log.warn(`HumanLayer advance-failure recovery notification failed for ${threadId}: ${String(recoveryError)}`),
+            );
+          }
+        }
       }
       await onSnapshot?.(threadId, interactions);
-      if (result?.changed) publish(threadId);
+      if (result?.changed || completedNewTurn) publish(threadId);
     });
   };
 

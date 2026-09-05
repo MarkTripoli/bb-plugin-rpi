@@ -512,14 +512,17 @@ export function publishSyntheticTestNotification(
  * what the recovery toast was warning about, so its now-stale instructions do not linger.
  */
 export function supersedeReadyRecoverNotification(bb: BbPluginApi, db: Database, threadId: string) {
-  const row = readRow<{ id: string }>(
+  const row = readRow<{ id: string; dedupeKey: string }>(
     db,
-    "SELECT id FROM notifications WHERE thread_id = ? AND kind = 'ready_after_failed_advance' AND superseded_at IS NULL ORDER BY created_at DESC LIMIT 1",
+    "SELECT id, dedupe_key AS dedupeKey FROM notifications WHERE thread_id = ? AND kind = 'ready_after_failed_advance' AND superseded_at IS NULL ORDER BY created_at DESC LIMIT 1",
     threadId,
   );
   if (!row) return false;
   writeRow(db, "UPDATE notifications SET superseded_at = ? WHERE id = ?", nowMs(), row.id);
-  bb.realtime.publish("hl:notify", { kind: "dismiss", notificationId: row.id });
+  // The toast is rendered with `id: dedupeKey` (see decideAndPublishNotification/
+  // recoverReadyAfterFailedAdvance), not the internal notifications-table row id, so the dismiss
+  // signal must carry dedupeKey too: that is the only id the frontend can actually dismiss by.
+  bb.realtime.publish("hl:notify", { kind: "dismiss", notificationId: row.id, dedupeKey: row.dedupeKey });
   return true;
 }
 
