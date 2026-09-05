@@ -9,12 +9,27 @@ import {
   listArtifacts,
   nextArtifactNumber,
 } from "./artifacts";
+import {
+  boundedAgentXml,
+  listComments,
+  replyToComment,
+  resolveTruncatedId,
+  setCommentsResolved,
+  softDeleteComments,
+} from "./comments";
 import { ingest, hydrate } from "./mirror";
 import { mirrorSession, type SessionMirrorRow } from "./sessions";
 
 type Database = BetterSqlite3.Database;
 
-export const ARTIFACT_TOOL_NAMES = ["hl_task_context", "hl_artifact_save", "hl_next_artifact_number"] as const;
+export const ARTIFACT_TOOL_NAMES = [
+  "hl_task_context",
+  "hl_artifact_save",
+  "hl_next_artifact_number",
+  "hl_get_artifact_comments",
+  "hl_update_artifact_comments",
+  "hl_reply_to_artifact_comment",
+] as const;
 
 function taskSession(mirror: Map<string, SessionMirrorRow>, threadId: string | null | undefined) {
   const row = threadId ? mirror.get(threadId) : null;
@@ -24,6 +39,16 @@ function taskSession(mirror: Map<string, SessionMirrorRow>, threadId: string | n
 
 function trimToolContent(value: string) {
   return value.length > 20_000 ? `${value.slice(0, 20_000)}\n[truncated]` : value;
+}
+
+function artifactForTool(db: Database, taskId: string, fileName: string) {
+  const artifact = getArtifact(db, taskId, fileName);
+  if (!artifact || artifact.isDeleted) throw new Error(`artifact not found: ${fileName}`);
+  return artifact;
+}
+
+function toolError(error: unknown) {
+  return { content: [{ type: "text" as const, text: String(error instanceof Error ? error.message : error) }], isError: true };
 }
 
 export function registerArtifactTools(bb: BbPluginApi, db: Database, mirror: Map<string, SessionMirrorRow>) {
@@ -118,6 +143,95 @@ export function registerArtifactTools(bb: BbPluginApi, db: Database, mirror: Map
     async execute(_input, { threadId }) {
       const row = taskSession(mirror, threadId);
       return JSON.stringify({ next: nextArtifactNumber(db, row.taskId) });
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "hl_get_artifact_comments",
+    description: "Return threaded HumanLayer artifact comments as XML.",
+    presentation: {
+      label: { pending: "Loading comments", completed: "Loaded comments" },
+      icon: { glyph: "MessageSquare" },
+    },
+    parameters: z.object({
+      artifact_filename: z.string().min(1),
+      include_resolved: z.boolean().optional().default(false),
+      limit: z.number().int().positive().max(100).optional().default(50),
+      offset: z.number().int().nonnegative().optional().default(0),
+    }).strict(),
+    async execute({ artifact_filename, include_resolved, limit, offset }, { threadId }) {
+      try {
+        const row = taskSession(mirror, threadId);
+        const artifact = artifactForTool(db, row.taskId, artifact_filename);
+        return boundedAgentXml(listComments(db, artifact.id, { includeResolved: include_resolved, limit, offset }));
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "hl_update_artifact_comments",
+    description: "Resolve, unresolve, or delete HumanLayer artifact comments by id prefix.",
+    presentation: {
+      label: { pending: "Updating comments", completed: "Updated comments" },
+      icon: { glyph: "Check" },
+    },
+    parameters: z.object({
+      artifact_filename: z.string().min(1),
+      comment_ids: z.array(z.string().min(1)).min(1).max(100),
+      resolved: z.boolean().optional(),
+      deleted: z.boolean().optional(),
+    }).strict(),
+    async execute({ artifact_filename, comment_ids, resolved, deleted }, { threadId }) {
+      try {
+        const row = taskSession(mirror, threadId);
+        const artifact = artifactForTool(db, row.taskId, artifact_filename);
+        if (resolved === undefined && deleted === undefined) throw new Error("resolved or deleted is required");
+        const results = comment_ids.map((input) => {
+          const match = resolveTruncatedId(db, artifact.id, input);
+          return match.ok ? { input, id: match.id, ok: true as const } : { input, ok: false as const, code: match.code };
+        });
+        const ids = results.filter((result): result is { input: string; id: string; ok: true } => result.ok).map((result) => result.id);
+        if (resolved !== undefined) setCommentsResolved(db, ids, resolved);
+        if (deleted !== undefined) softDeleteComments(db, ids);
+        if (ids.length > 0) {
+          bb.realtime.publish("hl:comments", { taskId: row.taskId, artifactId: artifact.id, commentId: null, createdByAgent: true });
+          bb.realtime.publish("hl:artifacts", { taskId: row.taskId });
+        }
+        return JSON.stringify({ results }, null, 2);
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "hl_reply_to_artifact_comment",
+    description: "Reply to a HumanLayer artifact comment by id prefix.",
+    presentation: {
+      label: { pending: "Replying to comment", completed: "Replied to comment" },
+      icon: { glyph: "MessageSquare" },
+    },
+    parameters: z.object({
+      artifact_filename: z.string().min(1),
+      comment_id: z.string().min(1),
+      content: z.string().min(1).max(10000),
+    }).strict(),
+    async execute({ artifact_filename, comment_id, content }, { threadId }) {
+      try {
+        const row = taskSession(mirror, threadId);
+        const artifact = artifactForTool(db, row.taskId, artifact_filename);
+        const match = resolveTruncatedId(db, artifact.id, comment_id);
+        if (!match.ok) return JSON.stringify({ ok: false, code: match.code });
+        const comment = replyToComment(db, artifact.id, match.id, content, { createdByAgent: true, createdByThreadId: threadId });
+        if (!comment) return JSON.stringify({ ok: false, code: "not_found" });
+        bb.realtime.publish("hl:comments", { taskId: row.taskId, artifactId: artifact.id, commentId: comment.id, createdByAgent: true });
+        bb.realtime.publish("hl:artifacts", { taskId: row.taskId });
+        return JSON.stringify({ ok: true, comment_id: comment.id.slice(0, 8) });
+      } catch (error) {
+        return toolError(error);
+      }
     },
   });
 }

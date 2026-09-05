@@ -233,7 +233,7 @@ export function listArtifacts(db: Database, taskId: string, options: { includeDe
     LEFT JOIN artifact_versions versions
       ON versions.artifact_id = artifacts.id AND versions.version = artifacts.current_version
     LEFT JOIN comments
-      ON comments.artifact_id = artifacts.id AND comments.is_deleted = 0 AND comments.is_resolved = 0
+      ON comments.artifact_id = artifacts.id AND comments.is_deleted = 0 AND comments.is_resolved = 0 AND comments.reply_to_id IS NULL
     WHERE artifacts.task_id = ? ${options.includeDeleted ? "" : "AND artifacts.is_deleted = 0"}
     GROUP BY artifacts.id
     ORDER BY artifacts.file_name ASC
@@ -264,7 +264,7 @@ export function getArtifact(db: Database, taskId: string, fileName: string) {
     LEFT JOIN artifact_versions versions
       ON versions.artifact_id = artifacts.id AND versions.version = artifacts.current_version
     LEFT JOIN comments
-      ON comments.artifact_id = artifacts.id AND comments.is_deleted = 0 AND comments.is_resolved = 0
+      ON comments.artifact_id = artifacts.id AND comments.is_deleted = 0 AND comments.is_resolved = 0 AND comments.reply_to_id IS NULL
     WHERE artifacts.task_id = ? AND artifacts.file_name = ?
     GROUP BY artifacts.id
     `,

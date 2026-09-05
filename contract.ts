@@ -193,6 +193,49 @@ export const artifactVersionSchema = z
   .strict();
 export type ArtifactVersionRecord = z.infer<typeof artifactVersionSchema>;
 
+export const commentAnchorSchema = z
+  .object({
+    v: z.literal(1),
+    blockIndex: z.number().int().nonnegative(),
+    start: z.number().int().nonnegative(),
+    end: z.number().int().nonnegative(),
+    selectedText: z.string(),
+    orphaned: z.boolean().optional(),
+  })
+  .strict();
+export type CommentAnchorRecord = z.infer<typeof commentAnchorSchema>;
+
+export const commentRecordSchema = z
+  .object({
+    id: z.string(),
+    artifactId: z.string(),
+    versionId: z.string(),
+    replyToId: z.string().nullable(),
+    contentText: z.string(),
+    blockText: z.string().nullable(),
+    prevBlockText: z.string().nullable(),
+    nextBlockText: z.string().nullable(),
+    anchorJson: commentAnchorSchema.omit({ orphaned: true }).nullable(),
+    kind: z.string(),
+    isResolved: z.boolean(),
+    isDeleted: z.boolean(),
+    createdByAgent: z.boolean(),
+    createdByThreadId: z.string().nullable(),
+    createdAt: z.number().int(),
+    updatedAt: z.number().int(),
+    anchor: commentAnchorSchema.nullable(),
+  })
+  .strict();
+export type CommentRecord = z.infer<typeof commentRecordSchema>;
+
+export const commentThreadSchema = z
+  .object({
+    root: commentRecordSchema,
+    replies: z.array(commentRecordSchema),
+  })
+  .strict();
+export type CommentThreadRecord = z.infer<typeof commentThreadSchema>;
+
 export const mirrorOutcomeSchema = z.enum(["moved", "skipped", "conflict"]);
 
 export const taskCreateRequestSchema = z
@@ -314,6 +357,24 @@ export const getArtifactInputSchema = artifactFileInputSchema.extend({ version: 
 export const saveArtifactInputSchema = artifactFileInputSchema.extend({ content: z.string().max(ARTIFACT_TEXT_LIMIT) }).strict();
 export const listArtifactsInputSchema = z.object({ taskId: z.string().min(1), includeDeleted: z.boolean().optional() }).strict();
 export const artifactTaskInputSchema = z.object({ taskId: z.string().min(1) }).strict();
+export const listCommentsInputSchema = z.object({ artifactId: z.string().min(1), includeResolved: z.boolean().optional(), limit: z.number().int().positive().max(100).optional(), offset: z.number().int().nonnegative().optional() }).strict();
+export const createCommentInputSchema = z
+  .object({
+    artifactId: z.string().min(1),
+    versionId: z.string().min(1),
+    contentText: z.string().trim().min(1).max(10000),
+    blockText: z.string().max(100000),
+    prevBlockText: z.string().max(100000).nullable().optional(),
+    nextBlockText: z.string().max(100000).nullable().optional(),
+    anchorJson: commentAnchorSchema.omit({ orphaned: true }),
+    replyToId: z.string().min(1).nullable().optional(),
+  })
+  .strict();
+export const commentReplyInputSchema = z.object({ artifactId: z.string().min(1), commentId: z.string().min(1), content: z.string().trim().min(1).max(10000) }).strict();
+export const commentEditInputSchema = z.object({ commentId: z.string().min(1), content: z.string().trim().min(1).max(10000) }).strict();
+export const commentIdsInputSchema = z.object({ artifactId: z.string().min(1), commentIds: z.array(z.string().min(1)).min(1).max(100) }).strict();
+export const resolveCommentsInputSchema = commentIdsInputSchema.extend({ resolved: z.boolean() }).strict();
+export const sendCommentsInputSchema = commentIdsInputSchema.extend({ threadId: z.string().min(1), mode: z.enum(["send", "send-and-resolve"]) }).strict();
 
 export const rpcContract = defineRpcContract({
   listTasks: {
@@ -395,6 +456,34 @@ export const rpcContract = defineRpcContract({
   restoreArtifact: {
     input: artifactFileInputSchema,
     output: z.object({ artifact: artifactRowSchema.nullable(), mirror: mirrorOutcomeSchema, outcome: z.enum(["restored", "conflict"]) }).strict(),
+  },
+  listComments: {
+    input: listCommentsInputSchema,
+    output: z.object({ threads: z.array(commentThreadSchema), total: z.number().int().nonnegative(), nextOffset: z.number().int().nonnegative().nullable() }).strict(),
+  },
+  createComment: {
+    input: createCommentInputSchema,
+    output: z.object({ comment: commentRecordSchema }).strict(),
+  },
+  replyComment: {
+    input: commentReplyInputSchema,
+    output: z.object({ comment: commentRecordSchema }).strict(),
+  },
+  editComment: {
+    input: commentEditInputSchema,
+    output: z.object({ comment: commentRecordSchema.nullable() }).strict(),
+  },
+  resolveComments: {
+    input: resolveCommentsInputSchema,
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
+  deleteComment: {
+    input: commentIdsInputSchema,
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
+  sendCommentsToSession: {
+    input: sendCommentsInputSchema,
+    output: z.object({ sent: z.number().int().nonnegative() }).strict(),
   },
   hydrateNow: {
     input: artifactTaskInputSchema,

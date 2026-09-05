@@ -1,9 +1,10 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { prefsSchema, prefsUpdateSchema, rpcContract } from "./contract";
-import { openPluginDatabase, parseJson } from "./db";
+import { openPluginDatabase, parseJson, readRow } from "./db";
 import {
   artifactPermalink,
   deleteArtifact,
+  getArtifact,
   getArtifactVersion,
   isTextArtifact,
   listArtifactVersions,
@@ -12,6 +13,18 @@ import {
   restoreArtifact,
   upsertArtifact,
 } from "./artifacts";
+import {
+  createComment,
+  type CommentThread,
+  editComment,
+  listComments,
+  markdownBlocks,
+  replyToComment,
+  resolveTruncatedId,
+  sendCommentsToSession,
+  setCommentsResolved,
+  softDeleteComments,
+} from "./comments";
 import {
   forkSession,
   interruptSession,
@@ -52,12 +65,30 @@ function publishArtifacts(bb: BbPluginApi, taskId: string) {
   bb.realtime.publish("hl:artifacts", { taskId });
 }
 
+function publishComments(bb: BbPluginApi, taskId: string, artifactId: string, commentId: string | null, createdByAgent: boolean) {
+  bb.realtime.publish("hl:comments", { taskId, artifactId, commentId, createdByAgent });
+  bb.realtime.publish("hl:artifacts", { taskId });
+}
+
 function isInlineSafeContentType(contentType: string) {
   return ["image/png", "image/jpeg", "image/gif", "image/webp", "text/plain", "text/markdown"].includes(contentType.toLowerCase());
 }
 
 function attachmentFileName(fileName: string) {
   return fileName.replaceAll("\\", "_").replaceAll("\"", "_").replaceAll("\r", "_").replaceAll("\n", "_");
+}
+
+function readArtifactTask(db: ReturnType<typeof openPluginDatabase>, artifactId: string) {
+  const artifact = readRow<{ taskId: string; fileName: string }>(db, "SELECT task_id AS taskId, file_name AS fileName FROM artifacts WHERE id = ?", artifactId);
+  if (!artifact) throw new Error("artifact not found");
+  return artifact;
+}
+
+function commentCliLines(threads: CommentThread[]) {
+  return threads.flatMap((thread) => [
+    `${thread.root.id.slice(0, 8)}\t${thread.root.isResolved ? "resolved" : "open"}\tblock ${thread.root.anchor?.orphaned ? "unanchored" : thread.root.anchor?.blockIndex ?? "?"}\t${thread.root.contentText}`,
+    ...thread.replies.map((reply) => `  ${reply.id.slice(0, 8)}\treply\t${reply.createdByAgent ? "agent" : "you"}\t${reply.contentText}`),
+  ]);
 }
 
 export default async function plugin(bb: BbPluginApi) {
@@ -133,6 +164,12 @@ export default async function plugin(bb: BbPluginApi) {
       type: "string",
       label: "Jump hotkey",
       default: "mod+shift+u",
+    },
+    sendCommentsMode: {
+      type: "select",
+      label: "Send comments mode",
+      options: ["send", "send-and-resolve"],
+      default: "send-and-resolve",
     },
   });
 
@@ -252,6 +289,54 @@ export default async function plugin(bb: BbPluginApi) {
       publishArtifacts(bb, taskId);
       return { artifact: restored.artifact, mirror, outcome: restored.outcome };
     },
+    listComments: async ({ artifactId, includeResolved, limit, offset }) => listComments(db, artifactId, { includeResolved, limit, offset }),
+    createComment: async (input) => {
+      const artifact = readArtifactTask(db, input.artifactId);
+      const comment = createComment(db, input.artifactId, input.versionId, {
+        contentText: input.contentText,
+        blockText: input.blockText,
+        prevBlockText: input.prevBlockText ?? null,
+        nextBlockText: input.nextBlockText ?? null,
+        anchorJson: input.anchorJson,
+        replyToId: input.replyToId ?? null,
+        createdByAgent: false,
+      });
+      publishComments(bb, artifact.taskId, input.artifactId, comment.id, false);
+      return { comment };
+    },
+    replyComment: async ({ artifactId, commentId, content }) => {
+      const artifact = readArtifactTask(db, artifactId);
+      const comment = replyToComment(db, artifactId, commentId, content, { createdByAgent: false });
+      if (!comment) throw new Error("comment not found");
+      publishComments(bb, artifact.taskId, artifactId, comment.id, false);
+      return { comment };
+    },
+    editComment: async ({ commentId, content }) => {
+      const comment = editComment(db, commentId, content);
+      if (comment) {
+        const artifact = readArtifactTask(db, comment.artifactId);
+        publishComments(bb, artifact.taskId, comment.artifactId, comment.id, comment.createdByAgent);
+      }
+      return { comment };
+    },
+    resolveComments: async ({ artifactId, commentIds, resolved }) => {
+      const artifact = readArtifactTask(db, artifactId);
+      setCommentsResolved(db, commentIds, resolved, artifactId);
+      publishComments(bb, artifact.taskId, artifactId, null, false);
+      return { ok: true as const };
+    },
+    deleteComment: async ({ artifactId, commentIds }) => {
+      const artifact = readArtifactTask(db, artifactId);
+      softDeleteComments(db, commentIds, artifactId);
+      publishComments(bb, artifact.taskId, artifactId, null, false);
+      return { ok: true as const };
+    },
+    sendCommentsToSession: async ({ threadId, artifactId, commentIds, mode }) => {
+      const result = await sendCommentsToSession(bb, db, threadId, artifactId, commentIds, mode);
+      const artifact = readArtifactTask(db, artifactId);
+      publishComments(bb, artifact.taskId, artifactId, null, false);
+      return result;
+    },
     hydrateNow: async ({ taskId }) => {
       const threadId = latestTaskThread(db, taskId);
       if (!threadId) throw new Error("No task session is available for hydration.");
@@ -343,6 +428,21 @@ export default async function plugin(bb: BbPluginApi) {
         summary: "Save a text artifact version",
         usage: "bb humanlayer artifacts save --task <taskId> --file <fileName> --content <text> [--json]",
       },
+      {
+        name: "comments-list",
+        summary: "List artifact comments",
+        usage: "bb humanlayer comments list --task <taskId> --file <fileName> [--resolved] [--json]",
+      },
+      {
+        name: "comments-create",
+        summary: "Create an artifact comment on a markdown block",
+        usage: "bb humanlayer comments create --task <taskId> --file <fileName> --block <index> --content <text> [--json]",
+      },
+      {
+        name: "comments-resolve",
+        summary: "Resolve artifact comments by id prefix",
+        usage: "bb humanlayer comments resolve --task <taskId> --file <fileName> --id <prefix> [--json]",
+      },
     ],
     async run(argv) {
       try {
@@ -428,7 +528,49 @@ export default async function plugin(bb: BbPluginApi) {
           publishArtifacts(bb, opts.task);
           return { exitCode: 0, stdout: json ? `${JSON.stringify(body)}\n` : `v${result.version}\t${body.permalink}\n` };
         }
-        return { exitCode: 2, stderr: "usage: bb humanlayer {tasks|sessions|artifacts} ...\n" };
+        if (argv[0] === "comments" && argv[1] === "list") {
+          const opts = parseArgs(argv.slice(2));
+          if (!opts.task || !opts.file) return { exitCode: 2, stderr: "usage: bb humanlayer comments list --task <taskId> --file <fileName>\n" };
+          const artifact = getArtifact(db, opts.task, opts.file);
+          if (!artifact) return { exitCode: 1, stderr: "artifact not found\n" };
+          const page = listComments(db, artifact.id, { includeResolved: opts.resolved === "true", limit: parseBoundedInt(opts.limit, 50, 1, 100), offset: parseBoundedInt(opts.offset, 0, 0, 100000) });
+          if (json) return { exitCode: 0, stdout: `${JSON.stringify(page)}\n` };
+          return { exitCode: 0, stdout: commentCliLines(page.threads).join("\n") + "\n" };
+        }
+        if (argv[0] === "comments" && argv[1] === "create") {
+          const opts = parseArgs(argv.slice(2));
+          if (!opts.task || !opts.file || opts.block === undefined || opts.content === undefined) {
+            return { exitCode: 2, stderr: "usage: bb humanlayer comments create --task <taskId> --file <fileName> --block <index> --content <text>\n" };
+          }
+          const result = getArtifactVersion(db, opts.task, opts.file);
+          if (!result) return { exitCode: 1, stderr: "artifact not found\n" };
+          if (result.artifact.isDeleted) return { exitCode: 1, stderr: "artifact is deleted\n" };
+          const blocks = markdownBlocks(result.version.content.toString("utf8"));
+          const block = blocks[Number.parseInt(opts.block, 10)];
+          if (!block) return { exitCode: 1, stderr: "block not found\n" };
+          const comment = createComment(db, result.artifact.id, result.version.id, {
+            contentText: opts.content,
+            blockText: block.text,
+            prevBlockText: blocks[block.index - 1]?.text ?? null,
+            nextBlockText: blocks[block.index + 1]?.text ?? null,
+            anchorJson: { v: 1, blockIndex: block.index, start: block.start, end: block.end, selectedText: block.text },
+            createdByAgent: false,
+          });
+          publishComments(bb, opts.task, result.artifact.id, comment.id, false);
+          return { exitCode: 0, stdout: json ? `${JSON.stringify({ comment })}\n` : `${comment.id.slice(0, 8)}\tblock ${block.index}\n` };
+        }
+        if (argv[0] === "comments" && argv[1] === "resolve") {
+          const opts = parseArgs(argv.slice(2));
+          if (!opts.task || !opts.file || !opts.id) return { exitCode: 2, stderr: "usage: bb humanlayer comments resolve --task <taskId> --file <fileName> --id <prefix>\n" };
+          const artifact = getArtifact(db, opts.task, opts.file);
+          if (!artifact) return { exitCode: 1, stderr: "artifact not found\n" };
+          const match = resolveTruncatedId(db, artifact.id, opts.id);
+          if (!match.ok) return { exitCode: 1, stderr: `${match.code}\n` };
+          setCommentsResolved(db, [match.id], true);
+          publishComments(bb, opts.task, artifact.id, match.id, false);
+          return { exitCode: 0, stdout: json ? `${JSON.stringify({ id: match.id, resolved: true })}\n` : `${match.id.slice(0, 8)}\tresolved\n` };
+        }
+        return { exitCode: 2, stderr: "usage: bb humanlayer {tasks|sessions|artifacts|comments} ...\n" };
       } catch (error) {
         return { exitCode: 1, stderr: `${String(error instanceof Error ? error.message : error)}\n` };
       }
@@ -507,6 +649,10 @@ function parseArgs(argv: string[]) {
     }
     if (arg === "--launch") {
       result.launch = "true";
+      continue;
+    }
+    if (arg === "--resolved") {
+      result.resolved = "true";
       continue;
     }
     if (arg.startsWith("--")) {
