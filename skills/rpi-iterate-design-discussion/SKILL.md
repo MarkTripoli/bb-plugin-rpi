@@ -1,28 +1,100 @@
 ---
 name: rpi-iterate-design-discussion
-description: Only use when the user explicitly invokes /rpi-iterate-design-discussion. Revise a design discussion.
+description: Only use when the user explicitly invokes /rpi-iterate-design-discussion. Revise a design discussion artifact using feedback, comments, or new evidence.
 ---
 
 # Iterate Design Discussion
 
+You are revising a design discussion that already exists. Apply feedback only after checking it, keep open questions separate from resolved decisions, and leave the artifact as a coherent design document rather than a conversation log.
+
+## Initial Check
+
+If the user provides no feedback, no comment target, and no artifact argument, ask for feedback and wait:
+
+```text
+I can revise the design discussion now. Send the change, comment, or decision you want reflected first.
+```
+
+Do not edit until the user gives a change, names comments, or asks you to continue working through open decisions.
+
+## bb Task Setup
+
+0. Call `hl_task_context` before any file read. Use its task directory, artifact manifest, current thread, provider, and preferred research model. If it fails, stop.
+1. Resolve the target design discussion from the `@file` argument when present. If no artifact is named, use the manifest; ask only if more than one plausible file remains.
+2. Locate this skill through the skills tier listing, then read references relative to this skill directory: `references/design_discussion_template.md`, `references/design_discussion_review_answer.md`, and `references/design_discussion_final_answer.md`.
+3. If comments are relevant, call `hl_get_artifact_comments` for the design discussion file. Fetch unresolved comments by default; include resolved comments only when requested.
+
 ## Steps
 
-0. Call hl_task_context and read its output before any file read. Use the returned task directory, task slug, artifact list, and model hints.
-1. Resolve the @<file> argument, read that artifact fully, then fetch comments with hl_get_artifact_comments when comments are relevant.
-2. If an artifact number is needed, call hl_next_artifact_number and use the returned number in NN-design-discussion-short-slug.md.
-3. Read references/design_discussion_template.md and draft the artifact in that shape.
-4. Write or update the artifact under .humanlayer/tasks/<slug>/.
-5. Call hl_artifact_save with the artifact file name immediately after writing. Save the returned ::hl-artifact{...} line for your final answer.
-6. Read references/design_discussion_final_answer.md and answer using that structure exactly. The final answer must end with one fenced text block containing /rpi-create-structure-outline.
+1. **Find and read the task directory**:
+   - List the task directory with `ls -La <task-dir>`. Avoid search, glob, plain `ls`, and `ls -l` inside `.humanlayer/tasks` because task paths may be linked.
+   - Read the current design discussion fully.
+   - Read `task.md` or `ticket.md`, completed research, and earlier design artifacts needed to understand the change.
+   - Read any explicit user-mentioned file fully.
+   - Do not read research-question artifacts unless asked to review research setup.
 
-## Rules
+2. **Check the user's input before applying it**:
+   - Do not accept corrections blindly.
+   - Read named files or directories yourself.
+   - If a claim depends on code behavior and artifacts do not prove it, verify with source reads or child research.
+   - Map artifact comments to the sections they affect before editing.
 
-- Do not open unrelated task artifacts. Use only task.md, ticket.md, @ files, and comments the user asked you to inspect.
-- For child research, spawn codebase-locator, codebase-analyzer, codebase-pattern-finder, and web-search-researcher as useful. Use:
+3. **Optionally spawn child research threads**:
+   - Use child threads only when extra codebase context would change the design.
+   - Spawn independent work first, then wait and read output:
 
-  bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <cheap research model from hl_task_context prefs> --prompt "/rpi-agent-<role> <short assignment>"
-  bb thread wait <id>
-  bb thread output <id>
+```text
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-codebase-analyzer <assignment>"
+bb thread wait <thread-id>
+bb thread output <thread-id>
+```
 
-- Spawn all independent child threads first, then wait for each one and summarize only their results.
-- Treat tool or CLI errors as blockers, not as permission to write untracked side files.
+   - Use locator for file discovery, analyzer for behavior, pattern finder for local precedents, and web researcher for external references.
+   - The child final message is the deliverable. Skip child threads for straightforward wording or already-verified decisions.
+
+4. **Update the design discussion in place**:
+   - Keep the original path and frontmatter unless the file is malformed.
+   - Rework Current State, Desired End State, Proposed End State Architecture, and Patterns to follow when feedback changes them.
+   - Move answered questions from `Design Questions` to `Resolved Design Questions` with the chosen option, rationale, and rejected alternatives.
+   - Add new open questions when feedback exposes an undecided choice.
+   - Do not append a change log. Fold the change into the relevant section.
+
+<content_guidance>
+
+- Keep request summary, current behavior, target behavior, and non-goals current.
+- Update diagrams, pseudocode, component trees, file trees, or HTML artifacts when the proposed end state changes.
+- Present options and tradeoffs for new open questions.
+- Record final decisions only when the user or a newer artifact resolved them.
+- Re-check code examples before keeping them; include only snippets that help implementation follow the intended pattern.
+
+</content_guidance>
+
+5. **Handle comments if they drove the iteration**:
+   - Use `hl_reply_to_artifact_comment` when directly answering a comment.
+   - Use `hl_update_artifact_comments` to resolve comments only when the user asked for resolution or the requested edit clearly completed the comment and comment cleanup was requested.
+   - Do not delete comments without explicit deletion instruction.
+
+6. **Save and answer**:
+   - Call `hl_artifact_save` for the edited file.
+   - If unresolved design questions remain, read `references/design_discussion_review_answer.md`.
+   - If all questions are resolved, read `references/design_discussion_final_answer.md`.
+   - Follow the chosen template exactly. Do not add a separate summary.
+
+## Artifact and Reading Rules
+
+- Read task artifacts fully. Do not use partial reads for task files, user-mentioned files, or the artifact you are editing.
+- Do not inspect unrelated task directories unless the user explicitly asks.
+- Treat failed artifact saves, failed comment calls, or unavailable task context as blockers.
+- Use `hl_next_artifact_number` only when creating a new numbered artifact. Normal iteration edits the existing file.
+
+## Document Precedence
+
+When documents disagree, the latest phase artifact wins:
+
+**design discussion > research > ticket**
+
+Earlier material provides context. The design discussion records the current decision and should absorb later user feedback instead of leaving contradictions in place.
+
+## Markdown Formatting
+
+When an artifact needs to show markdown that itself contains fenced code, wrap the outer example in four backticks.

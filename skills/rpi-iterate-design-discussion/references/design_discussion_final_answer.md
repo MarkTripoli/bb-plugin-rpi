@@ -1,10 +1,9 @@
 Artifact saved:
 {artifact_directive}
 
-Summary:
-{summary}
+All design questions are resolved, so the next manual step is the structure outline.
 
-Auto-advance does not apply at this gate. Continue manually with:
+Auto-advance does not apply at this human gate. Continue manually with:
 
 ```text
 /rpi-create-structure-outline @{artifact_file}
