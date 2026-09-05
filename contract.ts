@@ -87,8 +87,8 @@ export const sessionRowSchema = z
     skillId: z.string().nullable(),
     launchedBy: z.string(),
     forkedFromThreadId: z.string().nullable(),
-    hlStatus: z.string(),
-    hlStatusAt: z.number().int(),
+    rpiStatus: z.string(),
+    rpiStatusAt: z.number().int(),
     hadTurn: z.boolean(),
     interrupted: z.boolean(),
     blockedReason: z.enum(["question", "plugin"]).nullable(),
@@ -539,6 +539,18 @@ export const taskUiStateSchema = z.object({
   // CAS revision counter for the scratch pad row (0 when no row exists yet). saveScratchPad must
   // echo this back so the client can detect a stale write.
   scratchRevision: z.number().int().nonnegative().optional(),
+  // Set once at plugin start (see server.ts's startup legacy-task-dir sweep, workspace.ts
+  // `findLegacyTaskDirTaskIds`) when this task's base environment has a pre-rename task-root dir
+  // (see `legacyTaskDirName` below) but no current `.rpi/tasks/<slug>` dir yet. The plugin never
+  // moves files itself; the banner just tells the user to.
+  // Sticky once dismissed (dismissLegacyTaskDirWarning), so it shows exactly once per task.
+  legacyTaskDirWarning: z.boolean().optional(),
+  // The legacy directory name the banner names in its `git mv` instruction (from the same source
+  // as the startup sweep's detection; see workspace.ts `findLegacyTaskDirTaskIds`).
+  legacyTaskDirName: z.string().optional(),
+  // Set by dismissLegacyTaskDirWarning; the startup sweep never re-sets legacyTaskDirWarning once
+  // this is true, even if the legacy directory is still there on the next restart.
+  legacyTaskDirWarningDismissed: z.boolean().optional(),
 }).strict();
 export type TaskUiState = z.infer<typeof taskUiStateSchema>;
 export const dismissTaskTipInputSchema = z.object({ taskId: z.string().min(1), label: z.string().min(1) }).strict();
@@ -547,6 +559,7 @@ export const SCRATCH_PAD_MAX_CHARS = 20000;
 export const saveScratchPadInputSchema = z.object({ taskId: z.string().min(1), text: z.string().max(SCRATCH_PAD_MAX_CHARS), expectedRevision: z.number().int().nonnegative() }).strict();
 export const saveScratchPadOutputSchema = taskUiStateSchema.extend({ outcome: z.enum(["saved", "conflict"]) });
 export const dismissContextWarningInputSchema = z.object({ taskId: z.string().min(1), threadId: z.string().min(1) }).strict();
+export const dismissLegacyTaskDirWarningInputSchema = z.object({ taskId: z.string().min(1) }).strict();
 
 export const rpcContract = defineRpcContract({
   listTasks: {
@@ -571,6 +584,10 @@ export const rpcContract = defineRpcContract({
   },
   dismissContextWarning: {
     input: dismissContextWarningInputSchema,
+    output: taskUiStateSchema,
+  },
+  dismissLegacyTaskDirWarning: {
+    input: dismissLegacyTaskDirWarningInputSchema,
     output: taskUiStateSchema,
   },
   setViewingSession: {

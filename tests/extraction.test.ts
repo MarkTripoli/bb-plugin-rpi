@@ -50,7 +50,7 @@ test("unknown artifact references suppress the next step", () => {
 });
 
 test("full task artifact references normalize to bare names", () => {
-  const result = extractNextStep("```text\n/rpi-iterate-research @.humanlayer/tasks/task/01-research.md\n```", {
+  const result = extractNextStep("```text\n/rpi-iterate-research @.rpi/tasks/task/01-research.md\n```", {
     liveArtifactNames: ["01-research.md"],
     taskSlug: "task",
     parsedAt: 1,

@@ -1,18 +1,18 @@
 ---
 name: rpi-configure-workspaces
-description: Run for /rpi-configure-workspaces requests. Propose, write, and validate HumanLayer workspace config files for bb-managed task environments.
+description: Run for /rpi-configure-workspaces requests. Propose, write, and validate RPI workspace config files for bb-managed task environments.
 ---
 
 # Configure Workspaces
 
 ## Purpose
 
-This skill reads the selected repository, proposes `.humanlayer/workspace.json` and optional `.humanlayer/workspace.local.json`, writes the approved files, and validates that the config can drive task workspace setup.
+This skill reads the selected repository, proposes `.rpi/workspace.json` and optional `.rpi/workspace.local.json`, writes the approved files, and validates that the config can drive task workspace setup.
 
 The files control how RPI tasks request workspace behavior:
 
-- `.humanlayer/workspace.json` is shared repository config and can be committed.
-- `.humanlayer/workspace.local.json` is machine-specific override data and must stay out of git.
+- `.rpi/workspace.json` is shared repository config and can be committed.
+- `.rpi/workspace.local.json` is machine-specific override data and must stay out of git.
 
 bb owns actual managed-worktree creation. This config still records source refs, setup commands, file-copy requests, and multi-repo intent so `/rpi-setup-worktree` can finish setup inside the bb environment.
 
@@ -22,7 +22,7 @@ Use plain, brief language when talking to the user.
 
 ### Step 0: Select the repository
 
-Call `hl_task_context` first when this skill runs inside a task session. If no task context is available, continue as a repository configuration session and say that no task artifact will be saved.
+Call `rpi_task_context` first when this skill runs inside a task session. If no task context is available, continue as a repository configuration session and say that no task artifact will be saved.
 
 Check the current location:
 
@@ -53,8 +53,8 @@ Use the returned repository root for every later read and command.
 From the selected repository root, read any current workspace config:
 
 ```text
-.humanlayer/workspace.json
-.humanlayer/workspace.local.json
+.rpi/workspace.json
+.rpi/workspace.local.json
 ```
 
 Use existing config as the starting point. Then inspect only the signals needed to infer workspace setup:
@@ -87,12 +87,12 @@ Use these defaults unless the repository provides better evidence:
 - `localPath: "."` and `primary: true` for one repo.
 - Exactly one primary repo in a multi-repo config.
 - The repo with shared agent settings, MCP-style config, or team policy is usually primary.
-- `~/.humanlayer/workspaces/{{ TASKSLUG }}/{{ REPOBASENAME }}` as `pathTemplate`.
+- `~/.rpi/workspaces/{{ TASKSLUG }}/{{ REPOBASENAME }}` as `pathTemplate`.
 - `{{ TASKSLUG }}` as `branchTemplate`.
 - `origin/main` as `sourceRef` when that remote branch exists; use `HEAD` when no reliable branch is known.
 - Setup command inferred from package-manager files, Makefile targets, or README instructions.
-- `copyGlobs` for local files that usually matter in a new worktree: env files, machine-only tool settings, and `.humanlayer/workspace.local.json`.
-- Machine-specific paths, secrets, and local-only commands go in `.humanlayer/workspace.local.json`.
+- `copyGlobs` for local files that usually matter in a new worktree: env files, machine-only tool settings, and `.rpi/workspace.local.json`.
+- Machine-specific paths, secrets, and local-only commands go in `.rpi/workspace.local.json`.
 
 For multi-repo workspaces:
 
@@ -101,7 +101,7 @@ For multi-repo workspaces:
 - Add related sibling repos with paths such as `../api` or `../web`.
 - Mark exactly one repo with `primary: true` when there is a clear default.
 
-After inspection, present the shared config proposal in a fenced `json` block. When machine-local overrides are needed, include a separate fenced `json` block for `.humanlayer/workspace.local.json`.
+After inspection, present the shared config proposal in a fenced `json` block. When machine-local overrides are needed, include a separate fenced `json` block for `.rpi/workspace.local.json`.
 
 End that response with:
 
@@ -129,9 +129,9 @@ For a single repository, the shared config should follow this shape:
   "disabled": false,
   "sourceRef": "origin/main",
   "branchTemplate": "{{ TASKSLUG }}",
-  "pathTemplate": "~/.humanlayer/workspaces/{{ TASKSLUG }}/{{ REPOBASENAME }}",
+  "pathTemplate": "~/.rpi/workspaces/{{ TASKSLUG }}/{{ REPOBASENAME }}",
   "copyGlobs": [
-    ".humanlayer/workspace.local.json",
+    ".rpi/workspace.local.json",
     ".env.local",
     ".claude/settings.local.json",
     ".env",
@@ -165,9 +165,9 @@ For a coordinated multi-repo workspace, use the same root fields and list every 
   "disabled": false,
   "sourceRef": "origin/main",
   "branchTemplate": "{{ TASKSLUG }}",
-  "pathTemplate": "~/.humanlayer/workspaces/{{ TASKSLUG }}/{{ REPOBASENAME }}",
+  "pathTemplate": "~/.rpi/workspaces/{{ TASKSLUG }}/{{ REPOBASENAME }}",
   "copyGlobs": [
-    ".humanlayer/workspace.local.json",
+    ".rpi/workspace.local.json",
     ".env.local",
     ".env"
   ],
@@ -183,7 +183,7 @@ Config rules:
 - `copyGlobs` merges additively with de-duplication. Local and per-repo lists extend inherited lists; they do not replace them.
 - A repo entry can supply its own `sourceRef`, `setupCommand`, `copyGlobs`, or `primary` value.
 - Keep `branchTemplate` on the top-level config object.
-- `.humanlayer/workspace.local.json` may use `{ "$patch": "delete" }` on a repo entry to remove it locally. Do not put that patch marker in shared config.
+- `.rpi/workspace.local.json` may use `{ "$patch": "delete" }` on a repo entry to remove it locally. Do not put that patch marker in shared config.
 - `disabled: true` at the root disables workspace setup.
 - In bb, `sourceRef` maps to task launch base branch only when it is `HEAD`, absent, `origin/<branch>`, or a named branch. Treat raw SHAs or unsupported refs as invalid for automatic launch.
 
@@ -200,17 +200,17 @@ For each repo, confirm the directory exists and is a git repo. If `sourceRef` na
 
 ### Step 4: Write the approved config
 
-After approval, write `.humanlayer/workspace.json` with the approved shared content.
+After approval, write `.rpi/workspace.json` with the approved shared content.
 
-If local overrides are part of the proposal, write `.humanlayer/workspace.local.json` too and ensure it is ignored by git:
+If local overrides are part of the proposal, write `.rpi/workspace.local.json` too and ensure it is ignored by git:
 
 ```text
-.humanlayer/workspace.local.json
+.rpi/workspace.local.json
 ```
 
 Read `.gitignore`. Add the ignore entry only when missing.
 
-Repository config files are normal repo files. Do not call `hl_artifact_save` for them unless you also create a task artifact receipt in `.humanlayer/tasks/<slug>/`.
+Repository config files are normal repo files. Do not call `rpi_artifact_save` for them unless you also create a task artifact receipt in `.rpi/tasks/<slug>/`.
 
 ### Step 5: Confirm and summarize
 
@@ -233,9 +233,9 @@ The workspace configuration is ready.
 When a task requests a workspace, bb creates or reuses the task environment. Then /rpi-setup-worktree verifies the environment, copies configured files, runs setup commands, and starts implementation in the primary repo.
 ```
 
-For team repositories, remind the user to commit `.humanlayer/workspace.json` and not `.humanlayer/workspace.local.json`.
+For team repositories, remind the user to commit `.rpi/workspace.json` and not `.rpi/workspace.local.json`.
 
-If you write a task receipt, call `hl_next_artifact_number`, write it from `references/workspace_template.md`, call `hl_artifact_save`, and include the returned directive in the final answer. Then read `references/workspace_final_answer.md` and use it exactly.
+If you write a task receipt, call `rpi_next_artifact_number`, write it from `references/workspace_template.md`, call `rpi_artifact_save`, and include the returned directive in the final answer. Then read `references/workspace_final_answer.md` and use it exactly.
 
 ## Key Concepts for This Skill
 

@@ -83,7 +83,7 @@ test("upsert deduplicates unchanged sha and creates a version only on change", (
   db.close();
 });
 
-test("groupByType follows HumanLayer panel order with other last", () => {
+test("groupByType follows RPI panel order with other last", () => {
   const grouped = groupByType([
     { type: "notes", fileName: "n.md" },
     { type: "research", fileName: "r.md" },

@@ -23,13 +23,9 @@ SOFTWARE.
 ---
 
 This license covers the code and skills written for this plugin
-(`bb-plugin-humanlayer`). At HEAD, this repository does not contain any of
-HumanLayer's own skill, agent, or hook source; that material (All Rights
-Reserved) is kept only as local reference outside this repository tree (see
-`HL_REFERENCE_DIR` in `tests/skills.test.ts`) and is never committed, never
-published (see `package.json` `files`), and never copied verbatim into
-`skills/`. Before any public push of this repository's git history, a
-maintainer must purge any earlier commit that contains `docs/hl-reference/`
-(a manual, explicit history rewrite; see README.md "Licensing" for the exact
-release step). See PARITY.md for how each rewritten skill relates to its
-HumanLayer original.
+(`bb-plugin-rpi`). At HEAD, this repository does not contain any third-party
+skill, agent, or hook source; that material (All Rights Reserved) is kept
+only as local reference outside this repository tree (see `RPI_REFERENCE_DIR`
+in `tests/skills.test.ts`) and is never committed, never published (see
+`package.json` `files`), and never copied verbatim into `skills/`. See
+FEATURES.md for what this plugin does.

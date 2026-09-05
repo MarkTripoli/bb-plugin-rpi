@@ -1,6 +1,6 @@
 # Workspace Configuration Receipt
 
-Write `.humanlayer/workspace.json` with this schema after the user accepts the proposal.
+Write `.rpi/workspace.json` with this schema after the user accepts the proposal.
 
 {
   "repos": [
@@ -12,10 +12,10 @@ Write `.humanlayer/workspace.json` with this schema after the user accepts the p
   ],
   "sourceRef": "origin/main",
   "branchTemplate": "{{ TASKSLUG }}",
-  "pathTemplate": "~/.humanlayer/workspaces/{{ TASKSLUG }}/{{ REPOBASENAME }}",
+  "pathTemplate": "~/.rpi/workspaces/{{ TASKSLUG }}/{{ REPOBASENAME }}",
   "setupCommand": "",
   "copyGlobs": [
-    ".humanlayer/workspace.local.json",
+    ".rpi/workspace.local.json",
     ".env.local",
     ".env.development.local",
     ".claude/settings.local.json",

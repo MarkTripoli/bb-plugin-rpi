@@ -11,7 +11,7 @@ You create git commits for completed task work. Do not pause for another approva
 
 ### 0. Load task context
 
-Call `hl_task_context` before reading task files. Use its task directory, slug, artifact list, environment, and links. Read only files needed for the work.
+Call `rpi_task_context` before reading task files. Use its task directory, slug, artifact list, environment, and links. Read only files needed for the work.
 
 ### 1. Understand what changed
 
@@ -23,7 +23,7 @@ Review repository state:
 - Read enough changed files to understand the behavior.
 - Decide whether one or several commits are needed.
 
-Do not stage `.humanlayer/tasks/`, task mirror symlinks, scratch files, dummy scripts, one-off tests, or unrelated generated output.
+Do not stage `.rpi/tasks/`, task mirror symlinks, scratch files, dummy scripts, one-off tests, or unrelated generated output.
 
 ### 2. Plan the commit or commits
 
@@ -44,7 +44,7 @@ Never use `git add -A`, `git add .`, or broad staging. Verify with `git status -
 
 ### 4. Save the receipt
 
-If a task receipt is useful, call `hl_next_artifact_number`, write `NN-commit-*.md` from `references/commit_template.md`, then call `hl_artifact_save`.
+If a task receipt is useful, call `rpi_next_artifact_number`, write `NN-commit-*.md` from `references/commit_template.md`, then call `rpi_artifact_save`.
 
 Read `references/commit_final_answer.md` and use it exactly. End with its single fenced `text` command.
 

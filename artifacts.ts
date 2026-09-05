@@ -440,10 +440,10 @@ export function nextArtifactNumber(db: Database, taskId: string) {
 
 export function artifactPermalink(taskId: string, fileName: string) {
   assertSafeArtifactFileName(fileName);
-  return `::hl-artifact{task="${taskId}" file="${fileName}"}`;
+  return `::rpi-artifact{task="${taskId}" file="${fileName}"}`;
 }
 
 export function artifactPanelPath(taskId: string, fileName: string) {
   assertSafeArtifactFileName(fileName);
-  return `/plugins/humanlayer/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(fileName)}`;
+  return `/plugins/rpi/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(fileName)}`;
 }

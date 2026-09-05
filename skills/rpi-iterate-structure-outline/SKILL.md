@@ -9,7 +9,7 @@ You are revising a structure outline from user feedback, comments, or new eviden
 
 ## Input
 
-- If no artifact is named, use `hl_task_context` and the artifact manifest to find the structure outline.
+- If no artifact is named, use `rpi_task_context` and the artifact manifest to find the structure outline.
 - If more than one outline could be intended, ask the user to choose.
 - A ticket or comment file may contain feedback; read it fully if provided.
 
@@ -23,10 +23,10 @@ I can revise the structure outline now. Send the phase, scope, validation, or op
 
 ## bb Task Setup
 
-0. Call `hl_task_context` before reading files, spawning child threads, or choosing an artifact path. Use its task directory, task slug, artifact manifest, repository, branch, thread id, provider, and model preferences. If it fails, stop.
-1. Use the task directory returned by the tool. Do not guess a sibling under `.humanlayer/tasks` from an old session or a remembered slug.
+0. Call `rpi_task_context` before reading files, spawning child threads, or choosing an artifact path. Use its task directory, task slug, artifact manifest, repository, branch, thread id, provider, and model preferences. If it fails, stop.
+1. Use the task directory returned by the tool. Do not guess a sibling under `.rpi/tasks` from an old session or a remembered slug.
 2. Locate this installed skill through the skills tier listing, then read reference files relative to this skill directory: `references/structure_outline_template.md`, `references/structure_outline_final_answer.md`, `references/structure_outline_final_answer.md`.
-3. After every artifact write or edit, call `hl_artifact_save` with the relative file name and keep the returned `::hl-artifact{...}` directive for the final answer.
+3. After every artifact write or edit, call `rpi_artifact_save` with the relative file name and keep the returned `::rpi-artifact{...}` directive for the final answer.
 
 ## Steps
 
@@ -42,17 +42,17 @@ I can revise the structure outline now. Send the phase, scope, validation, or op
 3. **Verify user input**:
    - Do not accept corrections blindly.
    - Use direct reads or child research to confirm file paths, existing patterns, and validation commands.
-   - If comments are relevant, call `hl_get_artifact_comments` for the outline artifact.
+   - If comments are relevant, call `rpi_get_artifact_comments` for the outline artifact.
 
 4. **Spawn follow-up research if needed**:
 
 Use child threads only when a missing fact would change the artifact. Spawn independent assignments first, then wait for them and read their final messages:
 
 ```text
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-codebase-locator <assignment>"
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-codebase-analyzer <assignment>"
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-codebase-pattern-finder <assignment>"
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-web-search-researcher <assignment>"
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context preferences> --prompt "/rpi-agent-codebase-locator <assignment>"
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context preferences> --prompt "/rpi-agent-codebase-analyzer <assignment>"
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context preferences> --prompt "/rpi-agent-codebase-pattern-finder <assignment>"
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context preferences> --prompt "/rpi-agent-web-search-researcher <assignment>"
 bb thread wait <thread-id>
 bb thread output <thread-id>
 ```
@@ -77,19 +77,19 @@ Each phase should remain a vertical slice where possible. Avoid grouping by all 
    - Use diff notation only when it clarifies additions, removals, or changed ownership.
 
 7. **Update the user**:
-   - Check `hl_task_context.workspace.worktreeTiming`.
+   - Check `rpi_task_context.workspace.worktreeTiming`.
    - If `worktreeTiming` is `later`, read `references/structure_outline_setup_answer.md`; otherwise read `references/structure_outline_final_answer.md`.
    - Never suggest worktree setup when `worktreeTiming` is `never` or the current workspace is already the intended worktree.
-   - Save with `hl_artifact_save` and respond with the selected template exactly.
+   - Save with `rpi_artifact_save` and respond with the selected template exactly.
 
 ## Artifact and Reading Rules
 
 - Read task artifacts fully. Do not use partial reads for task files, user-mentioned files, or the artifact you are editing.
-- List task directories with `ls -La <task-dir>`. Avoid plain `ls`, `ls -l`, search, and glob expansion inside `.humanlayer/tasks` because the path may be a linked directory.
+- List task directories with `ls -La <task-dir>`. Avoid plain `ls`, `ls -l`, search, and glob expansion inside `.rpi/tasks` because the path may be a linked directory.
 - Do not read research-question artifacts during design, outline, or plan work. They guide the research phase only; use completed research instead.
 - Do not inspect unrelated task directories unless the user explicitly asks.
 - Treat failed artifact saves, failed comment calls, or unavailable task context as blockers. Do not work around them by writing untracked side files.
-- Use `hl_next_artifact_number` when creating a new numbered artifact. The file name format is `NN-<type>-<2-4-word-kebab-slug>.md`.
+- Use `rpi_next_artifact_number` when creating a new numbered artifact. The file name format is `NN-<type>-<2-4-word-kebab-slug>.md`.
 
 ## Phase Validation Design
 

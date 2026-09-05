@@ -4,10 +4,10 @@
 
 - Added artifact persistence in `artifacts.ts`: safe file names, 10 MB cap, SHA-256 deduped versions, list/get/version APIs, soft delete/restore, flat frontmatter parsing, type inference, next artifact numbering, and grouped panel ordering.
 - Seeded `task.md` as artifact version 1 for created tasks, including drafts.
-- Added `mirror.ts` with hydrate and ingest flows over `bb.sdk.files` using `.humanlayer` as `rootPath`, CAS writes, one retry after ingest on CAS conflict, `.trash/` handling for soft-deleted files, and session `hydrated_at` updates.
+- Added `mirror.ts` with hydrate and ingest flows over `bb.sdk.files` using `.rpi` as `rootPath`, CAS writes, one retry after ingest on CAS conflict, `.trash/` handling for soft-deleted files, and session `hydrated_at` updates.
 - Enabled real session hydration in the dispatch wait branch, plus `thread.active` hydration and `thread.idle` ingest for task threads.
-- Registered task tools `hl_task_context`, `hl_artifact_save`, and `hl_next_artifact_number`, selected only for task threads, with task-session guard errors.
-- Added artifact RPCs, CLI commands, local-auth HTTP artifact streaming, and the `::hl-artifact{task="..." file="..."}` message directive.
+- Registered task tools `rpi_task_context`, `rpi_artifact_save`, and `rpi_next_artifact_number`, selected only for task threads, with task-session guard errors.
+- Added artifact RPCs, CLI commands, local-auth HTTP artifact streaming, and the `::rpi-artifact{task="..." file="..."}` message directive.
 - Added the task-detail Artifacts tab and task-thread Artifacts panel with grouped/flat modes, version viewing, Preview/Raw mode, image preview URL support, delete/restore actions, and Hydrate now.
 
 ## Verification
@@ -15,7 +15,7 @@
 `npm test`
 
 ```text
-> bb-plugin-humanlayer@0.1.0 test
+> bb-plugin-rpi@0.1.0 test
 > tsc --noEmit && node --test tests/*.test.ts
 
 1..36
@@ -35,22 +35,22 @@
 `bb plugin install .`
 
 ```text
-Installed humanlayer@0.1.0 from path:/Users/marktripoli/.bb/worktrees/env_339kec2ijw/bb-plugin-humanlayer
-humanlayer@0.1.0  running
+Installed rpi@0.1.0 from path:/Users/marktripoli/.bb/worktrees/env_339kec2ijw/bb-plugin-rpi
+rpi@0.1.0  running
 ```
 
 Live task check used an explicit existing environment so the first dispatch could hydrate before model execution:
 
 ```text
-bb humanlayer tasks create --project proj_v36xq75qse --host host_bsbj4cminc --directory /Users/marktripoli/.bb/worktrees/env_339kec2ijw/bb-plugin-humanlayer --name "Phase 3 live artifact check 5" --launch --provider codex --model gpt-5.4-mini --json
+bb rpi tasks create --project proj_v36xq75qse --host host_bsbj4cminc --directory /Users/marktripoli/.bb/worktrees/env_339kec2ijw/bb-plugin-rpi --name "Phase 3 live artifact check 5" --launch --provider codex --model gpt-5.4-mini --json
 {"taskId":"255356b2-967a-450f-aea6-37f99b7dd7bc","threadId":"thr_qnh4wjxrrq"}
 ```
 
 Dispatch hydration evidence:
 
 ```text
-HumanLayer dispatch waiting for hydration: thr_qnh4wjxrrq
-Hydrated HumanLayer session thr_qnh4wjxrrq: 1 written, 0 skipped
+RPI dispatch waiting for hydration: thr_qnh4wjxrrq
+Hydrated RPI session thr_qnh4wjxrrq: 1 written, 0 skipped
 ```
 
 Agent final output included the permalink directive:
@@ -58,7 +58,7 @@ Agent final output included the permalink directive:
 ```text
 Saved.
 
-::hl-artifact{task="255356b2-967a-450f-aea6-37f99b7dd7bc" file="01-notes-live-check.md"}
+::rpi-artifact{task="255356b2-967a-450f-aea6-37f99b7dd7bc" file="01-notes-live-check.md"}
 ```
 
 CLI artifact list verified `task.md`, the new note, version 1, `type: notes`, and grouping under `other`:
@@ -73,14 +73,14 @@ CLI artifact list verified `task.md`, the new note, version 1, `type: notes`, an
 The hydrated files existed in the worktree:
 
 ```text
-.humanlayer/tasks/phase-3-live-artifact-check-5/01-notes-live-check.md
-.humanlayer/tasks/phase-3-live-artifact-check-5/task.md
+.rpi/tasks/phase-3-live-artifact-check-5/01-notes-live-check.md
+.rpi/tasks/phase-3-live-artifact-check-5/task.md
 ```
 
 UI-equivalent CLI save advanced the note to v2:
 
 ```text
-bb humanlayer artifacts save --task 255356b2-967a-450f-aea6-37f99b7dd7bc --file 01-notes-live-check.md --content ...
+bb rpi artifacts save --task 255356b2-967a-450f-aea6-37f99b7dd7bc --file 01-notes-live-check.md --content ...
 {"currentVersion":2,"type":"notes","groupType":"other"}
 ```
 
@@ -97,7 +97,7 @@ The live-check thread was archived and the installed plugin was removed:
 
 ```text
 archivedAt: 1788606816837
-Removed humanlayer.
+Removed rpi.
 ```
 
 ## Review fixes
@@ -111,16 +111,16 @@ Implemented in:
 Finding mapping:
 
 1. Blocking hydrate preservation: `f37dd91` added `mirror_state`, stable two-read ingest, last-written SHA checks, and CAS retry logic so disk edits are ingested before hydrate writes. Covered by `hydrate ingests untracked disk edits instead of clobbering them`.
-2. Blocking rootPath and entry confinement: `f37dd91` confines artifact reads, writes, moves, and scans to `.humanlayer/tasks/<slug>` and validates slugs; `3c0fcc6` adds the required parent-root bootstrap because the SDK lstat-checks `rootPath` before creating it. The installed SDK exposes `listPaths` entries as `kind: "file" | "directory"`, `name`, `path`, `positions`, and `score`; no symlink field is declared, so the code honors `isSymbolicLink` if present and otherwise only accepts direct `kind: "file"` entries. Covered by `hydrate writes task artifacts through .humanlayer rootPath with CAS` and `ingest only accepts direct child files under the task root`.
+2. Blocking rootPath and entry confinement: `f37dd91` confines artifact reads, writes, moves, and scans to `.rpi/tasks/<slug>` and validates slugs; `3c0fcc6` adds the required parent-root bootstrap because the SDK lstat-checks `rootPath` before creating it. The installed SDK exposes `listPaths` entries as `kind: "file" | "directory"`, `name`, `path`, `positions`, and `score`; no symlink field is declared, so the code honors `isSymbolicLink` if present and otherwise only accepts direct `kind: "file"` entries. Covered by `hydrate writes task artifacts through .rpi rootPath with CAS` and `ingest only accepts direct child files under the task root`.
 3. Blocking file-name validation: `f37dd91` rejects empty, absolute, backslash, NUL/control, dot-segment, unpaired-surrogate, `.trash*`, over-255-byte names, and live case collisions before ingesting direct children. Covered by `artifact size cap and path confinement reject unsafe writes` and `file validation rejects case-insensitive live collisions`.
 4. Blocking tombstones: `f37dd91` prevents ingest from resurrecting soft-deleted artifacts, moves exact tombstone matches to collision-safe `.trash/<name>.<version>.<ts>`, leaves edited tombstones in place, and adds restore/delete mirror outcomes. Covered by `tombstoned artifacts are not resurrected by ingest`.
-5. Blocking launch first action: `dea5bf4` adds the required `hl_task_context` first-action line after the launch marker and at the start of contributed instructions. Covered by `launchPhase prompts start with marker then task context first-action line` and `contributed task instructions start with task context first-action line`.
+5. Blocking launch first action: `dea5bf4` adds the required `rpi_task_context` first-action line after the launch marker and at the start of contributed instructions. Covered by `launchPhase prompts start with marker then task context first-action line` and `contributed task instructions start with task context first-action line`.
 6. Blocking artifact route safety: `dea5bf4` forces unsafe text, HTML, SVG, XHTML, and unknown route responses to attachment unless explicitly safe inline types are requested, adds `nosniff`, `no-store`, and sandbox CSP headers, and switches HTML/SVG previews to sandboxed `srcDoc`. Covered by `artifact route forces attachment for html and sets security headers`.
 7. Should-fix MIME and size: `f37dd91` uses SDK `sizeBytes` when available before reads, keeps decoded-byte enforcement, and routes task seed, ingest, RPC, CLI, and HTTP through `mimeFor(fileName)`.
 8. Should-fix linked worktrees: `f37dd91` resolves `.git` file `gitdir:`, honors `commondir`, verifies the metadata root is under the host home and has `HEAD`, then CAS-writes `info/exclude` under that metadata root.
 9. Should-fix frontmatter/type: `f37dd91` accepts EOF closing fences, preserves quoted scalar strings, and matches known artifact type prefixes longest-first. Covered by `frontmatter and type inference handle eof fences, quoted scalars, and longest prefixes`.
-10. Should-fix UI refresh/deleted group: `dea5bf4` resets selected versions on artifact changes, refetches previews on `hl:artifacts`, renders deleted artifacts under `DELETED`, and uses Restore there.
-11. Should-fix manifest/version content: `dea5bf4` caps `hl_task_context` artifacts at 200 `name/type/version` entries with a truncation marker; version-list RPC remains metadata-only and content stays on `getArtifact`.
+10. Should-fix UI refresh/deleted group: `dea5bf4` resets selected versions on artifact changes, refetches previews on `rpi:artifacts`, renders deleted artifacts under `DELETED`, and uses Restore there.
+11. Should-fix manifest/version content: `dea5bf4` caps `rpi_task_context` artifacts at 200 `name/type/version` entries with a truncation marker; version-list RPC remains metadata-only and content stays on `getArtifact`.
 
 Verification after review fixes:
 
@@ -153,24 +153,24 @@ Live check:
 
 ```text
 bb plugin install . --yes
-Installed humanlayer@0.1.0 ... running
+Installed rpi@0.1.0 ... running
 
-bb plugin reload humanlayer
-humanlayer@0.1.0 running
+bb plugin reload rpi
+rpi@0.1.0 running
 
-bb humanlayer tasks create --project proj_v36xq75qse --host host_bsbj4cminc --directory /Users/marktripoli/.bb/worktrees/env_339kec2ijw/bb-plugin-humanlayer --name "Phase 3 review fix live check 2" --prompt "Call hl_task_context first, then reply with exactly: first turn complete" --launch --provider codex --model gpt-5.4-mini --json
+bb rpi tasks create --project proj_v36xq75qse --host host_bsbj4cminc --directory /Users/marktripoli/.bb/worktrees/env_339kec2ijw/bb-plugin-rpi --name "Phase 3 review fix live check 2" --prompt "Call rpi_task_context first, then reply with exactly: first turn complete" --launch --provider codex --model gpt-5.4-mini --json
 {"taskId":"7bfe0493-13ba-46ea-a09d-fa9f278cbdd3","threadId":"thr_wqwmwptb97"}
 
 bb thread wait thr_wqwmwptb97 --status idle --timeout 180000
 Thread thr_wqwmwptb97 reached status idle.
 
-ls -la .humanlayer/tasks/phase-3-review-fix-live-check-2
+ls -la .rpi/tasks/phase-3-review-fix-live-check-2
 task.md
 
-bb humanlayer artifacts versions --task 7bfe0493-13ba-46ea-a09d-fa9f278cbdd3 --file task.md --json
+bb rpi artifacts versions --task 7bfe0493-13ba-46ea-a09d-fa9f278cbdd3 --file task.md --json
 version 1, createdBy task:create, operation create
 
-Edited .humanlayer/tasks/phase-3-review-fix-live-check-2/task.md on disk between turns.
+Edited .rpi/tasks/phase-3-review-fix-live-check-2/task.md on disk between turns.
 
 bb thread tell thr_wqwmwptb97 "Reply with exactly: second turn complete. Do not edit files."
 Thread thr_wqwmwptb97 steered
@@ -178,25 +178,25 @@ Thread thr_wqwmwptb97 steered
 bb thread wait thr_wqwmwptb97 --status idle --timeout 180000
 Thread thr_wqwmwptb97 reached status idle.
 
-bb humanlayer artifacts versions --task 7bfe0493-13ba-46ea-a09d-fa9f278cbdd3 --file task.md --json
+bb rpi artifacts versions --task 7bfe0493-13ba-46ea-a09d-fa9f278cbdd3 --file task.md --json
 version 1, createdBy task:create, operation create
 version 2, createdBy thr_wqwmwptb97, operation ingest
 
-bb humanlayer artifacts get --task 7bfe0493-13ba-46ea-a09d-fa9f278cbdd3 --file task.md --json
+bb rpi artifacts get --task 7bfe0493-13ba-46ea-a09d-fa9f278cbdd3 --file task.md --json
 currentVersion 2 includes "Live between-turn edit for Phase 3 review fix verification."
 
 bb thread output thr_wqwmwptb97
 second turn complete
 ```
 
-The live-check threads `thr_wqwmwptb97` and `thr_qnsbsvcp9k` were archived after verification, and the path-installed `humanlayer` plugin was removed.
+The live-check threads `thr_wqwmwptb97` and `thr_qnsbsvcp9k` were archived after verification, and the path-installed `rpi` plugin was removed.
 
 ## Deviations
 
 - The original Phase 3 implementation did not add a migration because Phase 1 already included the artifact columns it needed. Review fixes added `mirror_state` to track hydrate writes and observed disk SHAs.
 - `bb.sdk.files.write` accepted string content, not `Buffer`; hydrate writes text as UTF-8 strings and binary as base64 strings with `contentEncoding: "base64"`.
 - In bb managed worktrees `.git` is a file. Review fixes now resolve `gitdir:` and `commondir` before updating `info/exclude`, after checking the metadata root is under the host home and has `HEAD`.
-- Project-default managed-worktree launches can still have a null environment at the first dispatch. The requested wait branch is enabled and verified when the thread has an environment; `thread.active` and `hl_task_context` cover the null-environment first-dispatch case without blocking forever.
+- Project-default managed-worktree launches can still have a null environment at the first dispatch. The requested wait branch is enabled and verified when the thread has an environment; `thread.active` and `rpi_task_context` cover the null-environment first-dispatch case without blocking forever.
 
 ## Reviewer Open Items
 
@@ -211,7 +211,7 @@ Shipped:
 - Trash restore sorts `.trash/<name>.<version>.<ts>` numerically by version then timestamp.
 - Restore now applies the same case-insensitive live-name collision check as save and returns `conflict` without untombstoning.
 - Artifact viewer realtime follows latest unless the user explicitly selects a version.
-- Concurrent `hl_task_context` calls for a task share the same in-flight hydration promise.
+- Concurrent `rpi_task_context` calls for a task share the same in-flight hydration promise.
 
 Verification:
 

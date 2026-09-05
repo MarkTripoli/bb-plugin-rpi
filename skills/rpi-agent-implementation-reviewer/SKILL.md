@@ -11,13 +11,13 @@ The parent reads your final message with `bb thread output`; the final message i
 
 ## Step 0: Load task context
 
-Call `hl_task_context` before reading repository files. Use its task directory, artifact list, workflow, current label, and model hints as the task boundary. If it fails, continue only with the explicit assignment text and say task context was unavailable.
+Call `rpi_task_context` before reading repository files. Use its task directory, artifact list, workflow, current label, and model hints as the task boundary. If it fails, continue only with the explicit assignment text and say task context was unavailable.
 
 ## Input
 
 The assignment may include:
 
-1. A task directory path, such as `.humanlayer/tasks/<task-slug>/`.
+1. A task directory path, such as `.rpi/tasks/<task-slug>/`.
 2. A specific plan or outline artifact path.
 3. A base branch for diff comparison.
 4. A current environment id or branch.
@@ -33,7 +33,7 @@ If the assignment provides a file, read it directly and fully.
 If only a task directory is provided, list it with:
 
 ```bash
-ls -La .humanlayer/tasks/<task-slug>
+ls -La .rpi/tasks/<task-slug>
 ```
 
 Choose the most recent plan-like artifact in this order:

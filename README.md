@@ -1,24 +1,23 @@
-# bb-plugin-humanlayer
+# bb-plugin-rpi
 
-HumanLayer's task/session/artifact research-plan-implement (RPI) workflow,
-rebuilt as a bb plugin. bb owns threads, environments/worktrees, providers,
-permissions, and diffs; this plugin owns tasks, artifacts, versions, comments,
-auto-advance, notifications, and the RPI skills that drive the loop.
+An RPI (research-plan-implement) task/session/artifact workflow, built as a bb
+plugin. bb owns threads, environments/worktrees, providers, permissions, and
+diffs; this plugin owns tasks, artifacts, versions, comments, auto-advance,
+notifications, and the RPI skills that drive the loop.
 
-See [`PARITY.md`](./PARITY.md) for the exact feature-by-feature comparison
-against HumanLayer, including everything that is partial, omitted, or N/A and
-why.
+See [`FEATURES.md`](./FEATURES.md) for the full feature ledger, including
+everything that is partial, omitted, or N/A and why.
 
 ## Install
 
 ```
 npm install
 bb plugin install .
-bb plugin reload humanlayer
+bb plugin reload rpi
 ```
 
-Or install a published release: `bb plugin install npm:bb-plugin-humanlayer`
-or `bb plugin install git:https://github.com/<org>/bb-plugin-humanlayer.git@<tag>`.
+Or install a published release: `bb plugin install npm:bb-plugin-rpi`
+or `bb plugin install git:https://github.com/<org>/bb-plugin-rpi.git@<tag>`.
 
 ## The RPI loop
 
@@ -27,12 +26,12 @@ A task moves through **questions → research → design → plan → worktree s
 phase is a `rpi-<skill>` skill invoked as `/rpi-create-research` etc.; the
 task's artifacts (`task.md`, numbered research/design/plan docs,
 `pr-description.md`, ...) live in the plugin's SQLite database and mirror out
-to `.humanlayer/tasks/<slug>/` in the workspace so a fresh session can `Read`
+to `.rpi/tasks/<slug>/` in the workspace so a fresh session can `Read`
 them.
 
 ### From the UI
 
-Open **HumanLayer** in the sidebar, **Create task** (or press `T`), describe
+Open **RPI** in the sidebar, **Create task** (or press `T`), describe
 the work, pick a workflow type (`rpi`, `outline_only`, `prd_tdd`, `oneshot`,
 `freeform`), worktree timing (`now`/`later`/`never`), and permission mode, then
 **Create** to launch immediately or **Save draft** to launch later. The task
@@ -44,54 +43,54 @@ context-window gauge, and Proceed / Iterate / Fork / Interrupt controls.
 
 ```
 # Create and launch a task
-bb humanlayer tasks create --name "Add rate limiting" --project <projectId> \
+bb rpi tasks create --name "Add rate limiting" --project <projectId> \
   --prompt "Add a token-bucket rate limiter to the API gateway" --launch
 
 # List tasks and sessions
-bb humanlayer tasks list
-bb humanlayer sessions list --task <taskId>
+bb rpi tasks list
+bb rpi sessions list --task <taskId>
 
 # Drive a session by hand once its next step is parsed
-bb humanlayer proceed --thread <threadId>
+bb rpi proceed --thread <threadId>
 
 # Launch a specific RPI skill directly
-bb humanlayer launch-skill --task <taskId> --skill create-research --command-line "/rpi-create-research"
+bb rpi launch-skill --task <taskId> --skill create-research --command-line "/rpi-create-research"
 
 # Artifacts and comments
-bb humanlayer artifacts list --task <taskId>
-bb humanlayer artifacts get --task <taskId> --file 02-research-*.md
-bb humanlayer comments list --task <taskId> --file 02-research-*.md
+bb rpi artifacts list --task <taskId>
+bb rpi artifacts get --task <taskId> --file 02-research-*.md
+bb rpi comments list --task <taskId> --file 02-research-*.md
 
 # Recovery, notifications, workspace
-bb humanlayer launch-attempts --task <taskId>
-bb humanlayer notifications list
-bb humanlayer workspace --task <taskId>
+bb rpi launch-attempts --task <taskId>
+bb rpi notifications list
+bb rpi workspace --task <taskId>
 ```
 
-Every command accepts `--json` for scripting. Run `bb humanlayer` with no
+Every command accepts `--json` for scripting. Run `bb rpi` with no
 arguments (or an unknown subcommand) to print the full usage list.
 
 ## Settings
 
-**Settings → HumanLayer → Notifications**: enable/disable, per-kind sound and
+**Settings → RPI → Notifications**: enable/disable, per-kind sound and
 toast toggles (ready sessions, approvals, comments), volume, and the jump
 hotkey (`⌘⇧U` by default; not `⌘⇧J`, which Chromium reserves).
 
-**Settings → HumanLayer → Defaults**: global provider/model/reasoning-effort
+**Settings → RPI → Defaults**: global provider/model/reasoning-effort
 defaults for new tasks, plus a per-workflow-type override table (provider,
 model, reasoning, permission mode) so `rpi` tasks can default to a different
 model than a quick `oneshot`.
 
-**Settings → HumanLayer** (host-registered scalar settings): default workflow
+**Settings → RPI** (host-registered scalar settings): default workflow
 type, default worktree timing, default permission mode, auto-advance default,
 show task phase labels, diff style, default editor, phase tips and other tip
 toggles, confirm-before-interrupting-subagents, batch queue delivery
-(default off; see `PARITY.md`).
+(default off; see `FEATURES.md`).
 
 ## Model guidance
 
 Each phase skill's final-answer template (a fenced `/rpi-<skill> [args]` command
-block) is parsed deterministically, not with an LLM (Fable §7). A model that
+block) is parsed deterministically, not with an LLM. A model that
 does not reliably reproduce that exact template on request will finish the
 turn with no machine-readable next step.
 
@@ -114,7 +113,7 @@ extraction match, never on a Suggested-next fallback.
 This plugin does not pre-seed model ids anywhere (`prefs.defaults`,
 `prefs.workflowDefaults`, or the bb settings default-model keys all start
 empty/unset); the table above is guidance for what to pick in Settings ->
-HumanLayer -> Defaults, not a shipped default.
+RPI -> Defaults, not a shipped default.
 
 ## Notifications
 
@@ -123,7 +122,7 @@ gets a pending approval, or receives an inbound artifact comment - unless
 you're already viewing that session (sound only), auto-advance is about to
 launch the next phase for that transition (no toast, still launches), or the
 notification already fired for that exact event. `⌘⇧U` jumps to the oldest
-outstanding one; a synthetic `bb humanlayer notifications test --thread <id>`
+outstanding one; a synthetic `bb rpi notifications test --thread <id>`
 command exists for manually verifying delivery without touching real
 dedupe/suppression state.
 
@@ -131,44 +130,43 @@ dedupe/suppression state.
 
 | Key | Action |
 |---|---|
-| `T` | New task (while the HumanLayer panel is mounted and has focus, not while typing) |
+| `T` | New task (while the RPI panel is mounted and has focus, not while typing) |
 | `g` then `t` | Go to the tasks list (same scoping as `T`) |
 | `⌘E` | Archive the current task (confirms first) |
 | `⌘⇧U` | Jump to the oldest outstanding notified session (configurable, works anywhere in bb) |
-| `⌘⇧P` | bb's command palette - lists "HumanLayer: Open Artifacts / Open Scratch pad / Archive current task" |
+| `⌘⇧P` | bb's command palette - lists "RPI: Open Artifacts / Open Scratch pad / Archive current task" |
 
-`T` and `g t` are scoped to the HumanLayer panel's own root DOM element (a
+`T` and `g t` are scoped to the RPI panel's own root DOM element (a
 keydown listener on that element, not `document`), so they only fire while
 focus is somewhere inside the panel and never `preventDefault` on a keypress
 elsewhere in bb. `⌘E` has no panel root of its own to scope to (it is
 injected into bb's native thread header), so it stays gated on the session
 actually being viewed. All three share one hook (`usePanelHotkeys` in
-`ui/humanlayer.tsx`), no-op while focus is in an editable field
+`ui/rpi.tsx`), no-op while focus is in an editable field
 (`shouldHandleHotkey`), and skip a combo that collides with the configured
 jump hotkey so a rebound jump hotkey always wins. `⌘E` and the palette's
 archive action both ask for confirmation before archiving.
 
 ## Licensing
 
-This repository's code and skills (`skills/rpi-*`) are original rewrites of
-HumanLayer's workflow shape (step order, "read fully", "do not leak intent",
-final-answer template rules) in this project's own words - see
-`docs/research/01-research-humanlayer-system.md` and the plan docs for the
-research this was built from. HumanLayer's own skill/agent/hook source, kept
-only for local reference during development, lives outside this repository
-entirely (a sibling checkout, default path
-`../bb-plugin-humanlayer-hl-reference/`, overridable with `HL_REFERENCE_DIR`;
-see `tests/skills.test.ts`). At HEAD, this repository does not contain that
-material: it is **All Rights Reserved**, is never copied into `skills/`, and
-`package.json`'s `files` allowlist excludes `docs/` (along with `tests/`)
-from every published package regardless - verify with `npm run check:pack`
-after changes to either. **Release step:** an earlier commit in this
-repository's history contained `docs/hl-reference/` before it was moved out;
-before any public push, a maintainer must purge that material from git
-history (e.g. `git filter-repo --path docs/hl-reference --invert-paths`) as a
-deliberate, documented, one-time step. Do not rewrite history as a side effect
-of unrelated work. The notification chime (`assets/notification.mp3`) is
-synthesized for this project, not HumanLayer's asset.
+This repository's code and skills (`skills/rpi-*`) are original rewrites of a
+workflow shape (step order, "read fully", "do not leak intent", final-answer
+template rules) in this project's own words, researched from third-party
+reference material kept outside this repository entirely (a sibling checkout,
+default path `~/PersonalDevelopment/bb-plugin-rpi-reference/third-party`,
+overridable with `RPI_REFERENCE_DIR`; see `tests/skills.test.ts`). At HEAD,
+this repository does not contain that material: it is **All Rights
+Reserved**, is never copied into `skills/`, and `package.json`'s `files`
+allowlist excludes `docs/` (along with `tests/`) from every published package
+regardless - verify with `npm run check:pack` after changes to either.
+**Release step:** an early commit in this repository's history briefly
+vendored that third-party reference material into a docs subdirectory before
+it was moved out to the sibling checkout; before any public push, a
+maintainer must purge that commit from git history (`git log` for the exact
+historical path and commit; `git filter-repo --path <that path> --invert-paths`)
+as a deliberate, documented, one-time step. Do not rewrite history as a side
+effect of unrelated work. The notification chime (`assets/notification.mp3`)
+was synthesized for this project.
 
 ## Troubleshooting
 
@@ -200,16 +198,16 @@ Recover-launch row:
   Launch Attempts" instruction stays actionable).
 
 **A skill's Proceed button is disabled** - next-step extraction is
-deterministic (Fable §7): the final-answer block must be an exact
-`/rpi-<skill> [args]` (or legacy `/rpi:<skill>`) fenced `text` block. A
-freeform reply, a missing/renamed artifact reference, or a template the
-model altered will not parse; the session still finished, it just has no
-machine-readable next step (`no_next_step`; mini-class models drop this
-template more often, see "Model guidance" above). The thread header shows a
-**Suggested next** button in that case (and whenever extraction disagrees
-with what the workflow expects) instead of leaving you to guess; it launches
-the workflow's own next skill in one click. `bb humanlayer launch-skill` is
-still available for launching a different skill than the suggested one.
+deterministic: the final-answer block must be an exact `/rpi-<skill> [args]`
+(or legacy `/rpi:<skill>`) fenced `text` block. A freeform reply, a
+missing/renamed artifact reference, or a template the model altered will not
+parse; the session still finished, it just has no machine-readable next step
+(`no_next_step`; mini-class models drop this template more often, see "Model
+guidance" above). The thread header shows a **Suggested next** button in that
+case (and whenever extraction disagrees with what the workflow expects)
+instead of leaving you to guess; it launches the workflow's own next skill in
+one click. `bb rpi launch-skill` is still available for launching a different
+skill than the suggested one.
 
 ## Development
 

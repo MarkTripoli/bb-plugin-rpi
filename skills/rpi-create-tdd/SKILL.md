@@ -27,10 +27,10 @@ System Design must be approved before Program Design begins. Within each phase, 
 
 ## bb Task Setup
 
-0. Call `hl_task_context` before reading files, spawning child threads, or choosing an artifact path. Use its task directory, task slug, artifact manifest, repository, branch, thread id, provider, and model preferences. If it fails, stop.
-1. Use the task directory returned by the tool. Do not guess a sibling under `.humanlayer/tasks` from an old session or a remembered slug.
+0. Call `rpi_task_context` before reading files, spawning child threads, or choosing an artifact path. Use its task directory, task slug, artifact manifest, repository, branch, thread id, provider, and model preferences. If it fails, stop.
+1. Use the task directory returned by the tool. Do not guess a sibling under `.rpi/tasks` from an old session or a remembered slug.
 2. Locate this installed skill through the skills tier listing, then read reference files relative to this skill directory: `references/tdd_template.md`, `references/artifact_template.html`, `references/tdd_final_answer.md`, `references/tdd_final_answer.md`.
-3. After every artifact write or edit, call `hl_artifact_save` with the relative file name and keep the returned `::hl-artifact{...}` directive for the final answer.
+3. After every artifact write or edit, call `rpi_artifact_save` with the relative file name and keep the returned `::rpi-artifact{...}` directive for the final answer.
 
 ## Step 1: Understand the context
 
@@ -59,7 +59,7 @@ A PRD is helpful but not required. The design may start from a ticket and resear
 
 ## Step 2: Write the skeleton
 
-Write `NN-tdd-<slug>.md` in the task directory. Use `hl_next_artifact_number` and the template frontmatter fields.
+Write `NN-tdd-<slug>.md` in the task directory. Use `rpi_next_artifact_number` and the template frontmatter fields.
 
 The initial skeleton should contain only:
 
@@ -69,7 +69,7 @@ The initial skeleton should contain only:
 - A Patterns to Follow header.
 - What We're Not Doing only if there is already a meaningful technical non-goal.
 
-Save it with `hl_artifact_save`, then ask the first system-design question. Use one short orienting line and one decision question with options.
+Save it with `rpi_artifact_save`, then ask the first system-design question. Use one short orienting line and one decision question with options.
 
 ## Step 2b: First system-design question
 
@@ -128,7 +128,7 @@ Use data contracts when the shared schema is the important decision. Match the c
 
 ### HTML artifacts for complex system concepts
 
-When one concept needs combined annotations, side-by-side shapes, color, or layout, write a focused HTML artifact in the task directory as `diagram-<description>.html`. Read `references/artifact_template.html` first and use its small set of classes. Display it with a `::hl-artifact{...}` embed.
+When one concept needs combined annotations, side-by-side shapes, color, or layout, write a focused HTML artifact in the task directory as `diagram-<description>.html`. Read `references/artifact_template.html` first and use its small set of classes. Display it with a `::rpi-artifact{...}` embed.
 
 ## Step 4: System Design review gate
 
@@ -233,7 +233,7 @@ If the user raises fixes, apply them and save the artifact again. Do not read th
 
 When both System Design and Program Design are approved:
 
-- Save the TDD with `hl_artifact_save`.
+- Save the TDD with `rpi_artifact_save`.
 - Read `references/tdd_final_answer.md`.
 - Follow the template exactly. It points to the structure outline.
 - Include the saved artifact directive.
@@ -241,26 +241,26 @@ When both System Design and Program Design are approved:
 Use child threads only when a missing fact would change the artifact. Spawn independent assignments first, then wait for them and read their final messages:
 
 ```text
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-codebase-locator <assignment>"
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-codebase-analyzer <assignment>"
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-codebase-pattern-finder <assignment>"
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-web-search-researcher <assignment>"
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context preferences> --prompt "/rpi-agent-codebase-locator <assignment>"
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context preferences> --prompt "/rpi-agent-codebase-analyzer <assignment>"
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context preferences> --prompt "/rpi-agent-codebase-pattern-finder <assignment>"
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context preferences> --prompt "/rpi-agent-web-search-researcher <assignment>"
 bb thread wait <thread-id>
 bb thread output <thread-id>
 ```
 
 Role mapping: locator finds files and tests, analyzer explains current behavior, pattern finder finds local precedents, and web researcher checks external behavior or current documentation. The child thread's final message is the deliverable. Use only findings you have read from `bb thread output`.
 
-If a child thread or direct read discovers current-state facts that are missing or stale in the completed research artifact, fold those discoveries back into that research artifact before finalizing the TDD. Save the updated research artifact with `hl_artifact_save`, then continue the TDD from the corrected context.
+If a child thread or direct read discovers current-state facts that are missing or stale in the completed research artifact, fold those discoveries back into that research artifact before finalizing the TDD. Save the updated research artifact with `rpi_artifact_save`, then continue the TDD from the corrected context.
 
 ## Artifact and Reading Rules
 
 - Read task artifacts fully. Do not use partial reads for task files, user-mentioned files, or the artifact you are editing.
-- List task directories with `ls -La <task-dir>`. Avoid plain `ls`, `ls -l`, search, and glob expansion inside `.humanlayer/tasks` because the path may be a linked directory.
+- List task directories with `ls -La <task-dir>`. Avoid plain `ls`, `ls -l`, search, and glob expansion inside `.rpi/tasks` because the path may be a linked directory.
 - Do not read research-question artifacts during design, outline, or plan work. They guide the research phase only; use completed research instead.
 - Do not inspect unrelated task directories unless the user explicitly asks.
 - Treat failed artifact saves, failed comment calls, or unavailable task context as blockers. Do not work around them by writing untracked side files.
-- Use `hl_next_artifact_number` when creating a new numbered artifact. The file name format is `NN-<type>-<2-4-word-kebab-slug>.md`.
+- Use `rpi_next_artifact_number` when creating a new numbered artifact. The file name format is `NN-<type>-<2-4-word-kebab-slug>.md`.
 
 ## Markdown Formatting
 

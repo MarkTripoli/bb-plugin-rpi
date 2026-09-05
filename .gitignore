@@ -1,6 +1,5 @@
 dist/
 node_modules/
-# HumanLayer's original skills/agents/hooks (All Rights Reserved), reference-only, never shipped
-# or committed. Lives at ../bb-plugin-humanlayer-hl-reference/ (see tests/skills.test.ts and
-# HL_REFERENCE_DIR).
-docs/hl-reference/
+# Third-party reference material (All Rights Reserved), reference-only, never shipped or
+# committed. Lives outside this repo at RPI_REFERENCE_DIR, defaulting to
+# ~/PersonalDevelopment/bb-plugin-rpi-reference/third-party (see tests/skills.test.ts).

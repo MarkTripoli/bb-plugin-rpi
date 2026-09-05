@@ -52,7 +52,7 @@ export type NotificationEvent =
       approval?: ApprovalNotificationInfo | null;
       // Suggested-next hint (transitions.ts computeSuggestedNext), already rendered to a short
       // string by the caller. Only ever set for ready_for_input; carried into the toast body so
-      // the hl:notify toast surfaces the same "here's what to do next" affordance the UI shows.
+      // the rpi:notify toast surfaces the same "here's what to do next" affordance the UI shows.
       suggestedNextHint?: string | null;
     }
   | {
@@ -318,7 +318,7 @@ export async function decideAndPublishNotification(
   });
   recordNotificationDecision(db, event, kind, dedupeKey, decision);
   if (decision.sound || decision.toast) {
-    bb.realtime.publish("hl:notify", {
+    bb.realtime.publish("rpi:notify", {
       id: dedupeKey,
       kind,
       threadId: event.threadId,
@@ -455,7 +455,7 @@ export async function recoverReadyAfterFailedAdvance(
     sound || toast ? timestamp : null,
   );
   if (sound || toast) {
-    bb.realtime.publish("hl:notify", {
+    bb.realtime.publish("rpi:notify", {
       id: dedupeKey,
       kind: "ready_after_failed_advance",
       threadId: params.threadId,
@@ -496,7 +496,7 @@ export function publishSyntheticTestNotification(
     true,
   );
   if (sound || toast) {
-    bb.realtime.publish("hl:notify", {
+    bb.realtime.publish("rpi:notify", {
       id: dedupeKey,
       kind: "ready_for_input",
       threadId: params.threadId,
@@ -527,7 +527,7 @@ export function supersedeReadyRecoverNotification(bb: BbPluginApi, db: Database,
   // The toast is rendered with `id: dedupeKey` (see decideAndPublishNotification/
   // recoverReadyAfterFailedAdvance), not the internal notifications-table row id, so the dismiss
   // signal must carry dedupeKey too: that is the only id the frontend can actually dismiss by.
-  bb.realtime.publish("hl:notify", { kind: "dismiss", notificationId: row.id, dedupeKey: row.dedupeKey });
+  bb.realtime.publish("rpi:notify", { kind: "dismiss", notificationId: row.id, dedupeKey: row.dedupeKey });
   return true;
 }
 

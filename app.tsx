@@ -1,22 +1,22 @@
 import { definePluginApp } from "@get-bb/plugin-sdk/app";
 import {
-  HumanLayerArtifactDirective,
-  HumanLayerArtifactThreadPanel,
-  HumanLayerDefaultsSettings,
-  HumanLayerMinimapThreadPanel,
-  HumanLayerPanel,
-  HumanLayerNotificationSettings,
-  HumanLayerScratchThreadPanel,
-  HumanLayerThreadList,
-  HumanLayerTipsThreadPanel,
-  HumanLayerThreadHeaderAction,
-  HumanLayerWorkspaceThreadPanel,
-} from "./ui/humanlayer";
+  RpiArtifactDirective,
+  RpiArtifactThreadPanel,
+  RpiDefaultsSettings,
+  RpiMinimapThreadPanel,
+  RpiPanel,
+  RpiNotificationSettings,
+  RpiScratchThreadPanel,
+  RpiThreadList,
+  RpiTipsThreadPanel,
+  RpiThreadHeaderAction,
+  RpiWorkspaceThreadPanel,
+} from "./ui/rpi";
 
 // Palette actions run outside React (no useRpc/useBbNavigate available to them), so they call the
 // plugin's own RPC HTTP route directly, exactly as PluginRpcClient.call documents it doing.
 async function callPluginRpc(method: string, input: unknown) {
-  const response = await fetch(`/api/v1/plugins/humanlayer/rpc/${method}`, {
+  const response = await fetch(`/api/v1/plugins/rpi/rpc/${method}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(input ?? {}),
@@ -27,78 +27,78 @@ async function callPluginRpc(method: string, input: unknown) {
 
 export default definePluginApp((app) => {
   app.slots.navPanel({
-    id: "humanlayer",
-    title: "HumanLayer",
+    id: "rpi",
+    title: "RPI",
     icon: "Layers",
-    path: "humanlayer",
-    component: HumanLayerPanel,
+    path: "rpi",
+    component: RpiPanel,
   });
   app.slots.experimental_threadHeaderAction({
-    id: "humanlayer-session",
-    title: "HumanLayer session",
-    component: HumanLayerThreadHeaderAction,
+    id: "rpi-session",
+    title: "RPI session",
+    component: RpiThreadHeaderAction,
   });
   app.slots.threadPanelAction({
     id: "artifacts",
     title: "Artifacts",
     icon: "Code",
     layout: "flush",
-    component: HumanLayerArtifactThreadPanel,
+    component: RpiArtifactThreadPanel,
   });
   app.slots.threadPanelAction({
     id: "workspace",
     title: "Workspace",
     icon: "Folder",
     layout: "flush",
-    component: HumanLayerWorkspaceThreadPanel,
+    component: RpiWorkspaceThreadPanel,
   });
   app.slots.threadPanelAction({
     id: "scratch",
     title: "Scratch",
     icon: "EditFile",
     layout: "flush",
-    component: HumanLayerScratchThreadPanel,
+    component: RpiScratchThreadPanel,
   });
   app.slots.threadPanelAction({
     id: "minimap",
     title: "Minimap",
     icon: "GridView",
     layout: "flush",
-    component: HumanLayerMinimapThreadPanel,
+    component: RpiMinimapThreadPanel,
   });
   app.slots.threadPanelAction({
     id: "tips",
     title: "Tips",
     icon: "Lightbulb",
     layout: "flush",
-    component: HumanLayerTipsThreadPanel,
+    component: RpiTipsThreadPanel,
   });
   app.slots.messageDirective({
-    id: "hl-artifact",
-    component: HumanLayerArtifactDirective,
+    id: "rpi-artifact",
+    component: RpiArtifactDirective,
   });
   app.slots.settingsSection({
     id: "notifications",
     title: "Notifications",
-    component: HumanLayerNotificationSettings,
+    component: RpiNotificationSettings,
   });
   app.slots.settingsSection({
     id: "defaults",
     title: "Defaults",
-    component: HumanLayerDefaultsSettings,
+    component: RpiDefaultsSettings,
   });
   // Exclusive slot; ships last/optional per plan §2.7. The user can still pin bb's own list or
   // another provider under Settings → Appearance → Sidebar, and the component itself has a
   // "Use default list" toggle that renders `Original`.
   app.slots.experimental_threadList({
     id: "tasks",
-    title: "HumanLayer tasks",
+    title: "RPI tasks",
     description: "Groups task sessions under their task with a phase pill; other threads list below.",
-    component: HumanLayerThreadList,
+    component: RpiThreadList,
   });
   app.slots.commandPaletteAction({
     id: "open-artifacts",
-    title: "HumanLayer: Open Artifacts",
+    title: "RPI: Open Artifacts",
     isAvailable: (context) => context.threadId !== null,
     run: (context) => {
       context.openPanel({ actionId: "artifacts", title: "Artifacts" });
@@ -106,7 +106,7 @@ export default definePluginApp((app) => {
   });
   app.slots.commandPaletteAction({
     id: "open-scratch",
-    title: "HumanLayer: Open Scratch pad",
+    title: "RPI: Open Scratch pad",
     isAvailable: (context) => context.threadId !== null,
     run: (context) => {
       context.openPanel({ actionId: "scratch", title: "Scratch" });
@@ -114,7 +114,7 @@ export default definePluginApp((app) => {
   });
   app.slots.commandPaletteAction({
     id: "archive-task",
-    title: "HumanLayer: Archive current task",
+    title: "RPI: Archive current task",
     isAvailable: (context) => context.threadId !== null,
     run: async (context) => {
       if (!context.threadId) return;

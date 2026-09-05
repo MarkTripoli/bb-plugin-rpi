@@ -1,7 +1,7 @@
 // Asserts the published npm tarball actually ships dist/** (the built plugin) and never leaks
-// docs/ or tests/ (source-only / reference-only material, docs/hl-reference/ in particular is
-// HumanLayer's own All-Rights-Reserved reference material and must never be published or
-// committed; see LICENSE, README.md "Licensing", and AGENTS.md item 6).
+// docs/ or tests/ (source-only material; the design-record and third-party reference material
+// this repo researches from also live outside the tree entirely, see LICENSE, README.md
+// "Licensing", and AGENTS.md item 6).
 import { execFileSync } from "node:child_process";
 
 type PackEntry = { path: string };
@@ -22,11 +22,10 @@ function assertAbsent(prefix: string) {
 }
 
 assertPresent("dist");
-assertPresent("PARITY.md");
+assertPresent("FEATURES.md");
 assertPresent("LICENSE");
 assertPresent("README.md");
 assertAbsent("docs");
 assertAbsent("tests");
-assertAbsent("docs/hl-reference");
 
-console.log(`npm pack contains ${paths.length} entries; dist/PARITY.md/LICENSE/README.md present, docs/ and tests/ absent.`);
+console.log(`npm pack contains ${paths.length} entries; dist/FEATURES.md/LICENSE/README.md present, docs/ and tests/ absent.`);

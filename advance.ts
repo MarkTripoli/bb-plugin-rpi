@@ -33,7 +33,7 @@ export async function proceed(
     db,
     `
     SELECT thread_id AS threadId, task_id AS taskId, label, skill_id AS skillId, launched_by AS launchedBy,
-      forked_from_thread_id AS forkedFromThreadId, hl_status AS hlStatus, hl_status_at AS hlStatusAt,
+      forked_from_thread_id AS forkedFromThreadId, rpi_status AS rpiStatus, rpi_status_at AS rpiStatusAt,
       had_turn AS hadTurn, interrupted, blocked_reason AS blockedReason, next_step_json AS nextStepJson,
       summary_json AS summaryJson, advanced_at AS advancedAt, advanced_attempt_id AS advancedAttemptId, hydrated_at AS hydratedAt,
       last_reconcile_seq AS lastReconcileSeq, last_summarized_turn_key AS lastSummarizedTurnKey,
@@ -95,7 +95,7 @@ export async function iterateInFreshSession(
     `
     SELECT sessions.thread_id AS threadId, sessions.task_id AS taskId, sessions.label, sessions.skill_id AS skillId,
       sessions.launched_by AS launchedBy, sessions.forked_from_thread_id AS forkedFromThreadId,
-      sessions.hl_status AS hlStatus, sessions.hl_status_at AS hlStatusAt, sessions.had_turn AS hadTurn,
+      sessions.rpi_status AS rpiStatus, sessions.rpi_status_at AS rpiStatusAt, sessions.had_turn AS hadTurn,
       sessions.interrupted, sessions.blocked_reason AS blockedReason, sessions.next_step_json AS nextStepJson,
       sessions.summary_json AS summaryJson, sessions.advanced_at AS advancedAt, sessions.advanced_attempt_id AS advancedAttemptId, sessions.hydrated_at AS hydratedAt,
       sessions.last_reconcile_seq AS lastReconcileSeq, sessions.last_summarized_turn_key AS lastSummarizedTurnKey,
@@ -168,7 +168,7 @@ async function validateAdvance(
 > {
   const existing = successorFor(db, session.threadId);
   if (session.advancedAt !== null && existing) return { ok: false, error: new LaunchRejectedError("launch_blocked", "Session already advanced.") };
-  if (session.hlStatus !== "ready_for_input") return { ok: false, error: new LaunchRejectedError("session_running", "session running") };
+  if (session.rpiStatus !== "ready_for_input") return { ok: false, error: new LaunchRejectedError("session_running", "session running") };
   if (task.archived) return { ok: false, error: new LaunchRejectedError("task_archived", "Task is archived.") };
   if (session.blockedReason) return { ok: false, error: new LaunchRejectedError("pending_interaction", "Session has pending interactions.") };
   if (await hasPendingInteractions(bb, session.threadId)) return { ok: false, error: new LaunchRejectedError("pending_interaction", "Session has pending interactions.") };
@@ -238,7 +238,7 @@ function readSessionForAdvance(db: Database, threadId: string) {
     db,
     `
     SELECT thread_id AS threadId, task_id AS taskId, label, skill_id AS skillId, launched_by AS launchedBy,
-      forked_from_thread_id AS forkedFromThreadId, hl_status AS hlStatus, hl_status_at AS hlStatusAt,
+      forked_from_thread_id AS forkedFromThreadId, rpi_status AS rpiStatus, rpi_status_at AS rpiStatusAt,
       had_turn AS hadTurn, interrupted, blocked_reason AS blockedReason, next_step_json AS nextStepJson,
       summary_json AS summaryJson, advanced_at AS advancedAt, advanced_attempt_id AS advancedAttemptId, hydrated_at AS hydratedAt,
       last_reconcile_seq AS lastReconcileSeq, last_summarized_turn_key AS lastSummarizedTurnKey,

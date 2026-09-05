@@ -240,7 +240,7 @@ function displayHotkey(input: string) {
 }
 
 function ensureAudio() {
-  if (!notificationAudio) notificationAudio = new Audio("/api/v1/plugins/humanlayer/http/sound/notification.mp3");
+  if (!notificationAudio) notificationAudio = new Audio("/api/v1/plugins/rpi/http/sound/notification.mp3");
   return notificationAudio;
 }
 
@@ -296,7 +296,7 @@ function shouldHandleHotkey(event: KeyboardEvent, hotkey: string) {
 // Shared by every panel-local hotkey owner (T, g-then-t, ⌘E): the configured jump hotkey (default
 // ⌘⇧U) always wins a collision, so a user who rebinds it to e.g. "t" never fights this panel's own
 // bindings. Panels that only need the collision check (not the jump hotkey's own global behavior)
-// use this instead of duplicating HumanLayerNotificationBridge's full owner-queue machinery.
+// use this instead of duplicating RpiNotificationBridge's full owner-queue machinery.
 function useConfiguredJumpHotkey() {
   const rpc = useRpc<RpcContract>();
   const [jumpHotkey, setJumpHotkey] = useState(DEFAULT_NOTIFICATION_PREFS.jumpHotkey);
@@ -323,7 +323,7 @@ function usePanelHotkeys(rootRef: RefObject<HTMLElement | null>, handler: (event
   }, deps);
 }
 
-export function HumanLayerNotificationBridge() {
+export function RpiNotificationBridge() {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
   const { threadId } = useBbContext();
@@ -339,8 +339,8 @@ export function HumanLayerNotificationBridge() {
     refetchPrefs();
   }, []);
   useRealtime("prefs", refetchPrefs);
-  useRealtime("hl:sessions", () => undefined);
-  useRealtime("hl:comments", () => undefined);
+  useRealtime("rpi:sessions", () => undefined);
+  useRealtime("rpi:comments", () => undefined);
 
   // First-mounted bridge wins the jump hotkey; later instances (e.g. a brief remount overlap)
   // never register. Handoff on unmount is automatic since ownership is read live from this queue.
@@ -358,7 +358,7 @@ export function HumanLayerNotificationBridge() {
       if (audioUnlocked) return;
       // Actually probe playback (muted) inside the gesture handler instead of assuming success;
       // only the resolved play() promise unlocks sound, a rejection keeps it locked and surfaces
-      // a hint in settings (see HumanLayerNotificationSettings / useAudioUnlockBlocked).
+      // a hint in settings (see RpiNotificationSettings / useAudioUnlockBlocked).
       const audio = ensureAudio();
       const priorVolume = audio.volume;
       audio.volume = 0;
@@ -404,7 +404,7 @@ export function HumanLayerNotificationBridge() {
       rpc.call("listSessions", { taskId: null }).then(({ sessions }) => {
         const readyThreadIds = new Set(
           sessions
-            .filter((session) => session.hlStatus === "ready_for_input" || session.hlStatus === "needs_approval")
+            .filter((session) => session.rpiStatus === "ready_for_input" || session.rpiStatus === "needs_approval")
             .map((session) => session.threadId),
         );
         while (pendingToastQueue.length > 0) {
@@ -418,7 +418,7 @@ export function HumanLayerNotificationBridge() {
         }
         const targets = sessions
           .filter((session) => readyThreadIds.has(session.threadId))
-          .sort((a, b) => a.hlStatusAt - b.hlStatusAt);
+          .sort((a, b) => a.rpiStatusAt - b.rpiStatusAt);
         if (targets.length === 0) return;
         hotkeyCycleIndex %= targets.length;
         const target = targets[hotkeyCycleIndex];
@@ -430,7 +430,7 @@ export function HumanLayerNotificationBridge() {
     return () => document.removeEventListener("keydown", onKeyDown, { capture: true });
   }, [navigate, prefs.jumpHotkey, rpc]);
 
-  useRealtime("hl:notify", (payload) => {
+  useRealtime("rpi:notify", (payload) => {
     const signal = payload as NotifySignal;
     // A later action (e.g. adopting an orphaned thread) superseded an earlier recovery toast;
     // dismiss it instead of leaving stale "Retry it from Launch Attempts" instructions visible.
@@ -480,7 +480,7 @@ function nextStep(session: Pick<SessionView, "nextStepJson">) {
 // Decision logic (precondition gating, extraction parsing, comparison against the workflow's
 // canonical next skill) lives in transitions.ts (suggestedNextForSession), covered by
 // tests/transitions.test.ts; this is just the UI's call site.
-function suggestedNextFor(session: Pick<SessionView, "hlStatus" | "blockedReason" | "completedTurnKey" | "lastSummarizedTurnKey" | "label" | "workflowType" | "nextStepJson">): SuggestedNext | null {
+function suggestedNextFor(session: Pick<SessionView, "rpiStatus" | "blockedReason" | "completedTurnKey" | "lastSummarizedTurnKey" | "label" | "workflowType" | "nextStepJson">): SuggestedNext | null {
   return suggestedNextForSession(session);
 }
 
@@ -503,7 +503,7 @@ function TaskTable({ tasks }: { tasks: TaskRow[] }) {
             <tr
               key={task.id}
               className="cursor-pointer border-b border-border last:border-b-0 hover:bg-card/70"
-              onClick={() => navigate.toPluginPanel("humanlayer", { subPath: `tasks/${task.id}` })}
+              onClick={() => navigate.toPluginPanel("rpi", { subPath: `tasks/${task.id}` })}
             >
               <td className="px-4 py-3">
                 <div className="flex flex-col gap-1">
@@ -564,7 +564,7 @@ function TaskBoard({ tasks }: { tasks: TaskRow[] }) {
             {groups[column.id].map((task) => (
               <article
                 key={task.id}
-                onClick={() => navigate.toPluginPanel("humanlayer", { subPath: `tasks/${task.id}` })}
+                onClick={() => navigate.toPluginPanel("rpi", { subPath: `tasks/${task.id}` })}
                 className="cursor-pointer rounded-lg border border-border bg-background/70 p-3 transition hover:border-foreground/40"
               >
                 <div className="space-y-2">
@@ -728,7 +728,7 @@ const PHASE_TIPS: Record<string, string[]> = {
     "Proceed manually to workspace setup.",
   ],
   "worktree-setup": [
-    "Use .humanlayer/workspace.json for the requested shape.",
+    "Use .rpi/workspace.json for the requested shape.",
     "Let bb own managed worktree creation.",
     "Run copyGlobs and setupCommand only inside the selected worktree thread.",
   ],
@@ -1010,7 +1010,7 @@ function NewTaskPage({
               <button
                 key={task.id}
                 type="button"
-                onClick={() => navigate.toPluginPanel("humanlayer", { subPath: "tasks" })}
+                onClick={() => navigate.toPluginPanel("rpi", { subPath: "tasks" })}
                 className="flex w-full items-center justify-between rounded-lg border border-border bg-card/70 px-4 py-3 text-left transition hover:border-foreground/40"
               >
                 <div className="space-y-1">
@@ -1123,7 +1123,7 @@ function SessionsTable({ sessions }: { sessions: SessionView[] }) {
               className="cursor-pointer border-b border-border last:border-b-0 hover:bg-background/70"
               onClick={() => navigate.toThread(session.threadId)}
             >
-              <td className="px-4 py-3"><SessionStatus status={session.hlStatus} /></td>
+              <td className="px-4 py-3"><SessionStatus status={session.rpiStatus} /></td>
               <td className="px-4 py-3">
                 <div className="flex flex-col gap-1">
                   <span className="font-medium text-foreground">{session.title ?? session.threadId}</span>
@@ -1204,7 +1204,7 @@ function TipsPanel({ taskId, label }: { taskId: string; label: string | null | u
   useEffect(() => {
     refetch();
   }, [taskId]);
-  useRealtime("hl:ui-state", refetch);
+  useRealtime("rpi:ui-state", refetch);
 
   if (hidden) {
     return (
@@ -1250,7 +1250,7 @@ function WorkspacePanel({ taskId }: { taskId: string }) {
   useEffect(() => {
     refetch();
   }, [taskId]);
-  useRealtime("hl:sessions", refetch);
+  useRealtime("rpi:sessions", refetch);
   if (!workspace) return <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">Loading workspace...</div>;
   return (
     <div className="space-y-3">
@@ -1434,7 +1434,7 @@ function MinimapPanel({ taskId }: { taskId: string }) {
   useEffect(() => {
     refetch();
   }, [taskId]);
-  useRealtime("hl:sessions", refetch);
+  useRealtime("rpi:sessions", refetch);
 
   const ordered = useMemo(() => [...sessions].sort((a, b) => a.createdAt - b.createdAt), [sessions]);
   if (ordered.length === 0) return <div className="p-4 text-sm text-muted-foreground">No sessions yet.</div>;
@@ -1443,7 +1443,7 @@ function MinimapPanel({ taskId }: { taskId: string }) {
       <h3 className="text-sm font-semibold text-foreground">Minimap</h3>
       <div className="flex flex-wrap gap-2">
         {ordered.map((session, index) => {
-          const meta = statusMeta(session.hlStatus);
+          const meta = statusMeta(session.rpiStatus);
           return (
             <button
               key={session.threadId}
@@ -1494,7 +1494,7 @@ function ArtifactRow({
   onDelete: () => void;
   onRestore: () => void;
 }) {
-  const path = `/plugins/humanlayer/tasks/${encodeURIComponent(artifact.taskId)}/artifacts/${encodeURIComponent(artifact.fileName)}`;
+  const path = `/plugins/rpi/tasks/${encodeURIComponent(artifact.taskId)}/artifacts/${encodeURIComponent(artifact.fileName)}`;
   return (
     <div className={cn("flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2", selected && "border-foreground")}>
       <button type="button" onClick={onSelect} className="flex min-w-0 flex-1 items-center gap-2 text-left">
@@ -1583,7 +1583,7 @@ function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileN
       cancelled = true;
     };
   }, [fileName, taskId, pinnedVersion, rpc, showResolved]);
-  useRealtime("hl:artifacts", (payload) => {
+  useRealtime("rpi:artifacts", (payload) => {
     if (!payload || typeof payload !== "object" || (payload as { taskId?: unknown }).taskId !== taskId) return;
     void Promise.all([
       rpc.call("listArtifactVersions", { taskId, fileName }),
@@ -1603,7 +1603,7 @@ function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileN
       }
     });
   });
-  useRealtime("hl:comments", (payload) => {
+  useRealtime("rpi:comments", (payload) => {
     if (!artifact || !payload || typeof payload !== "object" || (payload as { artifactId?: unknown }).artifactId !== artifact.id) return;
     void rpc.call("listComments", { artifactId: artifact.id, includeResolved: showResolved, offset: 0 }).then((result) => {
       setCommentThreads(result.threads);
@@ -1906,7 +1906,7 @@ function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFi
     refetch();
   }, [taskId, initialFileName]);
   useRealtime("artifacts", refetch);
-  useRealtime("hl:artifacts", refetch);
+  useRealtime("rpi:artifacts", refetch);
 
   const liveArtifacts = useMemo(() => artifacts.filter((artifact) => !artifact.isDeleted), [artifacts]);
   const deletedArtifacts = useMemo(() => artifacts.filter((artifact) => artifact.isDeleted), [artifacts]);
@@ -2000,6 +2000,7 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
   const [workspace, setWorkspace] = useState<TaskWorkspaceState | null>(null);
   const [sessions, setSessions] = useState<SessionView[]>([]);
   const [tab, setTab] = useState<"sessions" | "artifacts" | "workspace" | "auto-advance" | "scratch" | "minimap" | "tips">(artifactFileName ? "artifacts" : "sessions");
+  const [uiState, setUiState] = useState<TaskUiState | null>(null);
 
   const refetch = () => {
     Promise.all([
@@ -2014,12 +2015,16 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
 
   useEffect(() => {
     refetch();
+    rpc.call("getTaskUiState", { taskId }).then(setUiState);
   }, [taskId]);
   useEffect(() => {
     if (artifactFileName) setTab("artifacts");
   }, [artifactFileName]);
   useRealtime("tasks", refetch);
-  useRealtime("hl:sessions", refetch);
+  useRealtime("rpi:sessions", refetch);
+  useRealtime("rpi:ui-state", () => {
+    rpc.call("getTaskUiState", { taskId }).then(setUiState);
+  });
 
   if (!task || !workspace) {
     return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
@@ -2037,12 +2042,27 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
     <div className="space-y-4">
       <button
         type="button"
-        onClick={() => navigate.toPluginPanel("humanlayer", { subPath: "" })}
+        onClick={() => navigate.toPluginPanel("rpi", { subPath: "" })}
         className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
       >
         <Icon name="ChevronLeft" className="size-4" />
         Tasks
       </button>
+      {uiState?.legacyTaskDirWarning ? (
+        <div className="flex items-start justify-between gap-3 rounded-md border border-border bg-card p-3 text-sm text-foreground">
+          <span>
+            Task files are under the legacy directory; run <code>git mv {uiState.legacyTaskDirName} .rpi</code> in the repo.
+          </span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={async () => setUiState(await rpc.call("dismissLegacyTaskDirWarning", { taskId }))}
+          >
+            Dismiss
+          </Button>
+        </div>
+      ) : null}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="space-y-2">
           <h2 className="text-2xl font-semibold tracking-tight text-foreground">{task.name}</h2>
@@ -2113,7 +2133,7 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
   );
 }
 
-export function HumanLayerArtifactThreadPanel({ threadId, params }: { threadId: string; params?: unknown }) {
+export function RpiArtifactThreadPanel({ threadId, params }: { threadId: string; params?: unknown }) {
   const rpc = useRpc<RpcContract>();
   const [session, setSession] = useState<SessionView | null | undefined>(undefined);
   const initialFileName = typeof params === "object" && params !== null && "fileName" in params ? String((params as { fileName?: unknown }).fileName ?? "") : null;
@@ -2123,7 +2143,7 @@ export function HumanLayerArtifactThreadPanel({ threadId, params }: { threadId: 
   }, [rpc, threadId]);
 
   if (session === undefined) return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
-  if (!session) return <div className="p-4 text-sm text-muted-foreground">Not a HumanLayer task session</div>;
+  if (!session) return <div className="p-4 text-sm text-muted-foreground">Not an RPI task session</div>;
   return (
     <div className="h-full min-h-0 p-3">
       <ArtifactsPanel taskId={session.taskId} initialFileName={initialFileName} />
@@ -2131,7 +2151,7 @@ export function HumanLayerArtifactThreadPanel({ threadId, params }: { threadId: 
   );
 }
 
-export function HumanLayerWorkspaceThreadPanel({ threadId }: { threadId: string }) {
+export function RpiWorkspaceThreadPanel({ threadId }: { threadId: string }) {
   const rpc = useRpc<RpcContract>();
   const [session, setSession] = useState<SessionView | null | undefined>(undefined);
 
@@ -2140,7 +2160,7 @@ export function HumanLayerWorkspaceThreadPanel({ threadId }: { threadId: string 
   }, [rpc, threadId]);
 
   if (session === undefined) return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
-  if (!session) return <div className="p-4 text-sm text-muted-foreground">Not a HumanLayer task session</div>;
+  if (!session) return <div className="p-4 text-sm text-muted-foreground">Not an RPI task session</div>;
   return (
     <div className="h-full min-h-0 overflow-auto p-3">
       <WorkspacePanel taskId={session.taskId} />
@@ -2148,7 +2168,7 @@ export function HumanLayerWorkspaceThreadPanel({ threadId }: { threadId: string 
   );
 }
 
-export function HumanLayerTipsThreadPanel({ threadId }: { threadId: string }) {
+export function RpiTipsThreadPanel({ threadId }: { threadId: string }) {
   const rpc = useRpc<RpcContract>();
   const [session, setSession] = useState<SessionView | null | undefined>(undefined);
 
@@ -2157,7 +2177,7 @@ export function HumanLayerTipsThreadPanel({ threadId }: { threadId: string }) {
   }, [rpc, threadId]);
 
   if (session === undefined) return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
-  if (!session) return <div className="p-4 text-sm text-muted-foreground">Not a HumanLayer task session</div>;
+  if (!session) return <div className="p-4 text-sm text-muted-foreground">Not an RPI task session</div>;
   return (
     <div className="h-full min-h-0 overflow-auto p-3">
       <TipsPanel taskId={session.taskId} label={session.label} />
@@ -2165,7 +2185,7 @@ export function HumanLayerTipsThreadPanel({ threadId }: { threadId: string }) {
   );
 }
 
-export function HumanLayerScratchThreadPanel({ threadId }: { threadId: string }) {
+export function RpiScratchThreadPanel({ threadId }: { threadId: string }) {
   const rpc = useRpc<RpcContract>();
   const [session, setSession] = useState<SessionView | null | undefined>(undefined);
 
@@ -2174,7 +2194,7 @@ export function HumanLayerScratchThreadPanel({ threadId }: { threadId: string })
   }, [rpc, threadId]);
 
   if (session === undefined) return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
-  if (!session) return <div className="p-4 text-sm text-muted-foreground">Not a HumanLayer task session</div>;
+  if (!session) return <div className="p-4 text-sm text-muted-foreground">Not an RPI task session</div>;
   return (
     <div className="h-full min-h-0 overflow-auto p-3">
       <ScratchPadPanel taskId={session.taskId} />
@@ -2182,7 +2202,7 @@ export function HumanLayerScratchThreadPanel({ threadId }: { threadId: string })
   );
 }
 
-export function HumanLayerMinimapThreadPanel({ threadId }: { threadId: string }) {
+export function RpiMinimapThreadPanel({ threadId }: { threadId: string }) {
   const rpc = useRpc<RpcContract>();
   const [session, setSession] = useState<SessionView | null | undefined>(undefined);
 
@@ -2191,7 +2211,7 @@ export function HumanLayerMinimapThreadPanel({ threadId }: { threadId: string })
   }, [rpc, threadId]);
 
   if (session === undefined) return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
-  if (!session) return <div className="p-4 text-sm text-muted-foreground">Not a HumanLayer task session</div>;
+  if (!session) return <div className="p-4 text-sm text-muted-foreground">Not an RPI task session</div>;
   return (
     <div className="h-full min-h-0 overflow-auto p-3">
       <MinimapPanel taskId={session.taskId} />
@@ -2199,7 +2219,7 @@ export function HumanLayerMinimapThreadPanel({ threadId }: { threadId: string })
   );
 }
 
-export function HumanLayerArtifactDirective({ attributes, source }: { attributes: Readonly<Record<string, string>>; source: string }) {
+export function RpiArtifactDirective({ attributes, source }: { attributes: Readonly<Record<string, string>>; source: string }) {
   const navigate = useBbNavigate();
   const taskId = attributes.task;
   const fileName = attributes.file;
@@ -2210,7 +2230,7 @@ export function HumanLayerArtifactDirective({ attributes, source }: { attributes
       title: fileName,
       params: { taskId, fileName },
     });
-    if (!accepted) navigate.toPluginPanel("humanlayer", { subPath: `tasks/${taskId}/artifacts/${encodeURIComponent(fileName)}` });
+    if (!accepted) navigate.toPluginPanel("rpi", { subPath: `tasks/${taskId}/artifacts/${encodeURIComponent(fileName)}` });
   };
   return (
     <button type="button" onClick={open} className="inline-flex items-center gap-2 rounded-md border border-border bg-card px-2 py-1 text-sm font-medium text-foreground">
@@ -2232,7 +2252,7 @@ function otherThreadGlyph(thread: { hasPendingInteraction: boolean; isUnread: bo
   return { icon: "Circle" as const, className: "text-muted-foreground" };
 }
 
-export function HumanLayerThreadList({ activeThreadId, isCompactViewport, onNavigate, Original }: PluginThreadListProps) {
+export function RpiThreadList({ activeThreadId, isCompactViewport, onNavigate, Original }: PluginThreadListProps) {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
   const sidebar = experimental_useSidebarThreads();
@@ -2253,13 +2273,13 @@ export function HumanLayerThreadList({ activeThreadId, isCompactViewport, onNavi
     refetch();
   }, []);
   useRealtime("tasks", refetch);
-  useRealtime("hl:sessions", refetch);
+  useRealtime("rpi:sessions", refetch);
 
   if (useDefault) {
     return (
       <div className="flex h-full min-h-0 flex-col">
         <button type="button" onClick={() => setUseDefault(false)} className="px-3 py-1.5 text-left text-[11px] uppercase tracking-[0.2em] text-muted-foreground hover:text-foreground">
-          Use HumanLayer list
+          Use RPI list
         </button>
         <div className="min-h-0 flex-1"><Original /></div>
       </div>
@@ -2301,7 +2321,7 @@ export function HumanLayerThreadList({ activeThreadId, isCompactViewport, onNavi
               .sort((a, b) => b.updatedAt - a.updatedAt)
               .map((thread) => {
                 const session = sessionsByThread.get(thread.id)!;
-                const meta = statusMeta(session.hlStatus);
+                const meta = statusMeta(session.rpiStatus);
                 return (
                   <button
                     key={thread.id}
@@ -2369,7 +2389,7 @@ function NotificationCheckbox({
   );
 }
 
-export function HumanLayerNotificationSettings() {
+export function RpiNotificationSettings() {
   const rpc = useRpc<RpcContract>();
   const [prefs, setPrefs] = useState<Prefs["notifications"]>(DEFAULT_NOTIFICATION_PREFS);
   const audioUnlockBlocked = useAudioUnlockBlocked();
@@ -2395,7 +2415,7 @@ export function HumanLayerNotificationSettings() {
     <div className="space-y-4">
       <div>
         <h2 className="text-sm font-semibold uppercase tracking-[0.24em] text-foreground">Notifications</h2>
-        <p className="mt-1 text-sm text-muted-foreground">Cmd Shift J is reserved by Chromium, so HumanLayer uses Cmd Shift U by default.</p>
+        <p className="mt-1 text-sm text-muted-foreground">Cmd Shift J is reserved by Chromium, so RPI uses Cmd Shift U by default.</p>
       </div>
       <div className="grid gap-3 lg:grid-cols-2">
         <NotificationCheckbox label="Enable notifications" checked={prefs.enabled} onChange={(checked) => save({ ...prefs, enabled: checked })} />
@@ -2431,7 +2451,7 @@ export function HumanLayerNotificationSettings() {
         <Icon name="Play" className="size-4" />
         Test sound
       </Button>
-      <HumanLayerNotificationBridge />
+      <RpiNotificationBridge />
     </div>
   );
 }
@@ -2446,7 +2466,7 @@ const WORKFLOW_TYPE_OPTIONS: Array<{ value: WorkflowType; label: string }> = [
 
 const EMPTY_WORKFLOW_OVERRIDE: WorkflowOverride = {};
 
-export function HumanLayerDefaultsSettings() {
+export function RpiDefaultsSettings() {
   const rpc = useRpc<RpcContract>();
   const [prefs, setPrefs] = useState<Prefs | null>(null);
 
@@ -2543,7 +2563,7 @@ export function HumanLayerDefaultsSettings() {
   );
 }
 
-export function HumanLayerThreadHeaderAction({ threadId }: { threadId: string; projectId: string; isCompactViewport: boolean }) {
+export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectId: string; isCompactViewport: boolean }) {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
   const { values: settings } = useSettings();
@@ -2583,10 +2603,10 @@ export function HumanLayerThreadHeaderAction({ threadId }: { threadId: string; p
       void rpc.call("setViewingSession", { threadId, viewing: false });
     };
   }, [threadId]);
-  useRealtime("hl:sessions", refetch);
-  useRealtime("hl:ui-state", refetch);
+  useRealtime("rpi:sessions", refetch);
+  useRealtime("rpi:ui-state", refetch);
 
-  // Archive-current-task hotkey (⌘E), gated on `session` so it is only live while a HumanLayer
+  // Archive-current-task hotkey (⌘E), gated on `session` so it is only live while an RPI
   // task session is the thread actually being viewed. Scoped to this component's own rendered
   // root (`actionRootRef`, set on the wrapping div below) through the same `usePanelHotkeys` owner
   // pattern T/g-t use on their own panel root, not `document`/`document.documentElement` +
@@ -2601,7 +2621,7 @@ export function HumanLayerThreadHeaderAction({ threadId }: { threadId: string; p
     if (!shouldHandleHotkey(event, "mod+e")) return;
     event.preventDefault();
     if (!window.confirm("Archive this task? Sessions stay but the task leaves the active list.")) return;
-    void rpc.call("archiveTask", { taskId: session.taskId }).then(() => navigate.toPluginPanel("humanlayer", { subPath: "" }));
+    void rpc.call("archiveTask", { taskId: session.taskId }).then(() => navigate.toPluginPanel("rpi", { subPath: "" }));
   }, [session, jumpHotkeyForArchive, rpc, navigate]);
 
   if (!session) return null;
@@ -2612,11 +2632,11 @@ export function HumanLayerThreadHeaderAction({ threadId }: { threadId: string; p
 
   return (
     <div ref={actionRootRef} className="flex items-center gap-2">
-      <HumanLayerNotificationBridge />
+      <RpiNotificationBridge />
       {settings?.showTaskPhaseLabels === false ? null : (
         <span className={pillClassName(session.label ? "step" : "ghost")}>{session.label ?? "freeform"}</span>
       )}
-      <SessionStatus status={session.hlStatus} />
+      <SessionStatus status={session.rpiStatus} />
       <ContextGauge usage={session.contextUsage} />
       {gauge?.warn && !contextWarningDismissed ? (
         <span className="inline-flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning">
@@ -2732,7 +2752,7 @@ function SidebarSummary({
   );
 }
 
-export function HumanLayerPanel({ subPath }: { subPath: string }) {
+export function RpiPanel({ subPath }: { subPath: string }) {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
   const [tasks, setTasks] = useState<TaskRow[]>([]);
@@ -2774,7 +2794,7 @@ export function HumanLayerPanel({ subPath }: { subPath: string }) {
     }
     setView("tasks");
   }, [subPath]);
-  useRealtime("hl:sessions", refetch);
+  useRealtime("rpi:sessions", refetch);
 
   const visibleTasks = useMemo(() => {
     if (view === "drafts") return tasks.filter((task) => task.isDraft);
@@ -2783,10 +2803,10 @@ export function HumanLayerPanel({ subPath }: { subPath: string }) {
 
   const onSwitch = (next: "tasks" | "drafts" | "new") => {
     if (next === "new") {
-      navigate.toPluginPanel("humanlayer", { subPath: "new" });
+      navigate.toPluginPanel("rpi", { subPath: "new" });
       return;
     }
-    navigate.toPluginPanel("humanlayer", { subPath: next === "tasks" ? "" : "drafts" });
+    navigate.toPluginPanel("rpi", { subPath: next === "tasks" ? "" : "drafts" });
   };
 
   // T (new task) and the g-then-t chord (go to tasks) while this panel has focus. Scoped to this
@@ -2830,10 +2850,10 @@ export function HumanLayerPanel({ subPath }: { subPath: string }) {
 
   return (
     <div ref={panelRootRef} className="flex h-full min-h-0 flex-col gap-4 overflow-hidden p-4">
-      <HumanLayerNotificationBridge />
+      <RpiNotificationBridge />
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold tracking-tight text-foreground">HumanLayer</h1>
+          <h1 className="text-lg font-semibold tracking-tight text-foreground">RPI</h1>
           <p className="text-xs text-muted-foreground">Tasks, drafts, and phase planning inside bb.</p>
         </div>
         <Button type="button" onClick={() => onSwitch("new")} className="h-10 px-4 text-xs uppercase tracking-[0.2em]">

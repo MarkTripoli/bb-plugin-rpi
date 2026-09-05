@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mapSourceRefToBaseBranch, mergeWorkspaceConfigs, getWorkspaceView, validateWorkspaceForWorktreeLaunch } from "../workspace";
+import { findLegacyTaskDirTaskIds, mapSourceRefToBaseBranch, mergeWorkspaceConfigs, getWorkspaceView, validateWorkspaceForWorktreeLaunch } from "../workspace";
 
 test("sourceRef maps HEAD and branches and rejects SHAs or unsupported refs", () => {
   assert.deepEqual(mapSourceRefToBaseBranch(undefined), { kind: "default" });
@@ -135,7 +135,7 @@ test("workspace view merges root .local.json overrides", async () => {
       },
       files: {
         read: async ({ path }: { path: string }) => {
-          if (path.endsWith(".humanlayer/workspace.json")) return { content: JSON.stringify({ sourceRef: "origin/main", copyGlobs: [".env"] }) };
+          if (path.endsWith(".rpi/workspace.json")) return { content: JSON.stringify({ sourceRef: "origin/main", copyGlobs: [".env"] }) };
           if (path.endsWith(".local.json")) return { content: JSON.stringify({ sourceRef: "feature/live", copyGlobs: [".env", ".env.local"] }) };
           throw new Error("missing");
         },
@@ -148,7 +148,7 @@ test("workspace view merges root .local.json overrides", async () => {
   assert.deepEqual(view.copyGlobs, [".env", ".env.local"]);
 });
 
-test("workspace config reads are rooted under .humanlayer and invalid config is surfaced as absent", async () => {
+test("workspace config reads are rooted under .rpi and invalid config is surfaced as absent", async () => {
   const task = {
     id: "task_1",
     projectId: "proj_1",
@@ -195,7 +195,7 @@ test("workspace config reads are rooted under .humanlayer and invalid config is 
     },
   };
   const view = await getWorkspaceView(bb as never, db as never, task);
-  assert.deepEqual(reads.map((read) => read.rootPath), ["/repo/.humanlayer", "/repo/.humanlayer"]);
+  assert.deepEqual(reads.map((read) => read.rootPath), ["/repo/.rpi", "/repo/.rpi"]);
   assert.equal(reads[0]?.path, "workspace.json");
   assert.equal(reads[1]?.path, ".local.json");
   assert.match(view.error ?? "", /workspace\.json/);
@@ -217,4 +217,43 @@ test("workspace validation rejects invalid sourceRef for worktree launches", asy
     () => validateWorkspaceForWorktreeLaunch(bb as never, { hostId: "host_1", defaultDirectory: "/repo", worktreeTiming: "later" }),
     /not a branch name/,
   );
+});
+
+test("findLegacyTaskDirTaskIds is a no-op unless RPI_LEGACY_TASK_ROOT_DIR is set", async () => {
+  const bb = { sdk: { environments: { get: async () => ({ path: "/repo" }) }, files: { listPaths: async () => [] } } };
+  const previous = process.env.RPI_LEGACY_TASK_ROOT_DIR;
+  delete process.env.RPI_LEGACY_TASK_ROOT_DIR;
+  try {
+    const found = await findLegacyTaskDirTaskIds(bb as never, [{ id: "task_1", slug: "task", baseEnvironmentId: "env_1" }]);
+    assert.deepEqual(found, []);
+  } finally {
+    if (previous !== undefined) process.env.RPI_LEGACY_TASK_ROOT_DIR = previous;
+  }
+});
+
+test("findLegacyTaskDirTaskIds flags a task with the legacy dir but no current dir", async () => {
+  const previous = process.env.RPI_LEGACY_TASK_ROOT_DIR;
+  process.env.RPI_LEGACY_TASK_ROOT_DIR = ".legacy-marker";
+  try {
+    const bb = {
+      sdk: {
+        environments: { get: async () => ({ path: "/repo" }) },
+        files: {
+          listPaths: async ({ path }: { path: string }) => {
+            if (path.startsWith(".legacy-marker/")) return [];
+            throw new Error("not found");
+          },
+        },
+      },
+    };
+    const tasks = [
+      { id: "task_legacy", slug: "legacy-task", baseEnvironmentId: "env_1" },
+      { id: "task_no_env", slug: "no-env-task", baseEnvironmentId: null },
+    ];
+    const found = await findLegacyTaskDirTaskIds(bb as never, tasks as never);
+    assert.deepEqual(found, ["task_legacy"]);
+  } finally {
+    if (previous === undefined) delete process.env.RPI_LEGACY_TASK_ROOT_DIR;
+    else process.env.RPI_LEGACY_TASK_ROOT_DIR = previous;
+  }
 });

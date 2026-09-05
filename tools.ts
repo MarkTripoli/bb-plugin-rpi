@@ -18,18 +18,19 @@ import {
   setCommentsResolved,
   softDeleteComments,
 } from "./comments";
+import { TASK_ROOT_DIR } from "./constants";
 import { ingest, hydrate } from "./mirror";
 import { mirrorSession, resolveResearchModel, type ChildThreadMirrorRow, type SessionMirrorRow } from "./sessions";
 
 type Database = BetterSqlite3.Database;
 
 export const ARTIFACT_TOOL_NAMES = [
-  "hl_task_context",
-  "hl_artifact_save",
-  "hl_next_artifact_number",
-  "hl_get_artifact_comments",
-  "hl_update_artifact_comments",
-  "hl_reply_to_artifact_comment",
+  "rpi_task_context",
+  "rpi_artifact_save",
+  "rpi_next_artifact_number",
+  "rpi_get_artifact_comments",
+  "rpi_update_artifact_comments",
+  "rpi_reply_to_artifact_comment",
 ] as const;
 
 function taskSession(
@@ -37,13 +38,13 @@ function taskSession(
   childThreads: Map<string, ChildThreadMirrorRow>,
   threadId: string | null | undefined,
 ) {
-  if (!threadId) throw new Error("not a HumanLayer task session");
+  if (!threadId) throw new Error("not an RPI task session");
   const row = threadId ? mirror.get(threadId) : null;
   if (row) return { row, sessionThreadId: threadId };
   const child = threadId ? childThreads.get(threadId) : null;
   const parent = child ? mirror.get(child.parentThreadId) : null;
   if (child && parent && child.taskId === parent.taskId) return { row: parent, sessionThreadId: child.parentThreadId };
-  throw new Error("not a HumanLayer task session");
+  throw new Error("not an RPI task session");
 }
 
 function trimToolContent(value: string) {
@@ -108,8 +109,8 @@ export function registerArtifactTools(
   const hydrationByTask = new Map<string, Promise<void>>();
 
   bb.agents.registerTool({
-    name: "hl_task_context",
-    description: "Return the current HumanLayer task context and artifact manifest.",
+    name: "rpi_task_context",
+    description: "Return the current RPI task context and artifact manifest.",
     presentation: {
       label: { pending: "Loading task context", completed: "Loaded task context" },
       icon: { glyph: "Folder" },
@@ -156,7 +157,7 @@ export function registerArtifactTools(
           slug: row.taskSlug,
           workflow: row.workflowType,
           currentLabel: row.label,
-          artifactDir: `.humanlayer/tasks/${row.taskSlug}`,
+          artifactDir: `${TASK_ROOT_DIR}/tasks/${row.taskSlug}`,
         },
         workspace: {
           worktreeTiming: taskWorkspace?.worktreeTiming ?? null,
@@ -183,8 +184,8 @@ export function registerArtifactTools(
   });
 
   bb.agents.registerTool({
-    name: "hl_artifact_save",
-    description: "Ingest one task artifact file from the workspace and return its HumanLayer permalink.",
+    name: "rpi_artifact_save",
+    description: "Ingest one task artifact file from the workspace and return its RPI permalink.",
     presentation: {
       label: { pending: "Saving artifact", completed: "Saved artifact" },
       icon: { glyph: "Code" },
@@ -211,8 +212,8 @@ export function registerArtifactTools(
   });
 
   bb.agents.registerTool({
-    name: "hl_next_artifact_number",
-    description: "Return the next zero-padded artifact number for this HumanLayer task.",
+    name: "rpi_next_artifact_number",
+    description: "Return the next zero-padded artifact number for this RPI task.",
     presentation: {
       label: { pending: "Allocating artifact number", completed: "Allocated artifact number" },
       icon: { glyph: "ListTodo" },
@@ -225,8 +226,8 @@ export function registerArtifactTools(
   });
 
   bb.agents.registerTool({
-    name: "hl_get_artifact_comments",
-    description: "Return threaded HumanLayer artifact comments as XML.",
+    name: "rpi_get_artifact_comments",
+    description: "Return threaded RPI artifact comments as XML.",
     presentation: {
       label: { pending: "Loading comments", completed: "Loaded comments" },
       icon: { glyph: "MessageSquare" },
@@ -249,8 +250,8 @@ export function registerArtifactTools(
   });
 
   bb.agents.registerTool({
-    name: "hl_update_artifact_comments",
-    description: "Resolve, unresolve, or delete HumanLayer artifact comments by id prefix.",
+    name: "rpi_update_artifact_comments",
+    description: "Resolve, unresolve, or delete RPI artifact comments by id prefix.",
     presentation: {
       label: { pending: "Updating comments", completed: "Updated comments" },
       icon: { glyph: "Check" },
@@ -287,8 +288,8 @@ export function registerArtifactTools(
         if (deleted === true) softDeleteComments(db, ids, artifact.id);
         if (deleted === false) restoreComments(db, ids, artifact.id);
         if (ids.length > 0) {
-          bb.realtime.publish("hl:comments", { taskId: row.taskId, artifactId: artifact.id, commentId: null, createdByAgent: true, kind: deleted === undefined ? "resolved" : "deleted" });
-          bb.realtime.publish("hl:artifacts", { taskId: row.taskId });
+          bb.realtime.publish("rpi:comments", { taskId: row.taskId, artifactId: artifact.id, commentId: null, createdByAgent: true, kind: deleted === undefined ? "resolved" : "deleted" });
+          bb.realtime.publish("rpi:artifacts", { taskId: row.taskId });
         }
         return toolJson({ results }, results.some((result) => !result.ok));
       } catch (error) {
@@ -298,8 +299,8 @@ export function registerArtifactTools(
   });
 
   bb.agents.registerTool({
-    name: "hl_reply_to_artifact_comment",
-    description: "Reply to a HumanLayer artifact comment by id prefix.",
+    name: "rpi_reply_to_artifact_comment",
+    description: "Reply to an RPI artifact comment by id prefix.",
     presentation: {
       label: { pending: "Replying to comment", completed: "Replied to comment" },
       icon: { glyph: "MessageSquare" },
@@ -317,8 +318,8 @@ export function registerArtifactTools(
         if (!match.ok) return toolJson({ ok: false, code: match.code }, true);
         const comment = replyToComment(db, artifact.id, match.id, content, { createdByAgent: true, createdByThreadId: threadId });
         if (!comment) return toolJson({ ok: false, code: "not_a_root" }, true);
-        bb.realtime.publish("hl:comments", { taskId: row.taskId, artifactId: artifact.id, commentId: comment.id, createdByAgent: true, kind: "replied" });
-        bb.realtime.publish("hl:artifacts", { taskId: row.taskId });
+        bb.realtime.publish("rpi:comments", { taskId: row.taskId, artifactId: artifact.id, commentId: comment.id, createdByAgent: true, kind: "replied" });
+        bb.realtime.publish("rpi:artifacts", { taskId: row.taskId });
         return toolJson({ ok: true, comment_id: comment.id.slice(0, 8) });
       } catch (error) {
         return toolError(error);

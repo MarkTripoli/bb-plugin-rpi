@@ -27,10 +27,10 @@ I can revise the PRD now. Choose one path: send concrete edits, continue the pro
 
 ## bb Task Setup
 
-0. Call `hl_task_context` before reading files, spawning child threads, or choosing an artifact path. Use its task directory, task slug, artifact manifest, repository, branch, thread id, provider, and model preferences. If it fails, stop.
-1. Use the task directory returned by the tool. Do not guess a sibling under `.humanlayer/tasks` from an old session or a remembered slug.
+0. Call `rpi_task_context` before reading files, spawning child threads, or choosing an artifact path. Use its task directory, task slug, artifact manifest, repository, branch, thread id, provider, and model preferences. If it fails, stop.
+1. Use the task directory returned by the tool. Do not guess a sibling under `.rpi/tasks` from an old session or a remembered slug.
 2. Locate this installed skill through the skills tier listing, then read reference files relative to this skill directory: `references/prd_template.md`, `references/prd_final_answer.md`, `references/prd_final_answer.md`.
-3. After every artifact write or edit, call `hl_artifact_save` with the relative file name and keep the returned `::hl-artifact{...}` directive for the final answer.
+3. After every artifact write or edit, call `rpi_artifact_save` with the relative file name and keep the returned `::rpi-artifact{...}` directive for the final answer.
 
 ## Continue Product Interview Mode
 
@@ -59,24 +59,24 @@ If the user wants to keep resolving product choices:
    - Do not accept corrections blindly.
    - Read named files and directories.
    - If facts are uncertain, verify them with direct reads or child research before changing the PRD.
-   - If comments are relevant, use `hl_get_artifact_comments` on the PRD artifact.
+   - If comments are relevant, use `rpi_get_artifact_comments` on the PRD artifact.
 
 3. **Spawn research when needed**:
 
 Use child threads only when a missing fact would change the artifact. Spawn independent assignments first, then wait for them and read their final messages:
 
 ```text
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-codebase-locator <assignment>"
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-codebase-analyzer <assignment>"
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-codebase-pattern-finder <assignment>"
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-web-search-researcher <assignment>"
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context preferences> --prompt "/rpi-agent-codebase-locator <assignment>"
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context preferences> --prompt "/rpi-agent-codebase-analyzer <assignment>"
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context preferences> --prompt "/rpi-agent-codebase-pattern-finder <assignment>"
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context preferences> --prompt "/rpi-agent-web-search-researcher <assignment>"
 bb thread wait <thread-id>
 bb thread output <thread-id>
 ```
 
 Role mapping: locator finds files and tests, analyzer explains current behavior, pattern finder finds local precedents, and web researcher checks external behavior or current documentation. The child thread's final message is the deliverable. Use only findings you have read from `bb thread output`.
 
-If a child thread or direct read discovers current-state facts that are missing or stale in the completed research artifact, fold those discoveries back into that research artifact before finalizing the PRD. Save the updated research artifact with `hl_artifact_save`, then continue the PRD from the corrected context.
+If a child thread or direct read discovers current-state facts that are missing or stale in the completed research artifact, fold those discoveries back into that research artifact before finalizing the PRD. Save the updated research artifact with `rpi_artifact_save`, then continue the PRD from the corrected context.
 
 4. **Update the PRD**:
    - Edit the target artifact in place.
@@ -87,7 +87,7 @@ If a child thread or direct read discovers current-state facts that are missing 
 5. **Update mockups when feedback changes visuals**:
    - Edit existing HTML mockups when they represent the same decision.
    - Create a new mockup only when the feedback introduces a distinct UI choice.
-   - Re-embed mockups with `::hl-artifact{...}` embeds.
+   - Re-embed mockups with `::rpi-artifact{...}` embeds.
 
 6. **Stop and ask what is next**:
    - After incorporating feedback, stop.
@@ -119,17 +119,17 @@ If a child thread or direct read discovers current-state facts that are missing 
 
 7. **Finish only when the user is done**:
    - When the user says the PRD is complete, or the solution is fully fleshed out and approved, read `references/prd_final_answer.md`.
-   - Save the latest PRD with `hl_artifact_save`.
+   - Save the latest PRD with `rpi_artifact_save`.
    - Follow the final template exactly and include the artifact directive.
 
 ## Artifact and Reading Rules
 
 - Read task artifacts fully. Do not use partial reads for task files, user-mentioned files, or the artifact you are editing.
-- List task directories with `ls -La <task-dir>`. Avoid plain `ls`, `ls -l`, search, and glob expansion inside `.humanlayer/tasks` because the path may be a linked directory.
+- List task directories with `ls -La <task-dir>`. Avoid plain `ls`, `ls -l`, search, and glob expansion inside `.rpi/tasks` because the path may be a linked directory.
 - Do not read research-question artifacts during design, outline, or plan work. They guide the research phase only; use completed research instead.
 - Do not inspect unrelated task directories unless the user explicitly asks.
 - Treat failed artifact saves, failed comment calls, or unavailable task context as blockers. Do not work around them by writing untracked side files.
-- Use `hl_next_artifact_number` when creating a new numbered artifact. The file name format is `NN-<type>-<2-4-word-kebab-slug>.md`.
+- Use `rpi_next_artifact_number` when creating a new numbered artifact. The file name format is `NN-<type>-<2-4-word-kebab-slug>.md`.
 
 ## Markdown Formatting
 

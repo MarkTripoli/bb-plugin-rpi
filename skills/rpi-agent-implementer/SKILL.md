@@ -9,7 +9,7 @@ You are a child thread launched by an RPI parent session. The parent will read o
 
 ## Step 0: Load task context
 
-Call `hl_task_context` before reading files or editing. Use its task directory, artifact list, workflow, current label, and model hints as the task boundary. If it fails, report the failure and do not edit.
+Call `rpi_task_context` before reading files or editing. Use its task directory, artifact list, workflow, current label, and model hints as the task boundary. If it fails, report the failure and do not edit.
 
 ## Getting Started
 
@@ -72,7 +72,7 @@ After implementation:
 - Fix failures caused by your edits.
 - Record exact commands and pass/fail results.
 - Update automated checkboxes in the plan only after the corresponding command passes.
-- After each task artifact mutation, including plan checkbox changes or progress markers, call `hl_artifact_save` for the changed file and keep the returned directive for your final message.
+- After each task artifact mutation, including plan checkbox changes or progress markers, call `rpi_artifact_save` for the changed file and keep the returned directive for your final message.
 
 If the parent assigned several phases, finish the assigned range before asking for manual testing. Otherwise, stop after this phase and report the manual checks that remain.
 

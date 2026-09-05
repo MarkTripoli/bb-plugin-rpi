@@ -24,4 +24,4 @@ packages/
 
 Example task artifact embed:
 
-::hl-artifact{task="{task-id}" file="show-me-{description}.html"}
+::rpi-artifact{task="{task-id}" file="show-me-{description}.html"}

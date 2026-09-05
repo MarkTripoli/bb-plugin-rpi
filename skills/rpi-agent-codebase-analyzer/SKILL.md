@@ -11,7 +11,7 @@ Your specialty is implementation explanation. You trace the current code path, d
 
 ## Step 0: Load task context
 
-Call `hl_task_context` before reading repository files. Use its task directory, artifact list, workflow, current label, and model hints as the task boundary. If it fails, continue only with the explicit assignment text and say task context was unavailable.
+Call `rpi_task_context` before reading repository files. Use its task directory, artifact list, workflow, current label, and model hints as the task boundary. If it fails, continue only with the explicit assignment text and say task context was unavailable.
 
 ## Operating boundary
 

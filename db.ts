@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type * as BetterSqlite3 from "better-sqlite3";
 
@@ -35,8 +36,8 @@ export const MIGRATIONS: string[] = [
     skill_id TEXT,
     launched_by TEXT NOT NULL,
     forked_from_thread_id TEXT,
-    hl_status TEXT NOT NULL DEFAULT 'draft',
-    hl_status_at INTEGER NOT NULL,
+    rpi_status TEXT NOT NULL DEFAULT 'draft',
+    rpi_status_at INTEGER NOT NULL,
     had_turn INTEGER NOT NULL DEFAULT 0,
     interrupted INTEGER NOT NULL DEFAULT 0,
     next_step_json TEXT,
@@ -277,9 +278,37 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE scratch_pads ADD COLUMN revision INTEGER NOT NULL DEFAULT 0`,
 ];
 
+// `bb.storage.migrate` tracks applied migrations by statement index/count, not by content, so an
+// in-place rename of migration 1's status column (pre-release: no shipped installs to protect,
+// see AGENTS.md) is invisible to it: a local dev DB that already ran the old statement 1 keeps the
+// old column name forever and every rpi_status read/write in this codebase would silently break
+// against it. `needsPreRenameReset` detects that exact stale shape (a `sessions` table that exists
+// but has no `rpi_status` column) so `openPluginDatabase` can drop the dev-only database file and
+// let `bb.storage.migrate` recreate it from scratch under the current statement text.
+export function needsPreRenameReset(db: Database): boolean {
+  const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sessions'").get();
+  if (!table) return false;
+  const columns = db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[];
+  return !columns.some((column) => column.name === "rpi_status");
+}
+
 export function openPluginDatabase(bb: BbPluginApi): Database {
-  const db = bb.storage.database();
+  let db = bb.storage.database();
   db.pragma("foreign_keys = ON");
+  if (needsPreRenameReset(db)) {
+    const dbPath = db.name;
+    bb.log.warn(`Resetting dev-only plugin database at ${dbPath}: pre-rename sessions schema detected (missing rpi_status) and this plugin has no released installs to protect.`);
+    db.close();
+    for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+      try {
+        fs.unlinkSync(`${dbPath}${suffix}`);
+      } catch {
+        // File may not exist for every suffix; nothing to clean up.
+      }
+    }
+    db = bb.storage.database();
+    db.pragma("foreign_keys = ON");
+  }
   bb.storage.migrate(db, MIGRATIONS);
   return db;
 }

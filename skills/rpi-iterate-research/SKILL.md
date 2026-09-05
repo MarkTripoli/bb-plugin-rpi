@@ -9,18 +9,18 @@ You are revising an existing research document. Keep the document as current-sta
 
 ## Step 0: Load bb task context
 
-Call `hl_task_context` before reading files. Use the returned task directory, artifact list, task slug, and research model preference.
+Call `rpi_task_context` before reading files. Use the returned task directory, artifact list, task slug, and research model preference.
 
 When the user passes `@artifact`, resolve it against the artifact list. If a path is supplied, confirm it is inside the task artifact directory unless the user clearly named an external source file for evidence.
 
 ## Initial Setup
 
-When invoked without a specific artifact, inspect the task directory returned by `hl_task_context` for research documents. Look for research artifacts but exclude research-questions artifacts.
+When invoked without a specific artifact, inspect the task directory returned by `rpi_task_context` for research documents. Look for research artifacts but exclude research-questions artifacts.
 
 Use:
 
 ```text
-ls -La .humanlayer/tasks/<task slug>
+ls -La .rpi/tasks/<task slug>
 ```
 
 Use this form because the task directory may be linked. Do not use bare `ls`, `ls -l`, grep, or shell globs for this selection step.
@@ -56,7 +56,7 @@ Important: do not read `task.md`, `ticket.md`, research-questions files, design 
    - Clarification: make the explanation clearer while preserving the current findings.
    - Comment response: use artifact comments if the user asks for comment-driven iteration.
 
-   If artifact comments are part of the request, call `hl_get_artifact_comments` for the selected artifact. Do not resolve comments from this skill unless the user explicitly asks and the requested action is unambiguous; comment resolution normally belongs to `/rpi-review-artifact-comments`.
+   If artifact comments are part of the request, call `rpi_get_artifact_comments` for the selected artifact. Do not resolve comments from this skill unless the user explicitly asks and the requested action is unambiguous; comment resolution normally belongs to `/rpi-review-artifact-comments`.
 
 3. **Conduct additional research when needed**
 
@@ -65,7 +65,7 @@ Important: do not read `task.md`, `ticket.md`, research-questions files, design 
    Command pattern:
 
    ```text
-   bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context prefs> --prompt "/rpi-agent-<role> <assignment>"
+   bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context prefs> --prompt "/rpi-agent-<role> <assignment>"
    bb thread wait <thread-id>
    bb thread output <thread-id>
    ```
@@ -105,7 +105,7 @@ Important: do not read `task.md`, `ticket.md`, research-questions files, design 
 
 5. **Save the updated artifact**
 
-   Write the revised document to the same path. Call `hl_artifact_save` with the artifact file name and keep the returned `::hl-artifact{...}` directive for the final response.
+   Write the revised document to the same path. Call `rpi_artifact_save` with the artifact file name and keep the returned `::rpi-artifact{...}` directive for the final response.
 
 6. **Update the user**
 
@@ -117,7 +117,7 @@ Important: do not read `task.md`, `ticket.md`, research-questions files, design 
 
    Respond using that template only. Include the artifact directive. The last lines must be exactly one fenced `text` block copied from the template. Never repeat the current command `/rpi-iterate-research` as the next step.
 
-   Choose that final fenced command from `hl_task_context.task.workflow`:
+   Choose that final fenced command from `rpi_task_context.task.workflow`:
 
    - `rpi` -> `/rpi-create-design-discussion`
    - `outline_only` -> `/rpi-create-structure-outline`
@@ -187,7 +187,7 @@ For each affected findings section, document the tests that currently cover it. 
 - Read named files fully before spawning child threads.
 - Wait for every child thread before editing the artifact.
 - Keep the parent session focused on synthesis.
-- Keep task-specific edits under `.humanlayer/tasks/<slug>/`.
+- Keep task-specific edits under `.rpi/tasks/<slug>/`.
 - Do not write placeholder values.
 - Use four backticks for outer markdown fences when a code sample contains triple backticks.
 

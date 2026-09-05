@@ -97,7 +97,7 @@ import {
 } from "./tasks";
 import { ARTIFACT_TOOL_NAMES, registerArtifactTools } from "./tools";
 import { RPI_AGENT_SKILL_IDS, SKILLS, suggestedNextHint } from "./transitions";
-import { getWorkspaceView, rerunWorkspaceSetup, validateWorkspaceForWorktreeLaunch } from "./workspace";
+import { findLegacyTaskDirTaskIds, getWorkspaceView, legacyTaskRootDirName, rerunWorkspaceSetup, validateWorkspaceForWorktreeLaunch } from "./workspace";
 
 const PREFS_KEY = "prefs:structured-defaults";
 const RPI_SKILL_NAMES = SKILLS.map(([, skillId]) => `rpi-${skillId}`);
@@ -111,14 +111,14 @@ const SECURITY_HEADERS = {
 
 function publishArtifacts(bb: BbPluginApi, taskId: string) {
   bb.realtime.publish("artifacts", { taskId });
-  bb.realtime.publish("hl:artifacts", { taskId });
+  bb.realtime.publish("rpi:artifacts", { taskId });
 }
 
 type CommentEventKind = "created" | "replied" | "edited" | "resolved" | "deleted";
 
 function publishComments(bb: BbPluginApi, taskId: string, artifactId: string, commentId: string | null, createdByAgent: boolean, kind: CommentEventKind) {
-  bb.realtime.publish("hl:comments", { taskId, artifactId, commentId, createdByAgent, kind });
-  bb.realtime.publish("hl:artifacts", { taskId });
+  bb.realtime.publish("rpi:comments", { taskId, artifactId, commentId, createdByAgent, kind });
+  bb.realtime.publish("rpi:artifacts", { taskId });
 }
 
 function isInlineSafeContentType(contentType: string) {
@@ -175,12 +175,18 @@ function readTaskUiState(db: ReturnType<typeof openPluginDatabase>, taskId: stri
   return { ...state, scratch: scratchRow?.text ?? "", scratchRevision: scratchRow?.revision ?? 0 };
 }
 
-function writeTaskUiState(db: ReturnType<typeof openPluginDatabase>, taskId: string, state: { dismissedTips?: Record<string, boolean>; contextWarningDismissed?: Record<string, boolean> }) {
+function writeTaskUiState(db: ReturnType<typeof openPluginDatabase>, taskId: string, state: { dismissedTips?: Record<string, boolean>; contextWarningDismissed?: Record<string, boolean>; legacyTaskDirWarning?: boolean; legacyTaskDirName?: string; legacyTaskDirWarningDismissed?: boolean }) {
   writeRow(
     db,
     "INSERT INTO task_ui_state (task_id, json) VALUES (?, ?) ON CONFLICT(task_id) DO UPDATE SET json = excluded.json",
     taskId,
-    JSON.stringify({ dismissedTips: state.dismissedTips ?? {}, contextWarningDismissed: state.contextWarningDismissed ?? {} }),
+    JSON.stringify({
+      dismissedTips: state.dismissedTips ?? {},
+      contextWarningDismissed: state.contextWarningDismissed ?? {},
+      legacyTaskDirWarning: state.legacyTaskDirWarning ?? false,
+      legacyTaskDirName: state.legacyTaskDirName,
+      legacyTaskDirWarningDismissed: state.legacyTaskDirWarningDismissed ?? false,
+    }),
   );
 }
 
@@ -230,8 +236,23 @@ export default async function plugin(bb: BbPluginApi) {
   let notificationPrefs = normalizeNotificationPrefs(initialPrefs.success ? initialPrefs.data.notifications : null);
   for (const taskId of promoteStalePendingLaunchAttempts(db)) {
     bb.realtime.publish("tasks", { taskId });
-    bb.realtime.publish("hl:sessions", { taskId, threadId: null });
+    bb.realtime.publish("rpi:sessions", { taskId, threadId: null });
   }
+  // Fire-and-forget: never blocks plugin start on an environment/file round trip. Sets a one-time
+  // UI banner (task_ui_state.legacyTaskDirWarning) for any non-archived task whose base
+  // environment still has its task files under the pre-rename directory layout; see workspace.ts
+  // `findLegacyTaskDirTaskIds` for why the legacy path segment isn't a literal in this repo.
+  findLegacyTaskDirTaskIds(bb, listTasks(db, { archived: false }))
+    .then((taskIds) => {
+      for (const taskId of taskIds) {
+        const state = readTaskUiState(db, taskId);
+        if (state.legacyTaskDirWarningDismissed) continue;
+        writeTaskUiState(db, taskId, { ...state, legacyTaskDirWarning: true, legacyTaskDirName: legacyTaskRootDirName() ?? undefined });
+        bb.realtime.publish("rpi:ui-state", { taskId });
+      }
+    })
+    .catch((error) => bb.log.warn(`Legacy task-dir sweep failed: ${String(error)}`));
+
   const settings = bb.settings.define({
     notificationSoundsEnabled: {
       type: "boolean",
@@ -405,10 +426,10 @@ export default async function plugin(bb: BbPluginApi) {
     return suggestedNextHint(row);
   }
 
-  // Evaluated on every derived snapshot (not just when hlStatus changed), so:
+  // Evaluated on every derived snapshot (not just when rpiStatus changed), so:
   // - ready_for_input is delivered exactly once from the persisted, final completed_turn_key,
   //   whichever caller (idle completion or a racing reconcile) observes it last.
-  // - needs_approval is delivered per pending interaction id, even while hlStatus stays
+  // - needs_approval is delivered per pending interaction id, even while rpiStatus stays
   //   needs_approval across two different approvals.
   // Both are idempotent via notify.ts dedupe keys.
   async function notifySnapshot(threadId: string, interactions: readonly unknown[]) {
@@ -430,7 +451,7 @@ export default async function plugin(bb: BbPluginApi) {
         approval,
       }, context);
     }
-    if (row.hlStatus === "ready_for_input" && !row.blockedReason && row.completedTurnKey) {
+    if (row.rpiStatus === "ready_for_input" && !row.blockedReason && row.completedTurnKey) {
       await decideAndPublishNotification(bb, db, {
         type: "status_transition",
         threadId,
@@ -490,19 +511,26 @@ export default async function plugin(bb: BbPluginApi) {
       const state = readTaskUiState(db, taskId);
       const next = { ...state, dismissedTips: { ...(state.dismissedTips ?? {}), [label]: true } };
       writeTaskUiState(db, taskId, next);
-      bb.realtime.publish("hl:ui-state", { taskId });
+      bb.realtime.publish("rpi:ui-state", { taskId });
       return next;
     },
     saveScratchPad: async ({ taskId, text, expectedRevision }) => {
       const { outcome } = saveScratchPadCas(db, taskId, text, expectedRevision);
-      bb.realtime.publish("hl:ui-state", { taskId });
+      bb.realtime.publish("rpi:ui-state", { taskId });
       return { ...readTaskUiState(db, taskId), outcome };
     },
     dismissContextWarning: async ({ taskId, threadId }) => {
       const state = readTaskUiState(db, taskId);
       const next = { ...state, contextWarningDismissed: { ...(state.contextWarningDismissed ?? {}), [threadId]: true } };
       writeTaskUiState(db, taskId, next);
-      bb.realtime.publish("hl:ui-state", { taskId });
+      bb.realtime.publish("rpi:ui-state", { taskId });
+      return next;
+    },
+    dismissLegacyTaskDirWarning: async ({ taskId }) => {
+      const state = readTaskUiState(db, taskId);
+      const next = { ...state, legacyTaskDirWarning: false, legacyTaskDirWarningDismissed: true };
+      writeTaskUiState(db, taskId, next);
+      bb.realtime.publish("rpi:ui-state", { taskId });
       return next;
     },
     setViewingSession: async ({ threadId, viewing }) => {
@@ -583,7 +611,7 @@ export default async function plugin(bb: BbPluginApi) {
         version: versionView(result.version),
         content: isBinary ? null : result.version.content.toString("utf8"),
         isBinary,
-        url: `/api/v1/plugins/humanlayer/http/artifact?task=${encodeURIComponent(taskId)}&file=${encodeURIComponent(fileName)}&version=${result.version.version}&inline=1`,
+        url: `/api/v1/plugins/rpi/http/artifact?task=${encodeURIComponent(taskId)}&file=${encodeURIComponent(fileName)}&version=${result.version.version}&inline=1`,
       };
     },
     listArtifactVersions: async ({ taskId, fileName }) => ({
@@ -603,7 +631,7 @@ export default async function plugin(bb: BbPluginApi) {
       const threadId = latestTaskThread(db, taskId);
       let mirror: MirrorFileOutcome = "skipped";
       if (threadId) mirror = await mirrorDeletedArtifact(bb, db, taskId, threadId, fileName).catch((error) => {
-        bb.log.warn(`Failed to move deleted HumanLayer artifact: ${String(error)}`);
+        bb.log.warn(`Failed to move deleted RPI artifact: ${String(error)}`);
         return "conflict" as const;
       });
       publishArtifacts(bb, taskId);
@@ -618,7 +646,7 @@ export default async function plugin(bb: BbPluginApi) {
       const threadId = latestTaskThread(db, taskId);
       let mirror: MirrorFileOutcome = "skipped";
       if (threadId) mirror = await mirrorRestoredArtifact(bb, db, taskId, threadId, fileName).catch((error) => {
-        bb.log.warn(`Failed to restore HumanLayer artifact: ${String(error)}`);
+        bb.log.warn(`Failed to restore RPI artifact: ${String(error)}`);
         return "conflict" as const;
       });
       publishArtifacts(bb, taskId);
@@ -754,98 +782,98 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.cli.register({
-    name: "humanlayer",
-    summary: "HumanLayer tasks and sessions",
+    name: "rpi",
+    summary: "RPI tasks and sessions",
     commands: [
       {
         name: "tasks-create",
         summary: "Create a freeform task, optionally launching it",
-        usage: "bb humanlayer tasks create --name <name> --project <projectId> --prompt <text> [--launch] [--host <hostId>] [--directory <path>] [--provider <id>] [--model <id>] [--json]",
+        usage: "bb rpi tasks create --name <name> --project <projectId> --prompt <text> [--launch] [--host <hostId>] [--directory <path>] [--provider <id>] [--model <id>] [--json]",
       },
       {
         name: "tasks-list",
         summary: "List tasks",
-        usage: "bb humanlayer tasks list [--json]",
+        usage: "bb rpi tasks list [--json]",
       },
       {
         name: "sessions-list",
         summary: "List sessions",
-        usage: "bb humanlayer sessions list [--task <taskId>] [--json]",
+        usage: "bb rpi sessions list [--task <taskId>] [--json]",
       },
       {
         name: "artifacts-list",
         summary: "List task artifacts",
-        usage: "bb humanlayer artifacts list --task <taskId> [--json]",
+        usage: "bb rpi artifacts list --task <taskId> [--json]",
       },
       {
         name: "artifacts-get",
         summary: "Print a task artifact",
-        usage: "bb humanlayer artifacts get --task <taskId> --file <fileName> [--version <n>] [--json]",
+        usage: "bb rpi artifacts get --task <taskId> --file <fileName> [--version <n>] [--json]",
       },
       {
         name: "artifacts-versions",
         summary: "List artifact versions",
-        usage: "bb humanlayer artifacts versions --task <taskId> --file <fileName> [--json]",
+        usage: "bb rpi artifacts versions --task <taskId> --file <fileName> [--json]",
       },
       {
         name: "artifacts-ingest",
         summary: "Ingest task artifacts from the current task thread workspace",
-        usage: "bb humanlayer artifacts ingest --task <taskId> [--file <fileName>] [--json]",
+        usage: "bb rpi artifacts ingest --task <taskId> [--file <fileName>] [--json]",
       },
       {
         name: "artifacts-save",
         summary: "Save a text artifact version",
-        usage: "bb humanlayer artifacts save --task <taskId> --file <fileName> --content <text> [--json]",
+        usage: "bb rpi artifacts save --task <taskId> --file <fileName> --content <text> [--json]",
       },
       {
         name: "comments-list",
         summary: "List artifact comments",
-        usage: "bb humanlayer comments list --task <taskId> --file <fileName> [--resolved] [--json]",
+        usage: "bb rpi comments list --task <taskId> --file <fileName> [--resolved] [--json]",
       },
       {
         name: "comments-create",
         summary: "Create an artifact comment on a markdown block",
-        usage: "bb humanlayer comments create --task <taskId> --file <fileName> --block <index> --content <text> [--json]",
+        usage: "bb rpi comments create --task <taskId> --file <fileName> --block <index> --content <text> [--json]",
       },
       {
         name: "comments-resolve",
         summary: "Resolve artifact comments by id prefix",
-        usage: "bb humanlayer comments resolve --task <taskId> --file <fileName> --id <prefix> [--json]",
+        usage: "bb rpi comments resolve --task <taskId> --file <fileName> --id <prefix> [--json]",
       },
       {
         name: "proceed",
-        summary: "Launch the parsed next step for a HumanLayer session",
-        usage: "bb humanlayer proceed --thread <threadId> [--json]",
+        summary: "Launch the parsed next step for an RPI session",
+        usage: "bb rpi proceed --thread <threadId> [--json]",
       },
       {
         name: "launch-skill",
-        summary: "Launch a HumanLayer task session with an RPI skill",
-        usage: "bb humanlayer launch-skill --task <taskId> --skill <skillId> [--command-line <text>] [--provider <id>] [--model <id>] [--json]",
+        summary: "Launch an RPI task session with an RPI skill",
+        usage: "bb rpi launch-skill --task <taskId> --skill <skillId> [--command-line <text>] [--provider <id>] [--model <id>] [--json]",
       },
       {
         name: "launch-attempts",
-        summary: "List HumanLayer launch attempts for a task",
-        usage: "bb humanlayer launch-attempts --task <taskId> [--json] | bb humanlayer launch-attempts dismiss --id <attemptId>",
+        summary: "List RPI launch attempts for a task",
+        usage: "bb rpi launch-attempts --task <taskId> [--json] | bb rpi launch-attempts dismiss --id <attemptId>",
       },
       {
         name: "suppressions",
-        summary: "List HumanLayer notification suppressions for a thread",
-        usage: "bb humanlayer suppressions --thread <threadId> [--json]",
+        summary: "List RPI notification suppressions for a thread",
+        usage: "bb rpi suppressions --thread <threadId> [--json]",
       },
       {
         name: "notifications-list",
-        summary: "List recent HumanLayer notification decisions",
-        usage: "bb humanlayer notifications list [--limit N] [--json]",
+        summary: "List recent RPI notification decisions",
+        usage: "bb rpi notifications list [--limit N] [--json]",
       },
       {
         name: "notifications-test",
         summary: "Publish a synthetic ready-for-input notification decision",
-        usage: "bb humanlayer notifications test --thread <threadId> [--json]",
+        usage: "bb rpi notifications test --thread <threadId> [--json]",
       },
       {
         name: "workspace",
-        summary: "Show HumanLayer workspace state for a task",
-        usage: "bb humanlayer workspace --task <taskId> [--json]",
+        summary: "Show RPI workspace state for a task",
+        usage: "bb rpi workspace --task <taskId> [--json]",
       },
     ],
     async run(argv) {
@@ -856,7 +884,7 @@ export default async function plugin(bb: BbPluginApi) {
           const projectId = opts.project;
           const prompt = opts.prompt;
           if (!projectId || !prompt) {
-            return { exitCode: 2, stderr: "usage: bb humanlayer tasks create --name <name> --project <projectId> --prompt <text> [--launch]\n" };
+            return { exitCode: 2, stderr: "usage: bb rpi tasks create --name <name> --project <projectId> --prompt <text> [--launch]\n" };
           }
           const worktreeTiming = worktreeTimingOption(opts.worktree ?? opts.worktreeTiming);
           await validateWorkspaceForWorktreeLaunch(bb, {
@@ -885,7 +913,7 @@ export default async function plugin(bb: BbPluginApi) {
         }
         if (argv[0] === "tasks" && argv[1] === "update") {
           const opts = parseArgs(argv.slice(2));
-          if (!opts.task) return { exitCode: 2, stderr: "usage: bb humanlayer tasks update --task <taskId> [--auto true|false] [--aa-research-to-design true|false]\n" };
+          if (!opts.task) return { exitCode: 2, stderr: "usage: bb rpi tasks update --task <taskId> [--auto true|false] [--aa-research-to-design true|false]\n" };
           const input = taskUpdateInputSchema.parse({
             taskId: opts.task,
             patch: {
@@ -904,14 +932,14 @@ export default async function plugin(bb: BbPluginApi) {
         }
         if (argv[0] === "proceed") {
           const opts = parseArgs(argv.slice(1));
-          if (!opts.thread) return { exitCode: 2, stderr: "usage: bb humanlayer proceed --thread <threadId> [--json]\n" };
+          if (!opts.thread) return { exitCode: 2, stderr: "usage: bb rpi proceed --thread <threadId> [--json]\n" };
           const input = proceedInputSchema.parse({ threadId: opts.thread });
           const result = await proceed(bb, db, sessionMirror, launchBindings, input.threadId);
           return { exitCode: 0, stdout: json ? `${JSON.stringify(result)}\n` : `${result.threadId ?? ""}\n` };
         }
         if (argv[0] === "launch-skill") {
           const opts = parseArgs(argv.slice(1));
-          if (!opts.task || !opts.skill) return { exitCode: 2, stderr: "usage: bb humanlayer launch-skill --task <taskId> --skill <skillId> [--command-line <text>] [--provider <id>] [--model <id>]\n" };
+          if (!opts.task || !opts.skill) return { exitCode: 2, stderr: "usage: bb rpi launch-skill --task <taskId> --skill <skillId> [--command-line <text>] [--provider <id>] [--model <id>]\n" };
           if (opts.provider || opts.model || opts.effort) {
             updateTask(db, opts.task, {
               providerId: opts.provider ?? undefined,
@@ -926,36 +954,36 @@ export default async function plugin(bb: BbPluginApi) {
         if (argv[0] === "launch-attempts") {
           if (argv[1] === "dismiss") {
             const opts = parseArgs(argv.slice(2));
-            if (!opts.id) return { exitCode: 2, stderr: "usage: bb humanlayer launch-attempts dismiss --id <attemptId>\n" };
+            if (!opts.id) return { exitCode: 2, stderr: "usage: bb rpi launch-attempts dismiss --id <attemptId>\n" };
             const result = await resolveLaunchAttempt(bb, db, sessionMirror, launchBindings, opts.id, { type: "dismiss" });
             return { exitCode: 0, stdout: json ? `${JSON.stringify(result)}\n` : "dismissed\n" };
           }
           const opts = parseArgs(argv.slice(1));
-          if (!opts.task) return { exitCode: 2, stderr: "usage: bb humanlayer launch-attempts --task <taskId>\n" };
+          if (!opts.task) return { exitCode: 2, stderr: "usage: bb rpi launch-attempts --task <taskId>\n" };
           const attempts = listLaunchAttempts(db, opts.task);
           return { exitCode: 0, stdout: json ? `${JSON.stringify({ attempts })}\n` : attempts.map((attempt) => `${attempt.id}\t${attempt.status}\t${attempt.skillId ?? ""}\t${attempt.threadId ?? ""}`).join("\n") + "\n" };
         }
         if (argv[0] === "suppressions") {
           const opts = parseArgs(argv.slice(1));
-          if (!opts.thread) return { exitCode: 2, stderr: "usage: bb humanlayer suppressions --thread <threadId>\n" };
+          if (!opts.thread) return { exitCode: 2, stderr: "usage: bb rpi suppressions --thread <threadId>\n" };
           const rows = db.prepare("SELECT thread_id AS threadId, completed_turn_key AS completedTurnKey, reason, created_at AS createdAt, consumed_at AS consumedAt FROM notification_suppressions WHERE thread_id = ? ORDER BY created_at DESC").all(opts.thread) as Array<{ threadId: string; completedTurnKey: string; reason: string; createdAt: number; consumedAt: number | null }>;
           return { exitCode: 0, stdout: json ? `${JSON.stringify({ suppressions: rows })}\n` : rows.map((row) => `${row.threadId}\t${row.completedTurnKey}\t${row.reason}`).join("\n") + (rows.length ? "\n" : "") };
         }
         if (argv[0] === "notifications" && argv[1] === "list") {
           const opts = parseArgs(argv.slice(2));
           const raw = notificationsListRawArgsSchema.safeParse(opts);
-          if (!raw.success) return { exitCode: 2, stderr: "usage: bb humanlayer notifications list [--limit N] [--json]\n" };
+          if (!raw.success) return { exitCode: 2, stderr: "usage: bb rpi notifications list [--limit N] [--json]\n" };
           const parsed = notificationsListArgsSchema.safeParse({ limit: raw.data.limit });
-          if (!parsed.success) return { exitCode: 2, stderr: "usage: bb humanlayer notifications list [--limit N] [--json]\n" };
+          if (!parsed.success) return { exitCode: 2, stderr: "usage: bb rpi notifications list [--limit N] [--json]\n" };
           const notifications = listNotificationRecords(db, parsed.data.limit);
           return { exitCode: 0, stdout: json ? `${JSON.stringify({ notifications, limit: parsed.data.limit })}\n` : notifications.map((row) => `${row.createdAt}\t${row.kind}${row.synthetic ? " [test]" : ""}${row.supersededAt ? " [superseded]" : ""}\t${row.threadId}\t${row.reason}`).join("\n") + (notifications.length ? "\n" : "") };
         }
         if (argv[0] === "notifications" && argv[1] === "test") {
           const opts = parseArgs(argv.slice(2));
           const raw = notificationsTestRawArgsSchema.safeParse(opts);
-          if (!raw.success) return { exitCode: 2, stderr: "usage: bb humanlayer notifications test --thread <threadId> [--json]\n" };
+          if (!raw.success) return { exitCode: 2, stderr: "usage: bb rpi notifications test --thread <threadId> [--json]\n" };
           const parsed = notificationsTestArgsSchema.safeParse({ thread: raw.data.thread });
-          if (!parsed.success) return { exitCode: 2, stderr: "usage: bb humanlayer notifications test --thread <threadId> [--json]\n" };
+          if (!parsed.success) return { exitCode: 2, stderr: "usage: bb rpi notifications test --thread <threadId> [--json]\n" };
           const session = readSession(db, parsed.data.thread);
           if (!session) return { exitCode: 1, stderr: "session not found\n" };
           // Synthetic namespace: never touches real ready/approval dedupe keys or suppression rows.
@@ -968,7 +996,7 @@ export default async function plugin(bb: BbPluginApi) {
         }
         if (argv[0] === "workspace") {
           const opts = parseArgs(argv.slice(1));
-          if (!opts.task) return { exitCode: 2, stderr: "usage: bb humanlayer workspace --task <taskId> [--json]\n" };
+          if (!opts.task) return { exitCode: 2, stderr: "usage: bb rpi workspace --task <taskId> [--json]\n" };
           const result = getTask(db, opts.task);
           if (!result) return { exitCode: 1, stderr: "task not found\n" };
           const workspace = await getWorkspaceView(bb, db, result.task);
@@ -993,17 +1021,17 @@ export default async function plugin(bb: BbPluginApi) {
           const limit = parseBoundedInt(opts.limit, 50, 1, 200);
           const offset = parseBoundedInt(opts.offset, 0, 0, 100000);
           const sessions = listSessions(db, opts.task ?? null, { limit, offset }).map(sessionCliView);
-          return { exitCode: 0, stdout: json ? `${JSON.stringify({ sessions, limit, offset })}\n` : sessions.map((session) => `${session.threadId}\t${session.hlStatus}\t${session.label ?? ""}`).join("\n") + "\n" };
+          return { exitCode: 0, stdout: json ? `${JSON.stringify({ sessions, limit, offset })}\n` : sessions.map((session) => `${session.threadId}\t${session.rpiStatus}\t${session.label ?? ""}`).join("\n") + "\n" };
         }
         if (argv[0] === "artifacts" && argv[1] === "list") {
           const opts = parseArgs(argv.slice(2));
-          if (!opts.task) return { exitCode: 2, stderr: "usage: bb humanlayer artifacts list --task <taskId>\n" };
+          if (!opts.task) return { exitCode: 2, stderr: "usage: bb rpi artifacts list --task <taskId>\n" };
           const artifacts = listArtifacts(db, opts.task, { includeDeleted: opts.deleted === "true" });
           return { exitCode: 0, stdout: json ? `${JSON.stringify({ artifacts })}\n` : artifacts.map((artifact) => `${artifact.fileName}\tv${artifact.currentVersion}\t${artifact.type}`).join("\n") + "\n" };
         }
         if (argv[0] === "artifacts" && argv[1] === "get") {
           const opts = parseArgs(argv.slice(2));
-          if (!opts.task || !opts.file) return { exitCode: 2, stderr: "usage: bb humanlayer artifacts get --task <taskId> --file <fileName>\n" };
+          if (!opts.task || !opts.file) return { exitCode: 2, stderr: "usage: bb rpi artifacts get --task <taskId> --file <fileName>\n" };
           const result = getArtifactVersion(db, opts.task, opts.file, opts.version ? Number.parseInt(opts.version, 10) : null);
           if (!result) return { exitCode: 1, stderr: "artifact not found\n" };
           const isBinary = !isTextArtifact(result.artifact.fileName, mimeFor(result.artifact.fileName));
@@ -1015,13 +1043,13 @@ export default async function plugin(bb: BbPluginApi) {
         }
         if (argv[0] === "artifacts" && argv[1] === "versions") {
           const opts = parseArgs(argv.slice(2));
-          if (!opts.task || !opts.file) return { exitCode: 2, stderr: "usage: bb humanlayer artifacts versions --task <taskId> --file <fileName>\n" };
+          if (!opts.task || !opts.file) return { exitCode: 2, stderr: "usage: bb rpi artifacts versions --task <taskId> --file <fileName>\n" };
           const versions = listArtifactVersions(db, opts.task, opts.file).map(versionView);
           return { exitCode: 0, stdout: json ? `${JSON.stringify({ versions })}\n` : versions.map((version) => `v${version.version}\t${version.createdBy}\t${new Date(version.createdAt).toISOString()}`).join("\n") + "\n" };
         }
         if (argv[0] === "artifacts" && argv[1] === "ingest") {
           const opts = parseArgs(argv.slice(2));
-          if (!opts.task) return { exitCode: 2, stderr: "usage: bb humanlayer artifacts ingest --task <taskId> [--file <fileName>]\n" };
+          if (!opts.task) return { exitCode: 2, stderr: "usage: bb rpi artifacts ingest --task <taskId> [--file <fileName>]\n" };
           const threadId = latestTaskThread(db, opts.task);
           if (!threadId) return { exitCode: 1, stderr: "No task session is available for ingest.\n" };
           const result = await ingest(bb, db, opts.task, "cli", { threadId, fileName: opts.file ?? null, operation: "ingest" });
@@ -1029,7 +1057,7 @@ export default async function plugin(bb: BbPluginApi) {
         }
         if (argv[0] === "artifacts" && argv[1] === "save") {
           const opts = parseArgs(argv.slice(2));
-          if (!opts.task || !opts.file || opts.content === undefined) return { exitCode: 2, stderr: "usage: bb humanlayer artifacts save --task <taskId> --file <fileName> --content <text>\n" };
+          if (!opts.task || !opts.file || opts.content === undefined) return { exitCode: 2, stderr: "usage: bb rpi artifacts save --task <taskId> --file <fileName> --content <text>\n" };
           const result = upsertArtifact(db, opts.task, opts.file, opts.content, {
             createdBy: "cli",
             operation: "cli",
@@ -1041,7 +1069,7 @@ export default async function plugin(bb: BbPluginApi) {
         }
         if (argv[0] === "comments" && argv[1] === "list") {
           const opts = parseArgs(argv.slice(2));
-          if (!opts.task || !opts.file) return { exitCode: 2, stderr: "usage: bb humanlayer comments list --task <taskId> --file <fileName>\n" };
+          if (!opts.task || !opts.file) return { exitCode: 2, stderr: "usage: bb rpi comments list --task <taskId> --file <fileName>\n" };
           const artifact = getArtifact(db, opts.task, opts.file);
           if (!artifact) return { exitCode: 1, stderr: "artifact not found\n" };
           const page = stripCommentPage(listComments(db, artifact.id, { includeResolved: opts.resolved === "true", limit: parseBoundedInt(opts.limit, 50, 1, 50), offset: parseBoundedInt(opts.offset, 0, 0, 100000) }));
@@ -1051,7 +1079,7 @@ export default async function plugin(bb: BbPluginApi) {
         if (argv[0] === "comments" && argv[1] === "create") {
           const opts = parseArgs(argv.slice(2));
           if (!opts.task || !opts.file || opts.block === undefined || opts.content === undefined) {
-            return { exitCode: 2, stderr: "usage: bb humanlayer comments create --task <taskId> --file <fileName> --block <index> --content <text>\n" };
+            return { exitCode: 2, stderr: "usage: bb rpi comments create --task <taskId> --file <fileName> --block <index> --content <text>\n" };
           }
           const result = getArtifactVersion(db, opts.task, opts.file);
           if (!result) return { exitCode: 1, stderr: "artifact not found\n" };
@@ -1073,7 +1101,7 @@ export default async function plugin(bb: BbPluginApi) {
         }
         if (argv[0] === "comments" && argv[1] === "resolve") {
           const opts = parseArgs(argv.slice(2));
-          if (!opts.task || !opts.file || !opts.id) return { exitCode: 2, stderr: "usage: bb humanlayer comments resolve --task <taskId> --file <fileName> --id <prefix>\n" };
+          if (!opts.task || !opts.file || !opts.id) return { exitCode: 2, stderr: "usage: bb rpi comments resolve --task <taskId> --file <fileName> --id <prefix>\n" };
           const artifact = getArtifact(db, opts.task, opts.file);
           if (!artifact) return { exitCode: 1, stderr: "artifact not found\n" };
           const match = resolveTruncatedId(db, artifact.id, opts.id);
@@ -1084,7 +1112,7 @@ export default async function plugin(bb: BbPluginApi) {
           publishComments(bb, opts.task, artifact.id, match.id, false, "resolved");
           return { exitCode: 0, stdout: json ? `${JSON.stringify({ id: match.id, resolved: true })}\n` : `${match.id.slice(0, 8)}\tresolved\n` };
         }
-        return { exitCode: 2, stderr: "usage: bb humanlayer {tasks|sessions|artifacts|comments|launch-skill|launch-attempts|suppressions|notifications|workspace} ...\n" };
+        return { exitCode: 2, stderr: "usage: bb rpi {tasks|sessions|artifacts|comments|launch-skill|launch-attempts|suppressions|notifications|workspace} ...\n" };
       } catch (error) {
         return { exitCode: 1, stderr: `${String(error instanceof Error ? error.message : error)}\n` };
       }
@@ -1158,7 +1186,7 @@ export default async function plugin(bb: BbPluginApi) {
         sweepOldSuppressions(db);
         for (const taskId of promoteStalePendingLaunchAttempts(db)) {
           bb.realtime.publish("tasks", { taskId });
-          bb.realtime.publish("hl:sessions", { taskId, threadId: null });
+          bb.realtime.publish("rpi:sessions", { taskId, threadId: null });
         }
         await sleep(60_000, signal);
       }
@@ -1294,7 +1322,7 @@ type ThreadInfoCacheEntry = {
 type ThreadInfoCache = Map<string, ThreadInfoCacheEntry>;
 
 // Perf (item 7): listSessions must not make a per-session SDK call. registerSessionRuntime's own
-// thread:changed reconcile already fetches a fresh `threads.get` for hl_status derivation; this
+// thread:changed reconcile already fetches a fresh `threads.get` for rpi_status derivation; this
 // callback rides that same fetch (and the cheaper thread.active/thread.idle event payloads) to
 // keep a title/workingDirectory/threadUpdatedAt/contextUsage cache current, so listSessions can
 // read it synchronously instead of calling the SDK itself. contextUsage is refreshed by a

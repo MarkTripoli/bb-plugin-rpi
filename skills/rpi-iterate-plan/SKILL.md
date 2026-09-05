@@ -9,23 +9,23 @@ You are revising an existing implementation plan. Check feedback before applying
 
 ## bb Task Setup
 
-0. Call `hl_task_context` before reading files. Use its task directory, artifact manifest, repository, branch, provider, and thread id. If it fails, stop.
+0. Call `rpi_task_context` before reading files. Use its task directory, artifact manifest, repository, branch, provider, and thread id. If it fails, stop.
 1. Resolve the target plan from `@file` or the artifact manifest. Ask only if multiple plan artifacts are plausible.
 2. Locate this skill through the skills tier listing, then read references relative to this skill directory: `references/plan_template.md`, `references/plan_final_answer.md`, `references/plan_in_worktree_answer.md`, and `references/plan_disabled_answer.md`.
-3. After editing, call `hl_artifact_save` with the plan file name and keep the returned `::hl-artifact{...}` directive for the final answer.
+3. After editing, call `rpi_artifact_save` with the plan file name and keep the returned `::rpi-artifact{...}` directive for the final answer.
 
 ## Steps
 
 1. **Read all input files fully**:
    - Read the plan and the relevant upstream artifacts: task or ticket, research, design notes, PRD, TDD, and structure outline.
    - Read supplied feedback files fully.
-   - List the task directory with `ls -La <task-dir>`. Avoid plain `ls`, `ls -l`, search, and glob expansion inside `.humanlayer/tasks` because the path may be linked.
+   - List the task directory with `ls -La <task-dir>`. Avoid plain `ls`, `ls -l`, search, and glob expansion inside `.rpi/tasks` because the path may be linked.
    - Do not use partial reads.
 
 2. **If a ticket or comment file is provided, read it as feedback**:
    - Treat it as user instruction to evaluate, not as automatically correct.
    - Map each item to the affected plan phase or success criterion.
-   - If comments are relevant, call `hl_get_artifact_comments` for the plan artifact.
+   - If comments are relevant, call `rpi_get_artifact_comments` for the plan artifact.
 
 3. **If the user gives input**:
    - Do not accept corrections blindly.
@@ -36,7 +36,7 @@ You are revising an existing implementation plan. Check feedback before applying
    Child research pattern:
 
    ```text
-   bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same provider> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-codebase-analyzer <narrow fact to verify>"
+   bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same provider> --model <research model from rpi_task_context preferences> --prompt "/rpi-agent-codebase-analyzer <narrow fact to verify>"
    bb thread wait <thread-id>
    bb thread output <thread-id>
    ```
@@ -57,8 +57,8 @@ You are revising an existing implementation plan. Check feedback before applying
 6. **Inspect workspace state**:
 
 ```text
-Read .humanlayer/workspace.json if present
-Read .humanlayer/workspace.local.json if present
+Read .rpi/workspace.json if present
+Read .rpi/workspace.local.json if present
 git rev-parse --git-dir
 ```
 
@@ -67,7 +67,7 @@ git rev-parse --git-dir
    - Else if workspace setup is disabled by local config or shared config, create or check out the task branch, then use `references/plan_disabled_answer.md`.
    - Otherwise use `references/plan_final_answer.md`.
 
-8. Save with `hl_artifact_save` and respond following the selected template exactly.
+8. Save with `rpi_artifact_save` and respond following the selected template exactly.
 
 ## Plan Writing Guidelines
 

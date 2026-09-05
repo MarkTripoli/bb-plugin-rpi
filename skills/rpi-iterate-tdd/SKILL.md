@@ -28,10 +28,10 @@ I can revise the TDD now. Choose one path: send concrete feedback, continue the 
 
 ## bb Task Setup
 
-0. Call `hl_task_context` before reading files, spawning child threads, or choosing an artifact path. Use its task directory, task slug, artifact manifest, repository, branch, thread id, provider, and model preferences. If it fails, stop.
-1. Use the task directory returned by the tool. Do not guess a sibling under `.humanlayer/tasks` from an old session or a remembered slug.
+0. Call `rpi_task_context` before reading files, spawning child threads, or choosing an artifact path. Use its task directory, task slug, artifact manifest, repository, branch, thread id, provider, and model preferences. If it fails, stop.
+1. Use the task directory returned by the tool. Do not guess a sibling under `.rpi/tasks` from an old session or a remembered slug.
 2. Locate this installed skill through the skills tier listing, then read reference files relative to this skill directory: `references/tdd_template.md`, `references/artifact_template.html`, `references/tdd_final_answer.md`, `references/tdd_final_answer.md`.
-3. After every artifact write or edit, call `hl_artifact_save` with the relative file name and keep the returned `::hl-artifact{...}` directive for the final answer.
+3. After every artifact write or edit, call `rpi_artifact_save` with the relative file name and keep the returned `::rpi-artifact{...}` directive for the final answer.
 
 ## Continue Grilling Mode
 
@@ -57,24 +57,24 @@ If the user asks to keep working through technical questions:
    - Do not accept corrections blindly.
    - Read named files and directories.
    - Use direct source reads or child research to verify uncertain claims.
-   - If comments are relevant, call `hl_get_artifact_comments` for the TDD artifact.
+   - If comments are relevant, call `rpi_get_artifact_comments` for the TDD artifact.
 
 3. **Spawn child research when needed**:
 
 Use child threads only when a missing fact would change the artifact. Spawn independent assignments first, then wait for them and read their final messages:
 
 ```text
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-codebase-locator <assignment>"
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-codebase-analyzer <assignment>"
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-codebase-pattern-finder <assignment>"
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-web-search-researcher <assignment>"
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context preferences> --prompt "/rpi-agent-codebase-locator <assignment>"
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context preferences> --prompt "/rpi-agent-codebase-analyzer <assignment>"
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context preferences> --prompt "/rpi-agent-codebase-pattern-finder <assignment>"
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context preferences> --prompt "/rpi-agent-web-search-researcher <assignment>"
 bb thread wait <thread-id>
 bb thread output <thread-id>
 ```
 
 Role mapping: locator finds files and tests, analyzer explains current behavior, pattern finder finds local precedents, and web researcher checks external behavior or current documentation. The child thread's final message is the deliverable. Use only findings you have read from `bb thread output`.
 
-If a child thread or direct read discovers current-state facts that are missing or stale in the completed research artifact, fold those discoveries back into that research artifact before finalizing the TDD. Save the updated research artifact with `hl_artifact_save`, then continue the TDD from the corrected context.
+If a child thread or direct read discovers current-state facts that are missing or stale in the completed research artifact, fold those discoveries back into that research artifact before finalizing the TDD. Save the updated research artifact with `rpi_artifact_save`, then continue the TDD from the corrected context.
 
 4. **Update the TDD in place**:
    - Preserve frontmatter and major template sections.
@@ -85,7 +85,7 @@ If a child thread or direct read discovers current-state facts that are missing 
 
 5. **Update PRD or mockups if technical findings affect product behavior**:
    - If the technical decision changes UX, product scope, availability, states, permissions, or workflow, update the product artifact too when present.
-   - Save any changed artifact with `hl_artifact_save`.
+   - Save any changed artifact with `rpi_artifact_save`.
 
 6. **Stop and ask what is next**:
    - After applying the feedback, stop.
@@ -143,7 +143,7 @@ After a change, save the artifact and ask what to work on next. Do not continue 
 
 ## Representation Guidance
 
-Use Mermaid for system flows, sequence diagrams, entity relationships, or type hierarchy sketches. Use HTML artifacts for concepts that need annotations, comparison, or layout beyond markdown. Read `references/artifact_template.html` before writing HTML and display the file with a `::hl-artifact{...}` embed.
+Use Mermaid for system flows, sequence diagrams, entity relationships, or type hierarchy sketches. Use HTML artifacts for concepts that need annotations, comparison, or layout beyond markdown. Read `references/artifact_template.html` before writing HTML and display the file with a `::rpi-artifact{...}` embed.
 
 Use call-stack trees, component trees, file-tree diffs, dependency-injection maps, signatures, and pseudocode for Program Design. Use proper tree glyphs in trees and reserve diff notation for actual before/after changes.
 
@@ -155,29 +155,29 @@ If a PRD exists, use it for product requirements, user flows, and mockups. Do no
 
 If the iteration is driven by artifact comments:
 
-1. Fetch comments with `hl_get_artifact_comments` for the TDD artifact.
+1. Fetch comments with `rpi_get_artifact_comments` for the TDD artifact.
 2. Work one comment or one tightly related group at a time.
 3. If a comment asks for a factual correction, verify it before editing.
 4. If a comment asks for a new technical choice, treat it as an open design decision and ask one question unless the answer is already explicit.
-5. Reply with `hl_reply_to_artifact_comment` only when the reply adds value beyond the document edit.
-6. Resolve comments with `hl_update_artifact_comments` only after the user explicitly confirms resolution.
+5. Reply with `rpi_reply_to_artifact_comment` only when the reply adds value beyond the document edit.
+6. Resolve comments with `rpi_update_artifact_comments` only after the user explicitly confirms resolution.
 7. Do not delete comments unless explicitly asked.
 
 Comments are collaboration inputs, not a second source of hidden requirements. Fold their accepted content into the TDD so future sessions can read the artifact without reading the comment thread.
 
 7. **Finish only when the user is done**:
-   - When the design is complete and approved, save the TDD with `hl_artifact_save`.
+   - When the design is complete and approved, save the TDD with `rpi_artifact_save`.
    - Read `references/tdd_final_answer.md`.
    - Follow the final template exactly and include the artifact directive.
 
 ## Artifact and Reading Rules
 
 - Read task artifacts fully. Do not use partial reads for task files, user-mentioned files, or the artifact you are editing.
-- List task directories with `ls -La <task-dir>`. Avoid plain `ls`, `ls -l`, search, and glob expansion inside `.humanlayer/tasks` because the path may be a linked directory.
+- List task directories with `ls -La <task-dir>`. Avoid plain `ls`, `ls -l`, search, and glob expansion inside `.rpi/tasks` because the path may be a linked directory.
 - Do not read research-question artifacts during design, outline, or plan work. They guide the research phase only; use completed research instead.
 - Do not inspect unrelated task directories unless the user explicitly asks.
 - Treat failed artifact saves, failed comment calls, or unavailable task context as blockers. Do not work around them by writing untracked side files.
-- Use `hl_next_artifact_number` when creating a new numbered artifact. The file name format is `NN-<type>-<2-4-word-kebab-slug>.md`.
+- Use `rpi_next_artifact_number` when creating a new numbered artifact. The file name format is `NN-<type>-<2-4-word-kebab-slug>.md`.
 
 ## Markdown Formatting
 

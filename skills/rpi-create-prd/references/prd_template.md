@@ -43,7 +43,7 @@ sha: [current commit]
 
 [Behavior and edge cases.]
 
-::hl-artifact{task="{task-id}" file="mockup-{description}.html"}
+::rpi-artifact{task="{task-id}" file="mockup-{description}.html"}
 
 [Explain what the mockup demonstrates.]
 

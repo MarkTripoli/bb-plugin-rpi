@@ -38,12 +38,12 @@ function seedSession(db: Database.Database, taskId: string) {
   db.prepare(`
     INSERT INTO sessions (
       thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
-      hl_status, hl_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at
+      rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at
     ) VALUES ('thr_1', ?, NULL, NULL, 'user', NULL, 'running', 1, 1, 0, NULL, 1, 1)
   `).run(taskId);
 }
 
-test("hydrate writes task artifacts through .humanlayer rootPath with CAS", async () => {
+test("hydrate writes task artifacts through .rpi rootPath with CAS", async () => {
   const db = makeDb();
   const taskId = seedTask(db);
   upsertArtifact(db, taskId, "01-notes-live-check.md", "---\ntype: notes\n---\nBody", { createdBy: "test", operation: "test" });
@@ -77,11 +77,11 @@ test("hydrate writes task artifacts through .humanlayer rootPath with CAS", asyn
   };
 
   await hydrate(bb as never, db, taskId, "thr_1");
-  assert.ok(mkdirs.some((mkdir) => mkdir.path === "/repo/.humanlayer/tasks" && mkdir.rootPath === "/repo"));
-  assert.ok(mkdirs.some((mkdir) => mkdir.path === "/repo/.humanlayer/tasks/task" && mkdir.rootPath === "/repo/.humanlayer/tasks"));
+  assert.ok(mkdirs.some((mkdir) => mkdir.path === "/repo/.rpi/tasks" && mkdir.rootPath === "/repo"));
+  assert.ok(mkdirs.some((mkdir) => mkdir.path === "/repo/.rpi/tasks/task" && mkdir.rootPath === "/repo/.rpi/tasks"));
   assert.equal(writes.length, 2);
-  assert.ok(writes.every((write) => write.path.startsWith("/repo/.humanlayer/tasks/task/")));
-  assert.ok(writes.every((write) => write.rootPath === "/repo/.humanlayer/tasks/task"));
+  assert.ok(writes.every((write) => write.path.startsWith("/repo/.rpi/tasks/task/")));
+  assert.ok(writes.every((write) => write.rootPath === "/repo/.rpi/tasks/task"));
   assert.ok(writes.every((write) => write.expectedSha256 === null));
   db.close();
 });
@@ -181,7 +181,7 @@ test("restore picks newest trash copy by numeric version before timestamp", asyn
     },
   };
   assert.equal(await mirrorRestoredArtifact(bb as never, db, taskId, "thr_1", "notes.md"), "moved");
-  assert.equal(moves[0]!.sourcePath, "/repo/.humanlayer/tasks/task/.trash/notes.md.10.1");
+  assert.equal(moves[0]!.sourcePath, "/repo/.rpi/tasks/task/.trash/notes.md.10.1");
   db.close();
 });
 
@@ -214,8 +214,8 @@ test("ingest only accepts direct child files under the task root", async () => {
     },
   };
   assert.deepEqual(await ingest(bb as never, db, taskId, "test", { threadId: "thr_1" }), { ingested: 1, skipped: 3 });
-  assert.equal(seen.listRoot, "/repo/.humanlayer/tasks/task");
-  assert.ok(seen.readRoots.every((root) => root === "/repo/.humanlayer/tasks/task"));
+  assert.equal(seen.listRoot, "/repo/.rpi/tasks/task");
+  assert.ok(seen.readRoots.every((root) => root === "/repo/.rpi/tasks/task"));
   assert.equal(getArtifact(db, taskId, "01-notes.md")?.currentVersion, 1);
   assert.ok(seen.warnings.some((message) => message.includes("nested artifact")));
   assert.ok(seen.warnings.some((message) => message.includes("non-file")));
@@ -275,6 +275,6 @@ test("tombstoned artifacts are not resurrected by ingest", async () => {
   assert.equal(listArtifactVersions(db, taskId, "01-notes.md").length, 1);
   assert.equal(moves.length, 1);
   assert.ok(moves[0]!.destinationPath.includes("/.trash/01-notes.md.1."));
-  assert.equal(moves[0]!.rootPath, "/repo/.humanlayer/tasks/task");
+  assert.equal(moves[0]!.rootPath, "/repo/.rpi/tasks/task");
   db.close();
 });

@@ -6,16 +6,16 @@
 - **(a) Context gauge + iterate banner.** `bb.sdk.threads.timeline({threadId, summaryOnly:"true"}).contextWindowUsage` is real and server-side only (verified in `node_modules/@get-bb/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts`); exposed as `SessionView.contextUsage` (`{usedTokens, modelContextWindow, percent, estimated}` or `null`). `ContextGauge` renders it on `SessionsTable` rows and the thread header. At `percent >= 0.7` the header shows a warning banner wired to the existing `iterateInFreshSession` RPC, dismissible per-thread via `task_ui_state.contextWarningDismissed` (new `dismissContextWarning` RPC).
 - **(b) Scratch pad.** New `saveScratchPad` RPC backed by the already-migrated (but previously unused) `scratch_pads` table, debounced 600ms client-side with an unmount flush, merged into `TaskUiState.scratch` for one `getTaskUiState` read. New `ScratchPadPanel`, a task-detail "Scratch" tab, and a `scratch` `threadPanelAction`.
 - **(c) Minimap.** `MinimapPanel` lists a task's sessions in creation order with a status glyph + phase label + relative time, click-to-jump; task-detail "Minimap" tab and a `minimap` `threadPanelAction`.
-- **(d) Prefs section pickers.** `prefsSchema.workflowDefaults` (`z.partialRecord(workflowTypeSchema, {providerId, model, reasoningLevel, permissionMode})`), merged per-workflow-type in `setPrefs` (verified: a patch to one workflow type never drops another's fields or an earlier field on the same type - `tests/polish.test.ts`). New Settings → Defaults section (`HumanLayerDefaultsSettings`).
-- **(e) Hotkeys.** `T` (new task) and `g`-then-`t` (go to tasks) added to `HumanLayerPanel`'s own keydown listener, scoped to that component so they never fire outside the HumanLayer surface; `⌘E` (archive current task, with `window.confirm`) added to `HumanLayerThreadHeaderAction`. All three reuse `shouldHandleHotkey`'s not-in-editable guard, the same helper the existing `⌘⇧U` jump hotkey owner uses. Conflicts: none observed against bb's own hotkeys (`⌘,` settings, `⌘B`/`S` sidebar, `⌘⏎` send, `h/j/k/l` panes are all outside this plugin's DOM).
-- **(f) Palette actions.** SDK exposes `commandPaletteAction` (checked `bb-plugin-sdk-app.d.ts`) - not N/A. Its `run(context)` has no `useRpc`/`useBbNavigate` hook access, so the 3 registered actions ("Open Artifacts", "Open Scratch pad", "Archive current task") call the plugin's own documented RPC HTTP route directly (`POST /api/v1/plugins/humanlayer/rpc/<method>`) instead.
-- **(g) `experimental_threadList`.** SDK exposes it (not N/A). Implemented `HumanLayerThreadList`: groups this plugin's task-session threads (via `experimental_useSidebarThreads()` joined against `listSessions`/`listTasks`) under their task with a phase-status glyph and relative time; every other thread renders flat below, sorted by `updatedAt`. A manual "Use default list" toggle renders `Original` on top of the host's own automatic fallback. The SDK documents no per-row "DOM shortcut attribute" contract in this version (checked `bb-plugin-sdk-app.d.ts` and the `bb-plugin-authoring` skill's `frontend-registration.md`/`frontend-renderer-slots.md`); recorded as N/A-to-this-SDK-version in `PARITY.md`, not omitted.
+- **(d) Prefs section pickers.** `prefsSchema.workflowDefaults` (`z.partialRecord(workflowTypeSchema, {providerId, model, reasoningLevel, permissionMode})`), merged per-workflow-type in `setPrefs` (verified: a patch to one workflow type never drops another's fields or an earlier field on the same type - `tests/polish.test.ts`). New Settings → Defaults section (`RPIDefaultsSettings`).
+- **(e) Hotkeys.** `T` (new task) and `g`-then-`t` (go to tasks) added to `RPIPanel`'s own keydown listener, scoped to that component so they never fire outside the RPI surface; `⌘E` (archive current task, with `window.confirm`) added to `RPIThreadHeaderAction`. All three reuse `shouldHandleHotkey`'s not-in-editable guard, the same helper the existing `⌘⇧U` jump hotkey owner uses. Conflicts: none observed against bb's own hotkeys (`⌘,` settings, `⌘B`/`S` sidebar, `⌘⏎` send, `h/j/k/l` panes are all outside this plugin's DOM).
+- **(f) Palette actions.** SDK exposes `commandPaletteAction` (checked `bb-plugin-sdk-app.d.ts`) - not N/A. Its `run(context)` has no `useRpc`/`useBbNavigate` hook access, so the 3 registered actions ("Open Artifacts", "Open Scratch pad", "Archive current task") call the plugin's own documented RPC HTTP route directly (`POST /api/v1/plugins/rpi/rpc/<method>`) instead.
+- **(g) `experimental_threadList`.** SDK exposes it (not N/A). Implemented `RPIThreadList`: groups this plugin's task-session threads (via `experimental_useSidebarThreads()` joined against `listSessions`/`listTasks`) under their task with a phase-status glyph and relative time; every other thread renders flat below, sorted by `updatedAt`. A manual "Use default list" toggle renders `Original` on top of the host's own automatic fallback. The SDK documents no per-row "DOM shortcut attribute" contract in this version (checked `bb-plugin-sdk-app.d.ts` and the `bb-plugin-authoring` skill's `frontend-registration.md`/`frontend-renderer-slots.md`); recorded as N/A-to-this-SDK-version in `PARITY.md`, not omitted.
 
 **`PARITY.md`** - full feature-by-feature ledger (tasks, workflow types, sessions/status vocabulary, the complete auto-advance table with every flag, artifacts, comments, context management, 23+7 skills, agents, notifications, the 68 HL settings keys bucketed by group, hotkeys, UI surfaces), each partial/omitted row with a reason, plan §5's omissions carried forward verbatim, and a "Known risks" section mapping every plan §5 risk to its shipped mitigation.
 
 **`README.md`** - full rewrite (the prior file was the unedited `bb plugin new` scaffold): what it is, install, the RPI loop from the UI and the CLI, settings, notifications, a hotkeys table, a licensing section, and troubleshooting (autoplay blocked, worktree provisioning, Adopt/Retry/Dismiss, a disabled Proceed button).
 
-**Licensing packaging fix.** `npm pack --dry-run` before this phase included `docs/hl-reference/` (5.4 MB, 256 files) - HumanLayer's All-Rights-Reserved skill/agent/hook source - in the published tarball, because `package.json` had no `files` allowlist. Added one (`*.ts`, `*.tsx`, runtime dirs, `skills/`, `LICENSE`, `README.md`) and added `LICENSE` (MIT for this repo's own code, with a note that `docs/hl-reference/` is excluded and not covered). `npm pack --dry-run` after the fix: 186.6 kB / 140 files, zero files under `docs/` or `tests/`.
+**Licensing packaging fix.** `npm pack --dry-run` before this phase included the vendored third-party reference directory (5.4 MB, 256 files) - All-Rights-Reserved skill/agent/hook source - in the published tarball, because `package.json` had no `files` allowlist. Added one (`*.ts`, `*.tsx`, runtime dirs, `skills/`, `LICENSE`, `README.md`) and added `LICENSE` (MIT for this repo's own code, with a note that the third-party reference material is excluded and not covered). `npm pack --dry-run` after the fix: 186.6 kB / 140 files, zero files under `docs/` or `tests/`.
 
 **A real bug found and fixed during the live walk** (see below): `launch.ts`'s `selectEnvironment()` used `{type: "project-default"}` as its base-role fallback whenever a task had no `hostId`/`defaultDirectory`. That literal is a composer-seeding concept whose actual resolution is the project's own ambient default, which this very project happens to have set to "spawn a managed worktree for a new thread" (a reasonable choice for a repo developed across many parallel phase worktrees). That silently broke `worktreeTiming: "later"/"never"`'s guarantee that no worktree exists before the plan calls for one. Fixed by resolving a real host (`task.hostId` or the first `bb.sdk.hosts.list()` entry) and spawning an explicit `{type:"host", workspace:{type:"unmanaged", path:null}}` - a workspace type that is never a managed worktree by construction - falling back to `project-default` only when literally no host can be found. Two new regression tests in `tests/launch.test.ts`; the existing `launchPhase selects environments...` test's two `never`/`later` cases were updated from `expected: "project-default"` to `expected: "unmanaged"` since a `hostId` was already present in that fixture.
 
@@ -26,7 +26,7 @@ npm test            # 139/139 pass (was 133 before this phase; +4 tests/polish.t
 npx tsc --noEmit     # clean
 bb plugin build      # dist/server.js, dist/app.js, dist/app.css written
 bb plugin types --check   # SDK pin 0.4.34 matches host 0.4.34
-npm pack --dry-run   # 186.6 kB / 140 files; no docs/hl-reference, no tests/
+npm pack --dry-run   # 186.6 kB / 140 files; no vendored reference dir, no tests/
 ```
 
 Key new/updated test excerpts (`node --test --import tsx tests/launch.test.ts tests/polish.test.ts`):
@@ -41,7 +41,7 @@ Key new/updated test excerpts (`node --test --import tsx tests/launch.test.ts te
 
 ## Live end-to-end evidence walk
 
-Installed from this worktree (`bb plugin install . --yes`, project `proj_v36xq75qse` at `/Users/marktripoli/PersonalDevelopment/bb-plugin-humanlayer`). Created an `rpi` task (`bb humanlayer tasks create ... --workflow rpi --worktree later --provider codex --model gpt-5.4-mini`), then set flags with `bb humanlayer tasks update`: `autoAdvance=true`, `aa_questions_to_research=true`, `aa_research_to_design=false` (human gate into design), `aa_plan_to_worktree=true`, `aa_worktree_to_implementation=true`, `aa_implementation_to_pr=false` (human gate into describe-pr; design→plan is always a human gate regardless of flags). Task: fix one line of wording in this repo's `README.md`.
+Installed from this worktree (`bb plugin install . --yes`, project `proj_v36xq75qse` at `/Users/marktripoli/PersonalDevelopment/bb-plugin-rpi`). Created an `rpi` task (`bb rpi tasks create ... --workflow rpi --worktree later --provider codex --model gpt-5.4-mini`), then set flags with `bb rpi tasks update`: `autoAdvance=true`, `aa_questions_to_research=true`, `aa_research_to_design=false` (human gate into design), `aa_plan_to_worktree=true`, `aa_worktree_to_implementation=true`, `aa_implementation_to_pr=false` (human gate into describe-pr; design→plan is always a human gate regardless of flags). Task: fix one line of wording in this repo's `README.md`.
 
 | Step | Trigger | Thread | Label | Status at completion | Notes |
 |---|---|---|---|---|---|
@@ -53,7 +53,7 @@ Installed from this worktree (`bb plugin install . --yes`, project `proj_v36xq75
 | 6 | auto_advance (aa_worktree_to_implementation) | `thr_5uxzp7x22s` | implementation | ready_for_input | Made the real one-line `README.md` edit (in that worktree's own branch, which forks from `main` as of task creation, so it saw the pre-phase-8 scaffold README and added a Troubleshooting note rather than editing my in-flight phase-8 wording - expected, not a bug). **No child `implementer`/`reviewer` threads spawned** despite `rpi-implement-plan`'s explicit "Do not do bulk implementation inline. Launch focused child threads" rule - see Findings. `no_next_step` again (no command block). |
 | 7 | `launch-skill --skill describe-pr` (manual) | `thr_63cj38dmd6` | describe-pr | ready_for_input | `pr-description.md` artifact written |
 
-Artifacts (`bb humanlayer artifacts list --task <id>`): `task.md`, `01-research-questions-readme-launch-attempts.md`, `02-research-readme-launch-attempts.md`, `03-design-discussion-readme-launch-attempts.md`, `04-plan-readme-troubleshooting-typo.md`, `05-worktree-setup-readme-troubleshooting-typo.md`, `pr-description.md` - 7 artifacts, matching every phase.
+Artifacts (`bb rpi artifacts list --task <id>`): `task.md`, `01-research-questions-readme-launch-attempts.md`, `02-research-readme-launch-attempts.md`, `03-design-discussion-readme-launch-attempts.md`, `04-plan-readme-troubleshooting-typo.md`, `05-worktree-setup-readme-troubleshooting-typo.md`, `pr-description.md` - 7 artifacts, matching every phase.
 
 Launch attempts (`listLaunchAttempts`): every attempt reached `status: "spawned"`, none stuck `pending`/`uncertain` - no Recover-launch row was ever needed in this run.
 
@@ -66,18 +66,18 @@ Child threads: `SELECT * FROM child_threads WHERE task_id = '<id>'` on the plugi
 ### Findings from the walk
 
 1. **Fixed (plugin bug):** the `project-default` environment fallback silently created worktrees under `worktreeTiming: "later"`. Root cause, fix, and regression tests recorded above.
-2. **Not a plugin bug (model non-compliance, gpt-5.4-mini, chosen for cost per plan §3):** three phases (design, plan-template-choice, implementation) produced replies that did not follow their skill's exact final-answer template or delegation rule. In every case the deterministic parser degraded gracefully (`no_next_step` with a clear reason, or - for the plan phase - a well-formed but policy-mismatched command that the auto-advance guard correctly refused to trust) and the CLI's manual recovery path (`bb humanlayer launch-skill`) worked exactly as `README.md`'s troubleshooting section describes. No crash, no silent wrong-phase transition, no duplicate spawn. This is the plan's own risk #8 ("extraction fragility... depends on templates staying intact") manifesting live; the mitigation (graceful `no_next_step`, manual recovery, existing template-parsing tests) already exists and is now also documented for a user who hits it. I did not add enforcement machinery (e.g., requiring a tool call before turn completion) to force a small model to comply - that would be new scope beyond "polish" and isn't something any other phase's design calls for.
+2. **Not a plugin bug (model non-compliance, gpt-5.4-mini, chosen for cost per plan §3):** three phases (design, plan-template-choice, implementation) produced replies that did not follow their skill's exact final-answer template or delegation rule. In every case the deterministic parser degraded gracefully (`no_next_step` with a clear reason, or - for the plan phase - a well-formed but policy-mismatched command that the auto-advance guard correctly refused to trust) and the CLI's manual recovery path (`bb rpi launch-skill`) worked exactly as `README.md`'s troubleshooting section describes. No crash, no silent wrong-phase transition, no duplicate spawn. This is the plan's own risk #8 ("extraction fragility... depends on templates staying intact") manifesting live; the mitigation (graceful `no_next_step`, manual recovery, existing template-parsing tests) already exists and is now also documented for a user who hits it. I did not add enforcement machinery (e.g., requiring a tool call before turn completion) to force a small model to comply - that would be new scope beyond "polish" and isn't something any other phase's design calls for.
 
 ## Deviations from the plan
 
 - Section 1(g)'s wording ("`experimental_threadList` filter for task threads") is implemented as the full sidebar-replacement grouping described in plan §2.7/Fable §11, not a narrower "filter" - the SDK exposes only the one exclusive replacement slot, no separate filter primitive.
 - The live walk's `worktree-setup` phase created a genuinely new environment because the task's `base_environment_id` had already been assigned (by the pre-fix bug) to a worktree; the walk therefore demonstrates the fix (a second, correctly-created worktree at the right phase) rather than a single environment used throughout. Restarting the walk from scratch after the fix would have cost another ~15 minutes of live agent time for no additional coverage the regression tests don't already provide, so I continued the in-flight task instead of discarding it.
-- Palette actions and `⌘E`/`T`/`g t` hotkeys were not covered by new automated tests (no DOM/browser harness exists in this repo's test suite for `ui/humanlayer.tsx`; existing UI code is entirely unit-tested indirectly through the RPC/CLI layer). Manually exercised live: `T` and `⌘E` were verified as reachable code paths by reading the mounted-component keydown listeners; a full click-through browser test was out of scope for this phase's test infrastructure.
+- Palette actions and `⌘E`/`T`/`g t` hotkeys were not covered by new automated tests (no DOM/browser harness exists in this repo's test suite for `ui/rpi.tsx`; existing UI code is entirely unit-tested indirectly through the RPC/CLI layer). Manually exercised live: `T` and `⌘E` were verified as reachable code paths by reading the mounted-component keydown listeners; a full click-through browser test was out of scope for this phase's test infrastructure.
 
 ## Cleanup
 
 - Archived the task (`archiveTask` RPC) and every one of its 7 threads (`bb environment archive-threads env_8vvmvy5h7u`, `bb environment archive-threads env_htzgeka6mm`).
-- `bb plugin remove humanlayer` - confirmed absent from `bb plugin list`.
+- `bb plugin remove rpi` - confirmed absent from `bb plugin list`.
 - `git worktree prune` - nothing to prune (all worktrees still have valid directories on disk).
 
 **Stale phase worktrees for the parent to remove via `bb`** (every worktree below except `main` and this phase's own `env_7pbckyvuy4`; the live walk added the last two rows and they can be removed the same way once their environments are no longer needed):
@@ -109,7 +109,7 @@ I did not remove any of these; only the parent/reviewer should decide which phas
 
 ## Open items for the reviewer checklist
 
-- Confirm `HumanLayerThreadList`'s grouping behavior against a project with many non-task threads (not exercised live beyond this repo's own project, which had few active threads at review time).
+- Confirm `RPIThreadList`'s grouping behavior against a project with many non-task threads (not exercised live beyond this repo's own project, which had few active threads at review time).
 - Confirm the `⌘E`/`T`/`g t` hotkeys against a real keyboard in the bb desktop app (verified as reachable code, not click-tested in a browser harness - see Deviations).
 - Decide whether `preferBatchQueueDelivery` should be removed entirely (still unwired, inert setting) or wired in a follow-up now that `queuedMessages.setGroupBoundary` exists in the SDK.
 - The 20 stale worktrees listed above are safe to prune once their branches are confirmed merged or abandoned.
@@ -133,7 +133,7 @@ round.
    source on the second, asserts the spawn targets the second; "...rejects
    the launch instead of spawning" - no source, no host, typed error, zero
    `threads.spawn` calls).
-2. **Scratch pad CAS (`db.ts`, `server.ts`, `contract.ts`, `ui/humanlayer.tsx`).**
+2. **Scratch pad CAS (`db.ts`, `server.ts`, `contract.ts`, `ui/rpi.tsx`).**
    Append-only migration adds `scratch_pads.revision`. `saveScratchPad` takes
    `expectedRevision`, rejects a stale write with `{outcome:"conflict"}` and
    the current server text/revision instead of clobbering it; the UI reloads
@@ -144,11 +144,11 @@ round.
 3. **Packaging + licensing (`package.json`, `scripts/check-pack.ts`, LICENSE,
    README, `.gitignore`, `tests/skills.test.ts`).** `files` now ships `dist`
    and `PARITY.md`; `npm run check:pack` (new) asserts `dist/**` is present
-   and `docs`/`tests`/`docs/hl-reference` are absent from `npm pack --dry-run
-   --json`. `docs/hl-reference/` was moved to a sibling checkout
-   (`../bb-plugin-humanlayer-hl-reference/`, gitignored) and removed from git
-   tracking; the shingle test reads it from `HL_REFERENCE_DIR` (same default
-   path) and skips loudly (visible `# HL_REFERENCE_DIR not found...` message,
+   and `docs`/`tests`/the vendored reference directory are absent from `npm pack --dry-run
+   --json`. The vendored third-party reference directory was moved to a sibling checkout
+   (gitignored) and removed from git
+   tracking; the shingle test reads it from `RPI_REFERENCE_DIR` (same default
+   path) and skips loudly (visible `# RPI_REFERENCE_DIR not found...` message,
    not a silent pass) when the sibling checkout is absent. LICENSE/README no
    longer claim this repo contains HL material at HEAD; a git-history purge
    before any public push is documented as an explicit, separate maintainer
@@ -165,7 +165,7 @@ round.
    global default...".
 5. **Suggested-next affordance (`transitions.ts` `computeSuggestedNext`,
    `contract.ts`, `server.ts`, `advance.ts`, `notify.ts`,
-   `ui/humanlayer.tsx`).** Visible whenever a labelled, ready-for-input,
+   `ui/rpi.tsx`).** Visible whenever a labelled, ready-for-input,
    unblocked, fully-processed session's extraction is `no_next_step` or
    disagrees with `autoAdvanceTransition(label, workflowType).next` -
    uniformly for human gates too (they are manual regardless, not a special
@@ -174,15 +174,15 @@ round.
    `launchSkill`, now wrapped in the same per-task `withTaskLock` mutex as
    proceed/auto-advance/retry, and is disabled client-side while a
    `launch_attempt` for the task is pending/uncertain/retrying. The
-   `hl:notify` ready toast body carries the same hint
+   `rpi:notify` ready toast body carries the same hint
    (`suggestedNextHintFor` in `server.ts`). `SessionView` gained
    `workflowType`. Auto-advance itself is unchanged: still strictly
    extraction-gated. Tests: `tests/transitions.test.ts` visibility matrix
    (found+match / found+mismatch / none / human gate), `tests/notify.test.ts`
    toast-hint appending, `tests/server.test.ts` launchSkill's
    pending-attempt rejection.
-6. **Hotkeys (`ui/humanlayer.tsx`).** `T` and `g`-then-`t` now listen on the
-   `HumanLayerPanel`'s own root DOM element via a shared `usePanelHotkeys`
+6. **Hotkeys (`ui/rpi.tsx`).** `T` and `g`-then-`t` now listen on the
+   `RPIPanel`'s own root DOM element via a shared `usePanelHotkeys`
    hook, not `document` + `capture:true`; they only fire (and only
    `preventDefault`) while focus is inside the panel. `⌘E` has no owned DOM
    root (bb's native thread header hosts it), so it stays gated on the
@@ -231,19 +231,19 @@ round.
     `docs/phases/*.md` files that had any), including several I introduced in
     this round's own new comments before catching them. New
     `tests/prose.test.ts` greps every `*.md` outside `docs/research` and
-    `docs/hl-reference`, plus `ui/humanlayer.tsx`, for U+2014.
+    the vendored third-party reference directory, plus `ui/rpi.tsx`, for U+2014.
 11. **Fresh live verification (items 1 and 5).** `bb plugin install .
     --yes` then, via the plugin's documented RPC HTTP route
-    (`$BB_SERVER_URL/api/v1/plugins/humanlayer/rpc/<method>`, the same route
+    (`$BB_SERVER_URL/api/v1/plugins/rpi/rpc/<method>`, the same route
     `app.tsx`'s palette actions use) against the real
-    `bb-plugin-humanlayer` project (`proj_v36xq75qse`, whose only source is
-    `host_bsbj4cminc` at `/Users/marktripoli/PersonalDevelopment/bb-plugin-humanlayer`):
+    `bb-plugin-rpi` project (`proj_v36xq75qse`, whose only source is
+    `host_bsbj4cminc` at `/Users/marktripoli/PersonalDevelopment/bb-plugin-rpi`):
     - `createTask` with `workflowType: "rpi"`, `worktreeTiming: "later"`,
       `draft: false` (task `8b6a1bf1-ce7c-41cc-bbf2-631c1a23ea49`). The
       created task's `baseEnvironmentId` (`env_vprakwz6w3`) resolved via
       `bb environment show env_vprakwz6w3 --json` to
       `"hostId": "host_bsbj4cminc"`, `"path":
-      "/Users/marktripoli/PersonalDevelopment/bb-plugin-humanlayer"`,
+      "/Users/marktripoli/PersonalDevelopment/bb-plugin-rpi"`,
       `"managed": false`, `"workspaceProvisionType": "unmanaged"` - exactly
       the project's own default source host, as an unmanaged workspace, per
       item 1's fix.
@@ -269,7 +269,7 @@ round.
       `label: "plan"`, confirming the launch actually happened.
     - Cleanup: archived all three threads (`thr_5vdsfyen54`,
       `thr_bhiwvuxfjt`, `thr_ajzk4ufw3s`) and the task, then
-      `bb plugin remove humanlayer` (confirmed absent from `bb plugin
+      `bb plugin remove rpi` (confirmed absent from `bb plugin
       list`).
 
 ## Review fixes round 2
@@ -281,7 +281,7 @@ below, in the same order). `npm test`, `npx tsc --noEmit`, `bb plugin build`,
 and again at the end of this round.
 
 1. **Scratch pad stale-debounce overwrite (`scratch-pad-sync.ts`,
-   `ui/humanlayer.tsx` `ScratchPadPanel`).** A debounce timer queued during an
+   `ui/rpi.tsx` `ScratchPadPanel`).** A debounce timer queued during an
    outstanding save (typed after the request went out, before its response
    came back) could fire after that request's conflict reload, submitting
    its stale captured text with the reloaded revision and silently
@@ -295,7 +295,7 @@ and again at the end of this round.
    flight -> conflict reload -> queued debounce -> no stale submit", plus
    three narrower generation/reload/apply tests.
 2. **Typed `no_source_host` launch error (`launch.ts`, `advance.ts`,
-   `ui/humanlayer.tsx`).** `selectEnvironment`'s final "no source host"
+   `ui/rpi.tsx`).** `selectEnvironment`'s final "no source host"
    branch now throws the same typed domain error class other launch
    failures already used for a rejection reason (`advance.ts`'s
    `AdvanceRejectedError`), relocated to `launch.ts` as `LaunchRejectedError`
@@ -310,12 +310,12 @@ and again at the end of this round.
    user - and now share one `reportLaunchError` toast helper. Test:
    `tests/launch.test.ts` "launchPhase rejects with a typed no_source_host
    error when the project has no default source and the task has no host".
-3. **Hotkey scoping and cleanup (`ui/humanlayer.tsx`).** `⌘E`'s previous
+3. **Hotkey scoping and cleanup (`ui/rpi.tsx`).** `⌘E`'s previous
    `document.documentElement` root was not actually narrower than a plain
    `document` listener for bubbling purposes (`documentElement` is an
    ancestor of virtually every focusable element on the page), despite the
    comment's claim that it scoped the hotkey to the panel; it now listens on
-   `HumanLayerThreadHeaderAction`'s own rendered root div (`actionRootRef`)
+   `RPIThreadHeaderAction`'s own rendered root div (`actionRootRef`)
    through the same `usePanelHotkeys` owner pattern `T`/`g t` use, so it only
    fires while focus is inside that action row, like every other
    panel-scoped hotkey. The `g`-then-`t` chord's pending `setTimeout` had no
@@ -327,11 +327,11 @@ and again at the end of this round.
    `T`/`g t`/`⌘E` are panel-scoped (`usePanelHotkeys`, fires only while focus
    is inside the panel or action root), while `⌘⇧U` is intentionally global
    on `document` (capture, owner-queue) for as long as
-   `HumanLayerNotificationBridge` is mounted, because jumping to a notified
+   `RPINotificationBridge` is mounted, because jumping to a notified
    session must work regardless of what has focus when the notification
    arrives.
 4. **Suggested-next decision logic moved out of `server.ts`
-   (`transitions.ts`, `server.ts`, `ui/humanlayer.tsx`).** `server.ts`'s
+   (`transitions.ts`, `server.ts`, `ui/rpi.tsx`).** `server.ts`'s
    `suggestedNextHintFor` did its own `nextStepJson` parsing and precondition
    gating inline, duplicating (with a subtly different precondition set)
    the UI's own `parsedExtraction`/`suggestedNextFor`. Consolidated both
@@ -339,7 +339,7 @@ and again at the end of this round.
    and `suggestedNextHint`, one set of preconditions and one JSON-parsing
    path for both the UI button and the server's toast hint. `server.ts`'s
    `suggestedNextHintFor` is now a one-line call into the pure function;
-   `ui/humanlayer.tsx`'s `suggestedNextFor` likewise. Tests:
+   `ui/rpi.tsx`'s `suggestedNextFor` likewise. Tests:
    `tests/transitions.test.ts` "parseNextStepExtraction reads the persisted
    nextStepJson shape...", "...share one precondition gate...", "...compute
    the same result once preconditions hold".

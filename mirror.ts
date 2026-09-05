@@ -11,6 +11,7 @@ import {
   mimeFor,
   upsertArtifact,
 } from "./artifacts";
+import { TASK_ROOT_DIR } from "./constants";
 import { nowMs, readRow, writeRow } from "./db";
 import { getTask } from "./tasks";
 
@@ -90,7 +91,7 @@ async function resolveLocation(bb: BbPluginApi, db: Database, taskId: string, th
   if (!workspacePath) return null;
   const hostId = thread.environment?.hostId ?? thread.host?.id ?? thread.hostId ?? null;
   assertSafeArtifactFileName(taskResult.task.slug);
-  const rootPath = path.join(workspacePath, ".humanlayer", "tasks", taskResult.task.slug);
+  const rootPath = path.join(workspacePath, TASK_ROOT_DIR, "tasks", taskResult.task.slug);
   return {
     taskId,
     taskSlug: taskResult.task.slug,
@@ -136,19 +137,19 @@ async function ensureGitExclude(bb: BbPluginApi, location: MirrorLocation) {
   const metadataRoot = commonText ? (path.isAbsolute(commonText) ? commonText : path.resolve(gitDir, commonText)) : gitDir;
   const home = hostHomeFromPath(location.workspacePath);
   if (!home || !isWithin(metadataRoot, home)) {
-    bb.log.warn(`HumanLayer skipped .git/info/exclude update outside trusted home: ${metadataRoot}`);
+    bb.log.warn(`RPI skipped .git/info/exclude update outside trusted home: ${metadataRoot}`);
     return;
   }
   const head = await readFileAt(bb, location, path.join(metadataRoot, "HEAD"), metadataRoot);
   if (!head) {
-    bb.log.warn(`HumanLayer skipped .git/info/exclude update without trusted HEAD: ${metadataRoot}`);
+    bb.log.warn(`RPI skipped .git/info/exclude update without trusted HEAD: ${metadataRoot}`);
     return;
   }
   const excludePath = path.join(metadataRoot, "info", "exclude");
   const existing = await readFileAt(bb, location, excludePath, metadataRoot);
   const text = existing ? readBuffer(existing).toString("utf8") : "";
-  if (text.split(/\r?\n/).includes(".humanlayer/")) return;
-  const next = `${text}${text.endsWith("\n") || text.length === 0 ? "" : "\n"}.humanlayer/\n`;
+  if (text.split(/\r?\n/).includes(`${TASK_ROOT_DIR}/`)) return;
+  const next = `${text}${text.endsWith("\n") || text.length === 0 ? "" : "\n"}${TASK_ROOT_DIR}/\n`;
   await bb.sdk.files.write({
     path: excludePath,
     rootPath: metadataRoot,
@@ -330,19 +331,19 @@ export async function mirrorRestoredArtifact(bb: BbPluginApi, db: Database, task
 export async function hydrate(bb: BbPluginApi, db: Database, taskId: string, threadId: string) {
   const location = await resolveLocation(bb, db, taskId, threadId);
   if (!location) {
-    bb.log.info(`HumanLayer hydration skipped for ${threadId}: no workspace path`);
+    bb.log.info(`RPI hydration skipped for ${threadId}: no workspace path`);
     return { written: 0, skipped: 0, trashed: 0 };
   }
   await mkdir(bb, location, path.dirname(location.taskDir), location.workspacePath);
   await mkdir(bb, location, location.taskDir, path.dirname(location.taskDir));
-  await ensureGitExclude(bb, location).catch((error) => bb.log.warn(`HumanLayer could not update .git/info/exclude: ${String(error)}`));
+  await ensureGitExclude(bb, location).catch((error) => bb.log.warn(`RPI could not update .git/info/exclude: ${String(error)}`));
   const results = await mapConcurrent(listArtifacts(db, taskId, { includeDeleted: true }), FILE_CONCURRENCY, async (artifact) => {
     if (artifact.isDeleted) {
       const existing = await readFile(bb, location, artifactPath(location, artifact.fileName));
       if (existing && existing.sha256 === artifact.currentSha256) {
         return (await moveDeleted(bb, location, artifact.fileName, artifact.currentVersion)) === "moved" ? "trashed" : "skipped";
       } else if (existing) {
-        bb.log.warn(`HumanLayer left tombstoned artifact on disk with local edits: ${artifact.fileName}`);
+        bb.log.warn(`RPI left tombstoned artifact on disk with local edits: ${artifact.fileName}`);
       }
       return "skipped";
     }
@@ -355,9 +356,9 @@ export async function hydrate(bb: BbPluginApi, db: Database, taskId: string, thr
   const timestamp = nowMs();
   writeRow(db, "UPDATE sessions SET hydrated_at = ?, updated_at = ? WHERE thread_id = ?", timestamp, timestamp, threadId);
   bb.realtime.publish("artifacts", { taskId });
-  bb.realtime.publish("hl:artifacts", { taskId });
-  bb.realtime.publish("hl:sessions", { taskId, threadId });
-  bb.log.info(`Hydrated HumanLayer session ${threadId}: ${written} written, ${skipped} skipped`);
+  bb.realtime.publish("rpi:artifacts", { taskId });
+  bb.realtime.publish("rpi:sessions", { taskId, threadId });
+  bb.log.info(`Hydrated RPI session ${threadId}: ${written} written, ${skipped} skipped`);
   return { written, skipped, trashed };
 }
 
@@ -397,7 +398,7 @@ async function stableRead(bb: BbPluginApi, location: MirrorLocation, fileName: s
     if (first.sha256 === second.sha256 && first.sizeBytes === second.sizeBytes) return second;
     if (attempt < STABILITY_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, 200));
   }
-  bb.log.warn(`HumanLayer skipped unstable artifact write from ${loggedBy}: ${fileName}`);
+  bb.log.warn(`RPI skipped unstable artifact write from ${loggedBy}: ${fileName}`);
   return null;
 }
 
@@ -407,7 +408,7 @@ async function ingestStableFile(bb: BbPluginApi, db: Database, location: MirrorL
   if (!file) return false;
   const buffer = readBuffer(file);
   if ((file.sizeBytes ?? buffer.length) > ARTIFACT_SIZE_LIMIT_BYTES || buffer.length > ARTIFACT_SIZE_LIMIT_BYTES) {
-    bb.log.warn(`HumanLayer skipped oversized artifact: ${fileName}`);
+    bb.log.warn(`RPI skipped oversized artifact: ${fileName}`);
     return false;
   }
   const artifact = getArtifact(db, location.taskId, fileName);
@@ -415,7 +416,7 @@ async function ingestStableFile(bb: BbPluginApi, db: Database, location: MirrorL
     if (file.sha256 === artifact.currentSha256) {
       await moveDeleted(bb, location, fileName, artifact.currentVersion);
     } else {
-      bb.log.warn(`HumanLayer ignored tombstoned artifact with local edits: ${fileName}`);
+      bb.log.warn(`RPI ignored tombstoned artifact with local edits: ${fileName}`);
     }
     return false;
   }
@@ -437,7 +438,7 @@ export async function ingest(
 ) {
   const location = await resolveLocation(bb, db, taskId, options.threadId);
   if (!location) {
-    bb.log.info(`HumanLayer ingest skipped for ${options.threadId}: no workspace path`);
+    bb.log.info(`RPI ingest skipped for ${options.threadId}: no workspace path`);
     return { ingested: 0, skipped: 0 };
   }
   const listed = options.fileName
@@ -459,12 +460,12 @@ export async function ingest(
         .filter((entry) => {
           if (entry.path.startsWith(".trash/") || entry.path.includes("/.trash/")) return false;
           if (entry.kind !== "file" || entry.isSymlink) {
-            bb.log.warn(`HumanLayer skipped non-file artifact entry: ${entry.path}`);
+            bb.log.warn(`RPI skipped non-file artifact entry: ${entry.path}`);
             listedSkipped += 1;
             return false;
           }
           if (entry.path.includes("/")) {
-            bb.log.warn(`HumanLayer skipped nested artifact entry: ${entry.path}`);
+            bb.log.warn(`RPI skipped nested artifact entry: ${entry.path}`);
             listedSkipped += 1;
             return false;
           }
@@ -472,14 +473,14 @@ export async function ingest(
             assertSafeArtifactFileName(entry.path);
             return true;
           } catch {
-            bb.log.warn(`HumanLayer skipped unsafe artifact entry: ${entry.path}`);
+            bb.log.warn(`RPI skipped unsafe artifact entry: ${entry.path}`);
             listedSkipped += 1;
             return false;
           }
         })
         .filter((entry) => {
           if (entry.sizeBytes !== null && entry.sizeBytes > ARTIFACT_SIZE_LIMIT_BYTES) {
-            bb.log.warn(`HumanLayer skipped oversized artifact metadata: ${entry.path}`);
+            bb.log.warn(`RPI skipped oversized artifact metadata: ${entry.path}`);
             listedSkipped += 1;
             return false;
           }
@@ -494,7 +495,7 @@ export async function ingest(
   const skipped = listedSkipped + results.filter((result) => result === "skipped").length;
   if (ingested > 0) {
     bb.realtime.publish("artifacts", { taskId });
-    bb.realtime.publish("hl:artifacts", { taskId });
+    bb.realtime.publish("rpi:artifacts", { taskId });
   }
   return { ingested, skipped };
 }

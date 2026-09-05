@@ -11,7 +11,7 @@ Create or update the pull request description for the current task branch. Expla
 
 ### 0. Load task context
 
-Call `hl_task_context` before reading files. Use the returned task directory, slug, artifact manifest, environment id, provider, and saved artifact links.
+Call `rpi_task_context` before reading files. Use the returned task directory, slug, artifact manifest, environment id, provider, and saved artifact links.
 
 Locate this skill through the skills tier listing, then read:
 
@@ -46,7 +46,7 @@ Read the full PR diff plus the surrounding code needed to understand ownership a
 If the task has a plan, launch the reviewer child:
 
 ```bash
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same provider> --model <review model from hl_task_context prefs, or current model> --prompt "/rpi-agent-implementation-reviewer Compare <plan-or-task-dir> with the current implementation against <base-branch>. Return only reviewer-relevant deviations."
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same provider> --model <review model from rpi_task_context prefs, or current model> --prompt "/rpi-agent-implementation-reviewer Compare <plan-or-task-dir> with the current implementation against <base-branch>. Return only reviewer-relevant deviations."
 bb thread wait <thread-id>
 bb thread output <thread-id>
 ```
@@ -72,15 +72,15 @@ Do not include walkthrough artifacts in the PR body unless asked. When requested
 Write the PR description to:
 
 ```text
-.humanlayer/tasks/<task-slug>/pr-description.md
+.rpi/tasks/<task-slug>/pr-description.md
 ```
 
-If no task directory exists, use `.humanlayer/tasks/pr-<number>/description.md`.
+If no task directory exists, use `.rpi/tasks/pr-<number>/description.md`.
 
-Call `hl_artifact_save` after writing. Then publish the saved body when possible:
+Call `rpi_artifact_save` after writing. Then publish the saved body when possible:
 
-1. If `gh` is on PATH and the current branch has a GitHub PR, update the PR body from `.humanlayer/tasks/<task-slug>/pr-description.md`.
-2. Else if `glab` is on PATH and the current branch has a GitLab MR, update the MR description from `.humanlayer/tasks/<task-slug>/pr-description.md`.
+1. If `gh` is on PATH and the current branch has a GitHub PR, update the PR body from `.rpi/tasks/<task-slug>/pr-description.md`.
+2. Else if `glab` is on PATH and the current branch has a GitLab MR, update the MR description from `.rpi/tasks/<task-slug>/pr-description.md`.
 3. Otherwise, print the artifact path and say the PR or MR body must be pasted manually.
 
 Confirm URL, title, number, base, and head when publication succeeds.

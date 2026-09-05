@@ -236,7 +236,7 @@ export function parseNextStepExtraction(nextStepJson: string | null): SuggestedN
 }
 
 export type SuggestedNextSessionFields = {
-  hlStatus: string;
+  rpiStatus: string;
   blockedReason: string | null;
   completedTurnKey: string | null;
   lastSummarizedTurnKey: string | null;
@@ -249,9 +249,9 @@ export type SuggestedNextSessionFields = {
 // blocking it, and its completed turn already fully processed (summarized), before
 // computeSuggestedNext's extraction-vs-workflow comparison means anything. A mid-processing or
 // blocked session has no meaningful "suggested next" yet. Shared by the UI's button
-// (ui/humanlayer.tsx) and the server's ready_for_input toast hint (server.ts notifySnapshot).
+// (ui/rpi.tsx) and the server's ready_for_input toast hint (server.ts notifySnapshot).
 export function suggestedNextForSession(session: SuggestedNextSessionFields): SuggestedNext | null {
-  if (session.hlStatus !== "ready_for_input") return null;
+  if (session.rpiStatus !== "ready_for_input") return null;
   if (session.blockedReason) return null;
   if (!session.completedTurnKey || session.completedTurnKey !== session.lastSummarizedTurnKey) return null;
   const label = normalizePhaseLabel(session.label) as PhaseLabel | null;

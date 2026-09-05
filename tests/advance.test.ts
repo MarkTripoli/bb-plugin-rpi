@@ -40,7 +40,7 @@ function seed(db: Database.Database, label: string | null, nextStepType: string 
   db.prepare(`
     INSERT INTO sessions (
       thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
-      hl_status, hl_status_at, had_turn, interrupted, blocked_reason, next_step_json,
+      rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason, next_step_json,
       completed_turn_key, next_step_turn_key, created_at, updated_at
     ) VALUES ('thr_source', ?, ?, NULL, 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, ?, 'turn_1', 'turn_1', 1, 1)
   `).run(taskId, label, nextStepJson);
@@ -52,7 +52,7 @@ function fakeBb() {
   const spawns: unknown[] = [];
   return {
     bb: {
-      pluginId: "humanlayer",
+      pluginId: "rpi",
       realtime: { publish: () => undefined },
       log: { warn: () => undefined },
       sdk: {
@@ -62,9 +62,9 @@ function fakeBb() {
         spawn: async (input: unknown) => {
             count += 1;
             spawns.push(input);
-            return makeThreadResponse({ id: `thr_next_${count}`, environmentId: "env_base", projectId: "proj_1", originPluginId: "humanlayer" });
+            return makeThreadResponse({ id: `thr_next_${count}`, environmentId: "env_base", projectId: "proj_1", originPluginId: "rpi" });
           },
-          get: async () => makeThreadResponse({ id: `thr_next_${count}`, environmentId: "env_base", projectId: "proj_1", originPluginId: "humanlayer" }),
+          get: async () => makeThreadResponse({ id: `thr_next_${count}`, environmentId: "env_base", projectId: "proj_1", originPluginId: "rpi" }),
       },
       },
     },
@@ -184,7 +184,7 @@ test("preflight failure resets only its advanced_at stamp and fails the attempt,
   const db = makeDb();
   const { session } = seed(db, "plan", "setup-worktree", { worktree_timing: "now", host_id: null });
   const bb = {
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     realtime: { publish: () => undefined },
     log: { warn: () => undefined },
     sdk: { threads: { interactions: { list: async () => [] } } },
@@ -207,8 +207,8 @@ test("auto-advance launch failure delivers exactly one ready_after_failed_advanc
   const { session } = seed(db, "plan", "setup-worktree", { worktree_timing: "now", host_id: null });
   const published: unknown[] = [];
   const bb = {
-    pluginId: "humanlayer",
-    realtime: { publish: (topic: string, payload: unknown) => { if (topic === "hl:notify") published.push(payload); } },
+    pluginId: "rpi",
+    realtime: { publish: (topic: string, payload: unknown) => { if (topic === "rpi:notify") published.push(payload); } },
     log: { warn: () => undefined },
     sdk: { threads: { interactions: { list: async () => [] } } },
   };

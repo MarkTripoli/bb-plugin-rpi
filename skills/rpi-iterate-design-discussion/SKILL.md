@@ -19,15 +19,15 @@ Do not edit until the user gives a change, names comments, or asks you to contin
 
 ## bb Task Setup
 
-0. Call `hl_task_context` before any file read. Use its task directory, artifact manifest, current thread, provider, and preferred research model. If it fails, stop.
+0. Call `rpi_task_context` before any file read. Use its task directory, artifact manifest, current thread, provider, and preferred research model. If it fails, stop.
 1. Resolve the target design discussion from the `@file` argument when present. If no artifact is named, use the manifest; ask only if more than one plausible file remains.
 2. Locate this skill through the skills tier listing, then read references relative to this skill directory: `references/design_discussion_template.md`, `references/design_discussion_review_answer.md`, and `references/design_discussion_final_answer.md`.
-3. If comments are relevant, call `hl_get_artifact_comments` for the design discussion file. Fetch unresolved comments by default; include resolved comments only when requested.
+3. If comments are relevant, call `rpi_get_artifact_comments` for the design discussion file. Fetch unresolved comments by default; include resolved comments only when requested.
 
 ## Steps
 
 1. **Find and read the task directory**:
-   - List the task directory with `ls -La <task-dir>`. Avoid search, glob, plain `ls`, and `ls -l` inside `.humanlayer/tasks` because task paths may be linked.
+   - List the task directory with `ls -La <task-dir>`. Avoid search, glob, plain `ls`, and `ls -l` inside `.rpi/tasks` because task paths may be linked.
    - Read the current design discussion fully.
    - Read `task.md` or `ticket.md`, completed research, and earlier design artifacts needed to understand the change.
    - Read any explicit user-mentioned file fully.
@@ -44,7 +44,7 @@ Do not edit until the user gives a change, names comments, or asks you to contin
    - Spawn independent work first, then wait and read output:
 
 ```text
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-codebase-analyzer <assignment>"
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context preferences> --prompt "/rpi-agent-codebase-analyzer <assignment>"
 bb thread wait <thread-id>
 bb thread output <thread-id>
 ```
@@ -70,12 +70,12 @@ bb thread output <thread-id>
 </content_guidance>
 
 5. **Handle comments if they drove the iteration**:
-   - Use `hl_reply_to_artifact_comment` when directly answering a comment.
-   - Use `hl_update_artifact_comments` to resolve comments only when the user asked for resolution or the requested edit clearly completed the comment and comment cleanup was requested.
+   - Use `rpi_reply_to_artifact_comment` when directly answering a comment.
+   - Use `rpi_update_artifact_comments` to resolve comments only when the user asked for resolution or the requested edit clearly completed the comment and comment cleanup was requested.
    - Do not delete comments without explicit deletion instruction.
 
 6. **Save and answer**:
-   - Call `hl_artifact_save` for the edited file.
+   - Call `rpi_artifact_save` for the edited file.
    - If unresolved design questions remain, read `references/design_discussion_review_answer.md`.
    - If all questions are resolved, read `references/design_discussion_final_answer.md`.
    - Follow the chosen template exactly. Do not add a separate summary.
@@ -85,7 +85,7 @@ bb thread output <thread-id>
 - Read task artifacts fully. Do not use partial reads for task files, user-mentioned files, or the artifact you are editing.
 - Do not inspect unrelated task directories unless the user explicitly asks.
 - Treat failed artifact saves, failed comment calls, or unavailable task context as blockers.
-- Use `hl_next_artifact_number` only when creating a new numbered artifact. Normal iteration edits the existing file.
+- Use `rpi_next_artifact_number` only when creating a new numbered artifact. Normal iteration edits the existing file.
 
 ## Document Precedence
 

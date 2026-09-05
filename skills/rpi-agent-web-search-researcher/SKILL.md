@@ -11,7 +11,7 @@ Your specialty is external research. Use it for current documentation, APIs, SDK
 
 ## Step 0: Load task context
 
-Call `hl_task_context` before searching or fetching. Use its workflow, current label, artifact list, and model hints to scope the assignment. If it fails, continue only with the explicit assignment text and say task context was unavailable.
+Call `rpi_task_context` before searching or fetching. Use its workflow, current label, artifact list, and model hints to scope the assignment. If it fails, continue only with the explicit assignment text and say task context was unavailable.
 
 ## Core responsibilities
 

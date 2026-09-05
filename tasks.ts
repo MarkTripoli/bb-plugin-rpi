@@ -138,7 +138,7 @@ function readLatestLabel(db: Database, taskId: string) {
 function readAttentionCount(db: Database, taskId: string) {
   return readRow<{ count: number }>(
     db,
-    "SELECT COUNT(*) AS count FROM sessions WHERE task_id = ? AND hl_status IN ('ready_for_input', 'needs_approval')",
+    "SELECT COUNT(*) AS count FROM sessions WHERE task_id = ? AND rpi_status IN ('ready_for_input', 'needs_approval')",
     taskId,
   )?.count ?? 0;
 }
@@ -252,8 +252,8 @@ export function getTask(db: Database, taskId: string) {
     skillId: string | null;
     launchedBy: string;
     forkedFromThreadId: string | null;
-    hlStatus: string;
-    hlStatusAt: number;
+    rpiStatus: string;
+    rpiStatusAt: number;
     hadTurn: number | boolean;
     interrupted: number | boolean;
     blockedReason: string | null;
@@ -279,8 +279,8 @@ export function getTask(db: Database, taskId: string) {
       skill_id AS skillId,
       launched_by AS launchedBy,
       forked_from_thread_id AS forkedFromThreadId,
-      hl_status AS hlStatus,
-      hl_status_at AS hlStatusAt,
+      rpi_status AS rpiStatus,
+      rpi_status_at AS rpiStatusAt,
       had_turn AS hadTurn,
       interrupted,
       blocked_reason AS blockedReason,

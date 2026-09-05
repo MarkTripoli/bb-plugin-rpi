@@ -5,7 +5,7 @@ import plugin from "../server";
 
 test("sessions list CLI paginates and truncates summaries", async () => {
   const { bb, harness } = createFakePluginHost({
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     sdk: { subscribe: () => () => undefined },
   });
   await plugin(bb);
@@ -20,7 +20,7 @@ test("sessions list CLI paginates and truncates summaries", async () => {
     db.prepare(`
       INSERT INTO sessions (
         thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
-        hl_status, hl_status_at, had_turn, interrupted, blocked_reason,
+        rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason,
         summary_json, created_at, updated_at
       ) VALUES (?, ?, NULL, NULL, 'user', NULL, 'ready_for_input', ?, 1, 0, NULL, ?, ?, ?)
     `).run(`thr_${index}`, created.taskId, index + 1, JSON.stringify({ summaryHistory: [`old-${index}`, long, "tail-a", "tail-b"] }), index + 1, index + 1);
@@ -39,7 +39,7 @@ test("sessions list CLI paginates and truncates summaries", async () => {
 
 test("notifications CLI validates args and the test path never touches real dedupe or suppression rows", async () => {
   const { bb, harness } = createFakePluginHost({
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     sdk: { subscribe: () => () => undefined },
   });
   await plugin(bb);
@@ -52,7 +52,7 @@ test("notifications CLI validates args and the test path never touches real dedu
   db.prepare(`
     INSERT INTO sessions (
       thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
-      hl_status, hl_status_at, had_turn, interrupted, blocked_reason,
+      rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason,
       completed_turn_key, created_at, updated_at
     ) VALUES ('thr_test', ?, NULL, NULL, 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, 'turn_real', 1, 1)
   `).run(created.taskId);
@@ -91,7 +91,7 @@ test("notifications CLI validates args and the test path never touches real dedu
 
 test("artifact route forces attachment for html and sets security headers", async () => {
   const { bb, harness } = createFakePluginHost({
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     sdk: { subscribe: () => () => undefined },
   });
   await plugin(bb);
@@ -118,7 +118,7 @@ test("artifact route forces attachment for html and sets security headers", asyn
 test("RPI launch RPC and CLI paths are enabled", async () => {
   let spawns = 0;
   const { bb, harness } = createFakePluginHost({
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     sdk: {
       subscribe: () => () => undefined,
       projects: {
@@ -162,7 +162,7 @@ test("RPI launch RPC and CLI paths are enabled", async () => {
   db.prepare(`
     INSERT INTO sessions (
       thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
-      hl_status, hl_status_at, had_turn, interrupted, blocked_reason,
+      rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason,
       next_step_json, completed_turn_key, next_step_turn_key, created_at, updated_at
     ) VALUES ('thr_source', ?, 'research-questions', 'create-research-questions', 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, ?, 'turn_1', 'turn_1', 1, 1)
   `).run(createdForProceed.taskId, JSON.stringify({ parsedAt: 1, extraction: { type: "next_step_found", nextStepPrompt: "/rpi-create-research", nextStepSummary: "next", nextStepType: "create-research", taskReference: null, suggestedDirectory: null } }));
@@ -183,7 +183,7 @@ test("RPI launch RPC and CLI paths are enabled", async () => {
 
 test("saveScratchPad is compare-and-swap on revision: stale write conflicts and reloads server text", async () => {
   const { bb, harness } = createFakePluginHost({
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     sdk: { subscribe: () => () => undefined },
   });
   await plugin(bb);
@@ -232,7 +232,7 @@ test("saveScratchPad is compare-and-swap on revision: stale write conflicts and 
 
 test("listSessions never makes a per-session SDK call; getSession still fetches live contextUsage", async () => {
   const { bb, harness } = createFakePluginHost({
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     sdk: {
       subscribe: () => () => undefined,
       threads: {
@@ -254,7 +254,7 @@ test("listSessions never makes a per-session SDK call; getSession still fetches 
     db.prepare(`
       INSERT INTO sessions (
         thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
-        hl_status, hl_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at
+        rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at
       ) VALUES (?, ?, NULL, NULL, 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, 1, 1)
     `).run(`thr_${index}`, created.taskId);
   }
@@ -277,7 +277,7 @@ test("listSessions never makes a per-session SDK call; getSession still fetches 
 test("launchSkill rejects while a launch_attempt for the task is already pending (item 5 duplicate-launch guard)", async () => {
   let spawns = 0;
   const { bb, harness } = createFakePluginHost({
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     sdk: {
       subscribe: () => () => undefined,
       projects: {

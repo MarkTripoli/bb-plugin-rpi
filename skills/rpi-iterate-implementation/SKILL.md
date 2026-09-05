@@ -11,17 +11,17 @@ Use this when implementation already happened and the user has follow-up feedbac
 
 ### 0. Load task context
 
-Call `hl_task_context` before reading files. Use the returned task directory, task slug, artifact list, current environment, provider, model preferences, and artifact links.
+Call `rpi_task_context` before reading files. Use the returned task directory, task slug, artifact list, current environment, provider, model preferences, and artifact links.
 
-Resolve any `@file` argument against the artifact list. Read referenced artifacts fully. If comments are relevant, call `hl_get_artifact_comments` for the named artifact and include unresolved comments by default.
+Resolve any `@file` argument against the artifact list. Read referenced artifacts fully. If comments are relevant, call `rpi_get_artifact_comments` for the named artifact and include unresolved comments by default.
 
 ### 1. Read all required inputs fully
 
 Read the plan or outline artifact and any user-provided paths without truncation. If the user mentions a ticket or task key, locate the task directory with a symlink-safe directory listing:
 
 ```bash
-ls -La .humanlayer/tasks/
-ls -La .humanlayer/tasks/<task-slug>
+ls -La .rpi/tasks/
+ls -La .rpi/tasks/<task-slug>
 ```
 
 Read the plan file when it exists. If no plan exists, read the ticket or task file plus the structure outline, design discussion, PRD/TDD, and research artifacts that are needed to understand the implemented work.
@@ -40,7 +40,7 @@ Inspect the repository before editing:
 If the user is asking to implement an unstarted phase, do not implement it inline. Spawn the appropriate child implementer:
 
 ```bash
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same provider> --model <implementation model from hl_task_context prefs, or current model> --prompt "/rpi-agent-implementer Implement Phase [N] from <plan-or-outline-path>. Read the companion documents named in the assignment. Stop after automated verification."
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same provider> --model <implementation model from rpi_task_context prefs, or current model> --prompt "/rpi-agent-implementer Implement Phase [N] from <plan-or-outline-path>. Read the companion documents named in the assignment. Stop after automated verification."
 bb thread wait <thread-id>
 bb thread output <thread-id>
 ```
@@ -66,19 +66,19 @@ If there are several viable fixes and no clear default, ask before editing.
 
 ### 5. Apply the fix
 
-When the fix is clear, make the smallest correct change in the shared/root-cause location. Run the relevant tests, build, lint, or other checks. If the work changes task artifacts, call `hl_next_artifact_number` before creating a new implementation note, then call `hl_artifact_save` after every task-directory write.
+When the fix is clear, make the smallest correct change in the shared/root-cause location. Run the relevant tests, build, lint, or other checks. If the work changes task artifacts, call `rpi_next_artifact_number` before creating a new implementation note, then call `rpi_artifact_save` after every task-directory write.
 
-If the change updates comments, use `hl_reply_to_artifact_comment` or `hl_update_artifact_comments` only for the exact comment ids involved, and only when the user has asked you to resolve or reply.
+If the change updates comments, use `rpi_reply_to_artifact_comment` or `rpi_update_artifact_comments` only for the exact comment ids involved, and only when the user has asked you to resolve or reply.
 
 ### 6. Update the user
 
-Read `references/implementation_final_answer.md` from this skill directory and respond using that structure exactly. Include the saved `::hl-artifact{...}` directive if a task artifact was written. The final answer must end with the single fenced `text` command from the template.
+Read `references/implementation_final_answer.md` from this skill directory and respond using that structure exactly. Include the saved `::rpi-artifact{...}` directive if a task artifact was written. The final answer must end with the single fenced `text` command from the template.
 
 ## Guidance
 
 ### Artifact Links
 
-`hl_artifact_save` returns a `::hl-artifact{...}` directive for the saved file. Keep that line in your final answer so the task UI can render the artifact link.
+`rpi_artifact_save` returns a `::rpi-artifact{...}` directive for the saved file. Keep that line in your final answer so the task UI can render the artifact link.
 
 ### Markdown Fences
 
@@ -100,6 +100,6 @@ Fetch artifact comments only for files involved in the iteration. Work one comme
 
 When the feedback is addressed, checks have run, and no further implementation edits are known:
 
-1. Save any changed task artifact with `hl_artifact_save`.
+1. Save any changed task artifact with `rpi_artifact_save`.
 2. Read `references/implementation_final_answer.md`.
 3. Respond with that template only. The next step is `/rpi-describe-pr`; use `/rpi-ci-commit` only when the user asks for an in-loop commit gate.

@@ -181,7 +181,7 @@ function seedSessionForRetention(db: Database.Database, threadId: string, archiv
   db.prepare(`
     INSERT INTO sessions (
       thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
-      hl_status, hl_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at
+      rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at
     ) VALUES (?, ?, NULL, NULL, 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, 1, 1)
   `).run(threadId, taskId);
 }

@@ -2,10 +2,10 @@
 
 ## Shipped
 
-- Updated `package.json` to identify the plugin as `HumanLayer`, set branding icon `Layers`, keep the server/app/skills manifest entries, and add `npm test` / `npm run build`.
-- Replaced the scaffold todo example with the HumanLayer task schema, pure transition tables, task CRUD helpers, and a typed RPC contract.
+- Updated `package.json` to identify the plugin as `RPI`, set branding icon `Layers`, keep the server/app/skills manifest entries, and add `npm test` / `npm run build`.
+- Replaced the scaffold todo example with the RPI task schema, pure transition tables, task CRUD helpers, and a typed RPC contract.
 - Added database migrations `0..6`, including `sessions.hydrated_at` and `launch_attempts`.
-- Added the first HumanLayer nav panel with Tasks, Drafts, and New task views.
+- Added the first RPI nav panel with Tasks, Drafts, and New task views.
 - Added the task list and board layouts, plus the draft composer with permissions, auto-advance, host/project, worktree timing, and workflow controls.
 - Generated `assets/notification.mp3` with ffmpeg.
 - Added node:test coverage for transition tables, slug collisions, board column derivation, and migration idempotence.
@@ -17,7 +17,7 @@
 - `b977385d7788d76866976bb5092155f1454487be` - kept task slugs stable on rename by only generating slugs during task creation.
 - `b977385d7788d76866976bb5092155f1454487be` - removed `isDraft` from the public `updateTask` input and kept the draft-state helper internal.
 - `b977385d7788d76866976bb5092155f1454487be` - tightened `updateTask` validation to match `createTask` for project, host, working directory, and prompt constraints.
-- `b977385d7788d76866976bb5092155f1454487be` - replaced fixed palette colors in the HumanLayer UI with host semantic tokens.
+- `b977385d7788d76866976bb5092155f1454487be` - replaced fixed palette colors in the RPI UI with host semantic tokens.
 - `b977385d7788d76866976bb5092155f1454487be` - made project and host DTOs strict, and made launch-attempt objects strict as well.
 - `b977385d7788d76866976bb5092155f1454487be` - fixed the remaining TypeScript errors, added `typecheck`, and wired it into `npm test` through `pretest`.
 - `b977385d7788d76866976bb5092155f1454487be` - kept `rpi:review` in Implementation with a code comment noting the ground truth gap.
@@ -58,21 +58,21 @@
 
   ```text
   Installed:
-  humanlayer@0.1.0  running
-  source: path:/Users/marktripoli/.bb/worktrees/env_qe438eumby/bb-plugin-humanlayer
+  rpi@0.1.0  running
+  source: path:/Users/marktripoli/.bb/worktrees/env_qe438eumby/bb-plugin-rpi
   ```
 
 - `bb plugin list`
 
-  Result: `humanlayer` appeared as `running`.
+  Result: `rpi` appeared as `running`.
 
-- `bb plugin logs humanlayer -n 40`
+- `bb plugin logs rpi -n 40`
 
   Result: no log output was emitted for this phase-1 install.
 
-- `bb plugin remove humanlayer`
+- `bb plugin remove rpi`
 
-  Result: `Removed humanlayer.`
+  Result: `Removed rpi.`
 
 ## Deviations
 

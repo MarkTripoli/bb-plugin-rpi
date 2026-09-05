@@ -31,7 +31,7 @@ import {
 import { latestLaunchAttemptLabel } from "../advance";
 
 // Mirrors server.ts's real notifySnapshot wiring: evaluated on every derived snapshot, not just
-// on hlStatus transitions, so ready_for_input uses the persisted final completed_turn_key and
+// on rpiStatus transitions, so ready_for_input uses the persisted final completed_turn_key and
 // needs_approval fires per pending interaction id.
 function makeSnapshotHandler(db: Database.Database, mirror: Map<string, SessionMirrorRow>, bb: { realtime: { publish: (topic: string, payload: unknown) => void } }) {
   return async (threadId: string, interactions: readonly unknown[]) => {
@@ -50,7 +50,7 @@ function makeSnapshotHandler(db: Database.Database, mirror: Map<string, SessionM
         approval,
       }, context);
     }
-    if (row.hlStatus === "ready_for_input" && !row.blockedReason && row.completedTurnKey) {
+    if (row.rpiStatus === "ready_for_input" && !row.blockedReason && row.completedTurnKey) {
       await decideAndPublishNotification(bb as never, db, {
         type: "status_transition",
         threadId,
@@ -103,7 +103,7 @@ function seedSession(db: Database.Database, threadId = "thr_1") {
   db.prepare(`
     INSERT INTO sessions (
       thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
-      hl_status, hl_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at
+      rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at
     ) VALUES (?, ?, NULL, NULL, 'user', NULL, 'running', 1, 1, 0, NULL, 1, 1)
   `).run(threadId, task.taskId);
 }
@@ -120,7 +120,7 @@ function makeRuntimeBb(overrides: {
   const handlers = new Map<string, (payload: never) => void>();
   return {
     bb: {
-      pluginId: "humanlayer",
+      pluginId: "rpi",
       log: { warn: () => undefined, info: () => undefined },
       realtime: { publish: () => undefined },
       sdk: {
@@ -145,20 +145,20 @@ function makeRuntimeBb(overrides: {
 }
 
 test("deriveStatus covers Fable 5.1 rows in order", () => {
-  assert.equal(deriveStatus(thread({ status: "active", runtime: { displayStatus: "waiting-for-host" } }), [], row).hlStatus, "lost");
-  assert.equal(deriveStatus(thread({ status: "active", runtime: { displayStatus: "provisioning" } }), [], row).hlStatus, "waiting_for_workspace");
-  assert.equal(deriveStatus(thread({ status: "active", environment: { status: "provisioning" } }), [], row).hlStatus, "waiting_for_workspace");
-  assert.equal(deriveStatus(thread({ status: "pending", runtime: { displayStatus: "pending" } }), [], row).hlStatus, "ready_for_launch");
-  assert.equal(deriveStatus(thread({ status: "starting", runtime: { displayStatus: "starting" } }), [], row).hlStatus, "launching");
-  assert.equal(deriveStatus(thread({ status: "starting", runtime: { displayStatus: "starting" } }), [], { ...row, hadTurn: true }).hlStatus, "resuming");
-  assert.equal(deriveStatus(thread({ status: "active", runtime: { displayStatus: "active" } }), interaction("approval"), row).hlStatus, "needs_approval");
-  assert.equal(deriveStatus(thread({ status: "active", runtime: { displayStatus: "active" } }), interaction("user_question"), row).hlStatus, "ready_for_input");
-  assert.equal(deriveStatus(thread({ status: "active", runtime: { displayStatus: "active" } }), interaction("plugin"), row).hlStatus, "ready_for_input");
-  assert.equal(deriveStatus(thread({ status: "active", runtime: { displayStatus: "active" } }), [], row).hlStatus, "running");
-  assert.equal(deriveStatus(thread({ status: "stopping", runtime: { displayStatus: "stopping" } }), [], row).hlStatus, "interrupt_requested");
-  assert.equal(deriveStatus(thread({ status: "error", runtime: { displayStatus: "error" } }), [], row).hlStatus, "failed");
-  assert.equal(deriveStatus(thread({ status: "idle", runtime: { displayStatus: "idle" } }), [], { ...row, interrupted: true }).hlStatus, "interrupted");
-  assert.equal(deriveStatus(thread({ status: "idle", runtime: { displayStatus: "idle" } }), [], row).hlStatus, "ready_for_input");
+  assert.equal(deriveStatus(thread({ status: "active", runtime: { displayStatus: "waiting-for-host" } }), [], row).rpiStatus, "lost");
+  assert.equal(deriveStatus(thread({ status: "active", runtime: { displayStatus: "provisioning" } }), [], row).rpiStatus, "waiting_for_workspace");
+  assert.equal(deriveStatus(thread({ status: "active", environment: { status: "provisioning" } }), [], row).rpiStatus, "waiting_for_workspace");
+  assert.equal(deriveStatus(thread({ status: "pending", runtime: { displayStatus: "pending" } }), [], row).rpiStatus, "ready_for_launch");
+  assert.equal(deriveStatus(thread({ status: "starting", runtime: { displayStatus: "starting" } }), [], row).rpiStatus, "launching");
+  assert.equal(deriveStatus(thread({ status: "starting", runtime: { displayStatus: "starting" } }), [], { ...row, hadTurn: true }).rpiStatus, "resuming");
+  assert.equal(deriveStatus(thread({ status: "active", runtime: { displayStatus: "active" } }), interaction("approval"), row).rpiStatus, "needs_approval");
+  assert.equal(deriveStatus(thread({ status: "active", runtime: { displayStatus: "active" } }), interaction("user_question"), row).rpiStatus, "ready_for_input");
+  assert.equal(deriveStatus(thread({ status: "active", runtime: { displayStatus: "active" } }), interaction("plugin"), row).rpiStatus, "ready_for_input");
+  assert.equal(deriveStatus(thread({ status: "active", runtime: { displayStatus: "active" } }), [], row).rpiStatus, "running");
+  assert.equal(deriveStatus(thread({ status: "stopping", runtime: { displayStatus: "stopping" } }), [], row).rpiStatus, "interrupt_requested");
+  assert.equal(deriveStatus(thread({ status: "error", runtime: { displayStatus: "error" } }), [], row).rpiStatus, "failed");
+  assert.equal(deriveStatus(thread({ status: "idle", runtime: { displayStatus: "idle" } }), [], { ...row, interrupted: true }).rpiStatus, "interrupted");
+  assert.equal(deriveStatus(thread({ status: "idle", runtime: { displayStatus: "idle" } }), [], row).rpiStatus, "ready_for_input");
 });
 
 test("contributed task instructions start with task context first-action line", () => {
@@ -176,23 +176,23 @@ test("contributed task instructions start with task context first-action line", 
 });
 
 test("lost is only derived from runtime displayStatus evidence", () => {
-  assert.equal(deriveStatus(thread({ status: "active", runtime: { displayStatus: "active" } }), [], row).hlStatus, "running");
-  assert.equal(deriveStatus(thread({ status: "error", runtime: { displayStatus: "error" } }), [], row).hlStatus, "failed");
-  assert.equal(deriveStatus(thread({ status: "active", runtime: { displayStatus: "host-reconnecting" } }), [], row).hlStatus, "lost");
+  assert.equal(deriveStatus(thread({ status: "active", runtime: { displayStatus: "active" } }), [], row).rpiStatus, "running");
+  assert.equal(deriveStatus(thread({ status: "error", runtime: { displayStatus: "error" } }), [], row).rpiStatus, "failed");
+  assert.equal(deriveStatus(thread({ status: "active", runtime: { displayStatus: "host-reconnecting" } }), [], row).rpiStatus, "lost");
 });
 
 test("user_question stores blocked reason for executor skip", () => {
   const derived = deriveStatus(thread({ status: "idle", runtime: { displayStatus: "idle" } }), interaction("user_question"), row);
-  assert.equal(derived.hlStatus, "ready_for_input");
+  assert.equal(derived.rpiStatus, "ready_for_input");
   assert.equal(derived.blockedReason, "question");
 });
 
 test("interaction status precedence keeps terminal states", () => {
-  assert.equal(deriveStatus(thread({ status: "error", runtime: { displayStatus: "error" } }), interaction("approval"), row).hlStatus, "failed");
-  assert.equal(deriveStatus(thread({ status: "stopping", runtime: { displayStatus: "stopping" } }), interaction("approval"), row).hlStatus, "interrupt_requested");
-  assert.equal(deriveStatus(thread({ status: "idle", runtime: { displayStatus: "idle" } }), interaction("approval"), row).hlStatus, "ready_for_input");
+  assert.equal(deriveStatus(thread({ status: "error", runtime: { displayStatus: "error" } }), interaction("approval"), row).rpiStatus, "failed");
+  assert.equal(deriveStatus(thread({ status: "stopping", runtime: { displayStatus: "stopping" } }), interaction("approval"), row).rpiStatus, "interrupt_requested");
+  assert.equal(deriveStatus(thread({ status: "idle", runtime: { displayStatus: "idle" } }), interaction("approval"), row).rpiStatus, "ready_for_input");
   const questionWithError = deriveStatus(thread({ status: "error", runtime: { displayStatus: "error" } }), interaction("user_question"), row);
-  assert.equal(questionWithError.hlStatus, "failed");
+  assert.equal(questionWithError.rpiStatus, "failed");
   assert.equal(questionWithError.blockedReason, "question");
 });
 
@@ -202,23 +202,23 @@ test("older reconciliation snapshots cannot regress a newer status", () => {
   seedSession(db);
   applyStatusDerivation(db, mirror, thread({ status: "idle", runtime: { displayStatus: "idle" } }), [], 2);
   applyStatusDerivation(db, mirror, thread({ status: "active", runtime: { displayStatus: "active" } }), [], 1);
-  const row = db.prepare("SELECT hl_status, last_reconcile_seq FROM sessions WHERE thread_id = ?").get("thr_1") as { hl_status: string; last_reconcile_seq: number };
-  assert.equal(row.hl_status, "ready_for_input");
+  const row = db.prepare("SELECT rpi_status, last_reconcile_seq FROM sessions WHERE thread_id = ?").get("thr_1") as { rpi_status: string; last_reconcile_seq: number };
+  assert.equal(row.rpi_status, "ready_for_input");
   assert.equal(row.last_reconcile_seq, 2);
   db.close();
 });
 
-test("hl_status_at only advances when derived status actually changes", () => {
+test("rpi_status_at only advances when derived status actually changes", () => {
   const db = makeDb();
   const mirror = new Map();
   seedSession(db);
   applyStatusDerivation(db, mirror, thread({ status: "idle", runtime: { displayStatus: "idle" } }), [], 1);
-  db.prepare("UPDATE sessions SET hl_status_at = 12345 WHERE thread_id = 'thr_1'").run();
-  // Same derived status (ready_for_input) on a later sequence: last_reconcile_seq advances, hl_status_at must not.
+  db.prepare("UPDATE sessions SET rpi_status_at = 12345 WHERE thread_id = 'thr_1'").run();
+  // Same derived status (ready_for_input) on a later sequence: last_reconcile_seq advances, rpi_status_at must not.
   applyStatusDerivation(db, mirror, thread({ status: "idle", runtime: { displayStatus: "idle" } }), [], 2);
-  const second = db.prepare("SELECT hl_status_at AS hlStatusAt, last_reconcile_seq AS seq FROM sessions WHERE thread_id = ?").get("thr_1") as { hlStatusAt: number; seq: number };
+  const second = db.prepare("SELECT rpi_status_at AS rpiStatusAt, last_reconcile_seq AS seq FROM sessions WHERE thread_id = ?").get("thr_1") as { rpiStatusAt: number; seq: number };
   assert.equal(second.seq, 2);
-  assert.equal(second.hlStatusAt, 12345);
+  assert.equal(second.rpiStatusAt, 12345);
   db.close();
 });
 
@@ -236,8 +236,8 @@ test("runtime reconciliation sequence starts after persisted rows on reload", as
     const stored = db.prepare("SELECT last_reconcile_seq AS seq FROM sessions WHERE thread_id = ?").get("thr_1") as { seq: number };
     if (stored.seq === 41) break;
   }
-  const stored = db.prepare("SELECT hl_status, last_reconcile_seq FROM sessions WHERE thread_id = ?").get("thr_1") as { hl_status: string; last_reconcile_seq: number };
-  assert.equal(stored.hl_status, "ready_for_input");
+  const stored = db.prepare("SELECT rpi_status, last_reconcile_seq FROM sessions WHERE thread_id = ?").get("thr_1") as { rpi_status: string; last_reconcile_seq: number };
+  assert.equal(stored.rpi_status, "ready_for_input");
   assert.equal(stored.last_reconcile_seq, 41);
   db.close();
 });
@@ -302,7 +302,7 @@ test("idle completion stores next step and relevant RPI documents", async () => 
     db,
     mirror,
     thread({ updatedAt: 2 }),
-    "Wrote .humanlayer/tasks/task/01-research.md\n```text\n/rpi-create-design-discussion @01-research.md\n```",
+    "Wrote .rpi/tasks/task/01-research.md\n```text\n/rpi-create-design-discussion @01-research.md\n```",
   );
   const stored = db.prepare("SELECT next_step_json, summary_json FROM sessions WHERE thread_id = ?").get("thr_1") as { next_step_json: string; summary_json: string };
   const next = parseJson<{ extraction?: { type?: string; nextStepType?: string; nextStepPrompt?: string } }>(stored.next_step_json, {});
@@ -310,7 +310,7 @@ test("idle completion stores next step and relevant RPI documents", async () => 
   assert.equal(next.extraction?.nextStepType, "create-design-discussion");
   assert.equal(next.extraction?.nextStepPrompt, "/rpi-create-design-discussion @01-research.md");
   const summary = parseJson<{ relevantRPIDocuments?: Array<{ localpath: string }> }>(stored.summary_json, {});
-  assert.deepEqual(summary.relevantRPIDocuments, [{ localpath: ".humanlayer/tasks/task/01-research.md", permalink: `::hl-artifact{task="${taskId}" file="01-research.md"}` }]);
+  assert.deepEqual(summary.relevantRPIDocuments, [{ localpath: ".rpi/tasks/task/01-research.md", permalink: `::rpi-artifact{task="${taskId}" file="01-research.md"}` }]);
   db.close();
 });
 
@@ -319,11 +319,11 @@ test("system-injected initiating messages append summary without overwriting an 
   const mirror = new Map();
   seedSession(db);
   const priorNext = JSON.stringify({ parsedAt: 1, extraction: { type: "next_step_found", nextStepPrompt: "/rpi-create-research", nextStepSummary: "next", nextStepType: "create-research", taskReference: null, suggestedDirectory: null } });
-  db.prepare("UPDATE sessions SET label = 'research-questions', hl_status = 'ready_for_input', next_step_json = ?, next_step_turn_key = 'turn_old', completed_turn_key = 'turn_old', last_summarized_turn_key = 'turn_old' WHERE thread_id = 'thr_1'").run(priorNext);
+  db.prepare("UPDATE sessions SET label = 'research-questions', rpi_status = 'ready_for_input', next_step_json = ?, next_step_turn_key = 'turn_old', completed_turn_key = 'turn_old', last_summarized_turn_key = 'turn_old' WHERE thread_id = 'thr_1'").run(priorNext);
   mirrorSession(db, mirror, "thr_1");
   let spawns = 0;
   const bb = {
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     realtime: { publish: () => undefined },
     log: { warn: () => undefined },
     sdk: {
@@ -332,9 +332,9 @@ test("system-injected initiating messages append summary without overwriting an 
         interactions: { list: async () => [] },
         spawn: async () => {
           spawns += 1;
-          return makeThreadResponse({ id: "thr_next", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" });
+          return makeThreadResponse({ id: "thr_next", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
         },
-        get: async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }),
+        get: async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" }),
         timeline: async () => ({
           rows: [
             { kind: "conversation", role: "user", text: "child finished", turnId: "turn_new", sourceSeqStart: 10, senderThreadId: "thr_child", systemMessageKind: "child-completed" },
@@ -434,7 +434,7 @@ test("idle-first: auto-advance spawns exactly once, suppression is recorded, and
   const publishChecks: boolean[] = [];
   let spawns = 0;
   const { bb, handlers } = makeRuntimeBb({
-    get: async ({ threadId }) => ({ ...makeThreadResponse({ id: threadId, status: "idle", updatedAt: 2, environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }), numEvents: 2 }),
+    get: async ({ threadId }) => ({ ...makeThreadResponse({ id: threadId, status: "idle", updatedAt: 2, environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }), numEvents: 2 }),
     events: async () => [],
   });
   Object.assign(bb.realtime, {
@@ -455,7 +455,7 @@ test("idle-first: auto-advance spawns exactly once, suppression is recorded, and
     }),
     spawn: async () => {
       spawns += 1;
-      return makeThreadResponse({ id: "thr_next", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" });
+      return makeThreadResponse({ id: "thr_next", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
     },
   });
   Object.assign(bb.sdk, { files: { listPaths: async () => [] } });
@@ -484,12 +484,12 @@ test("a failed auto-advance launch and the following ready snapshot deliver exac
   const text = "done\n```text\n/rpi-setup-worktree\n```";
   const published: unknown[] = [];
   const { bb, handlers } = makeRuntimeBb({
-    get: async ({ threadId }) => ({ ...makeThreadResponse({ id: threadId, status: "idle", updatedAt: 2, environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }), numEvents: 2 }),
+    get: async ({ threadId }) => ({ ...makeThreadResponse({ id: threadId, status: "idle", updatedAt: 2, environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }), numEvents: 2 }),
     events: async () => [],
   });
-  // Only hl:notify publishes are counted here; handleIdle also emits hl:sessions on every
+  // Only rpi:notify publishes are counted here; handleIdle also emits rpi:sessions on every
   // completion, which is irrelevant to this test's double-delivery assertion.
-  Object.assign(bb.realtime, { publish: (topic: string, payload: unknown) => { if (topic === "hl:notify") published.push(payload); } });
+  Object.assign(bb.realtime, { publish: (topic: string, payload: unknown) => { if (topic === "rpi:notify") published.push(payload); } });
   Object.assign(bb.sdk.threads, {
     ...bb.sdk.threads,
     interactions: { list: async () => [] },
@@ -556,7 +556,7 @@ test("ready notification always uses the persisted final completed turn key, nev
   assert.equal(mirror.get("thr_1")?.completedTurnKey, "events:1");
 
   // Agent resumes for a second turn.
-  db.prepare("UPDATE sessions SET hl_status = 'running' WHERE thread_id = 'thr_1'").run();
+  db.prepare("UPDATE sessions SET rpi_status = 'running' WHERE thread_id = 'thr_1'").run();
   mirrorSession(db, mirror, "thr_1");
 
   // Astra's case: a racing reconcile (e.g. an interactions-changed event) observes the underlying
@@ -585,9 +585,9 @@ test("reconcile reconstructs a lost idle completion's completed_turn_key and del
   const text = "second answer, no next step";
   const captured: { subscribeCallback: ((event: { id: string; changes: string[] }) => void) | null } = { subscribeCallback: null };
   const bb = {
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     log: { warn: () => undefined, info: () => undefined },
-    realtime: { publish: (topic: string, payload: unknown) => { if (topic === "hl:notify") published.push(payload); } },
+    realtime: { publish: (topic: string, payload: unknown) => { if (topic === "rpi:notify") published.push(payload); } },
     onDispose: () => undefined,
     experimental_hooks: { on: () => undefined },
     events: { on: () => undefined },
@@ -598,7 +598,7 @@ test("reconcile reconstructs a lost idle completion's completed_turn_key and del
       },
       threads: {
         get: async ({ threadId }: { threadId: string }) => ({
-          ...makeThreadResponse({ id: threadId, status: "idle", updatedAt: 5, environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }),
+          ...makeThreadResponse({ id: threadId, status: "idle", updatedAt: 5, environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }),
           numEvents: 5,
         }),
         interactions: { list: async () => [] },
@@ -638,9 +638,9 @@ test("reconcile-first: a reconcile racing ahead of the idle event still auto-adv
   const text = "done\n```text\n/rpi-create-research\n```";
   const captured: { subscribeCallback: ((event: { id: string; changes: string[] }) => void) | null } = { subscribeCallback: null };
   const bb = {
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     log: { warn: () => undefined, info: () => undefined },
-    realtime: { publish: (topic: string, payload: unknown) => { if (topic === "hl:notify") publishedNotify.push(payload); } },
+    realtime: { publish: (topic: string, payload: unknown) => { if (topic === "rpi:notify") publishedNotify.push(payload); } },
     onDispose: () => undefined,
     experimental_hooks: { on: () => undefined },
     events: { on: () => undefined },
@@ -652,7 +652,7 @@ test("reconcile-first: a reconcile racing ahead of the idle event still auto-adv
       projects: { get: async ({ projectId }: { projectId: string }) => ({ id: projectId, name: "Proj", kind: "standard" as const, gitRemoteUrl: null, createdAt: 1, updatedAt: 1, sources: [{ id: "src_1", projectId, hostId: "host_seed", path: "/repo", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 }] }) },
       threads: {
         get: async ({ threadId }: { threadId: string }) => ({
-          ...makeThreadResponse({ id: threadId, status: "idle", updatedAt: 2, environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }),
+          ...makeThreadResponse({ id: threadId, status: "idle", updatedAt: 2, environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }),
           numEvents: 2,
         }),
         interactions: { list: async () => [] },
@@ -664,7 +664,7 @@ test("reconcile-first: a reconcile racing ahead of the idle event still auto-adv
         }),
         spawn: async () => {
           spawns += 1;
-          return makeThreadResponse({ id: "thr_next", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" });
+          return makeThreadResponse({ id: "thr_next", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
         },
       },
       files: { listPaths: async () => [] },
@@ -692,7 +692,7 @@ test("reconcile-first: a reconcile racing ahead of the idle event still auto-adv
   assert.ok(suppression, "an auto_advance suppression row must have been claimed");
   const reasons = (db.prepare("SELECT reason FROM notifications WHERE thread_id = 'thr_1'").all() as Array<{ reason: string }>).map((row) => row.reason);
   assert.deepEqual(reasons, ["auto_advance_suppressed"], "no user-visible toast for the auto-advanced turn");
-  assert.equal(publishedNotify.length, 0, "a suppressed decision never publishes hl:notify");
+  assert.equal(publishedNotify.length, 0, "a suppressed decision never publishes rpi:notify");
   db.close();
 });
 
@@ -708,7 +708,7 @@ test("reconcile-first: an interrupted turn does not auto-advance and settles on 
   const text = "done\n```text\n/rpi-create-research\n```";
   const captured: { subscribeCallback: ((event: { id: string; changes: string[] }) => void) | null } = { subscribeCallback: null };
   const bb = {
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     log: { warn: () => undefined, info: () => undefined },
     realtime: { publish: () => undefined },
     onDispose: () => undefined,
@@ -721,7 +721,7 @@ test("reconcile-first: an interrupted turn does not auto-advance and settles on 
       },
       threads: {
         get: async ({ threadId }: { threadId: string }) => ({
-          ...makeThreadResponse({ id: threadId, status: "idle", updatedAt: 2, environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }),
+          ...makeThreadResponse({ id: threadId, status: "idle", updatedAt: 2, environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }),
           numEvents: 2,
         }),
         interactions: { list: async () => [] },
@@ -734,7 +734,7 @@ test("reconcile-first: an interrupted turn does not auto-advance and settles on 
         }),
         spawn: async () => {
           spawns += 1;
-          return makeThreadResponse({ id: "thr_next", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" });
+          return makeThreadResponse({ id: "thr_next", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
         },
       },
       files: { listPaths: async () => [] },
@@ -757,8 +757,8 @@ test("reconcile-first: an interrupted turn does not auto-advance and settles on 
   captured.subscribeCallback?.({ id: "thr_1", changes: ["status-changed"] });
   for (let i = 0; i < 20; i += 1) await delay();
   assert.equal(spawns, 0, "an interrupted turn must never auto-advance");
-  const stored = db.prepare("SELECT hl_status AS hlStatus, interrupted FROM sessions WHERE thread_id = 'thr_1'").get() as { hlStatus: string; interrupted: number };
-  assert.equal(stored.hlStatus, "interrupted");
+  const stored = db.prepare("SELECT rpi_status AS rpiStatus, interrupted FROM sessions WHERE thread_id = 'thr_1'").get() as { rpiStatus: string; interrupted: number };
+  assert.equal(stored.rpiStatus, "interrupted");
   assert.equal(stored.interrupted, 1);
   const reasons = (db.prepare("SELECT reason FROM notifications WHERE thread_id = 'thr_1'").all() as Array<{ reason: string }>).map((row) => row.reason);
   assert.deepEqual(reasons, [], "no ready toast for an interrupted turn");
@@ -775,7 +775,7 @@ test("idle-first: an interrupted turn does not auto-advance", async () => {
   const text = "done\n```text\n/rpi-create-research\n```";
   let spawns = 0;
   const { bb, handlers } = makeRuntimeBb({
-    get: async ({ threadId }) => ({ ...makeThreadResponse({ id: threadId, status: "idle", updatedAt: 2, environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }), numEvents: 2 }),
+    get: async ({ threadId }) => ({ ...makeThreadResponse({ id: threadId, status: "idle", updatedAt: 2, environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }), numEvents: 2 }),
     events: async () => [{ type: "system/thread/interrupted" }],
   });
   Object.assign(bb.sdk.threads, {
@@ -789,7 +789,7 @@ test("idle-first: an interrupted turn does not auto-advance", async () => {
     }),
     spawn: async () => {
       spawns += 1;
-      return makeThreadResponse({ id: "thr_next", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" });
+      return makeThreadResponse({ id: "thr_next", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
     },
   });
   Object.assign(bb.sdk, { files: { listPaths: async () => [] } });
@@ -799,8 +799,8 @@ test("idle-first: an interrupted turn does not auto-advance", async () => {
   handlers.get("thread.idle")?.({ thread: thread({ numEvents: 2, updatedAt: 2 }), lastAssistantText: text } as never);
   for (let i = 0; i < 20; i += 1) await delay();
   assert.equal(spawns, 0, "an interrupted turn must never auto-advance");
-  const stored = db.prepare("SELECT hl_status AS hlStatus, interrupted FROM sessions WHERE thread_id = 'thr_1'").get() as { hlStatus: string; interrupted: number };
-  assert.equal(stored.hlStatus, "interrupted");
+  const stored = db.prepare("SELECT rpi_status AS rpiStatus, interrupted FROM sessions WHERE thread_id = 'thr_1'").get() as { rpiStatus: string; interrupted: number };
+  assert.equal(stored.rpiStatus, "interrupted");
   assert.equal(stored.interrupted, 1);
   db.close();
 });
@@ -814,7 +814,7 @@ test("startup replay does not re-run the completion pipeline for an already-proc
   // Pre-seed the mirror as if a prior run already fully processed this turn: ingest/extract done,
   // the auto-advance suppression already claimed and consumed, and the ready notification already
   // recorded (auto_advance_suppressed, so no toast).
-  db.prepare("UPDATE sessions SET label = 'research-questions', hl_status = 'ready_for_input', completed_turn_key = '2:2', processed_turn_key = '2:2', advanced_at = 1, advanced_attempt_id = 'attempt_1' WHERE thread_id = 'thr_1'").run();
+  db.prepare("UPDATE sessions SET label = 'research-questions', rpi_status = 'ready_for_input', completed_turn_key = '2:2', processed_turn_key = '2:2', advanced_at = 1, advanced_attempt_id = 'attempt_1' WHERE thread_id = 'thr_1'").run();
   db.prepare("INSERT INTO notification_suppressions (thread_id, completed_turn_key, reason, created_at, consumed_at) VALUES ('thr_1', '2:2', 'auto_advance', 1, 1)").run();
   db.prepare("INSERT INTO notifications (id, thread_id, kind, dedupe_key, reason, sound, created_at, delivered_at) VALUES ('n1', 'thr_1', 'ready_for_input', 'ready:thr_1:2:2', 'auto_advance_suppressed', 0, 1, NULL)").run();
   db.prepare("UPDATE sessions SET last_reconcile_seq = 40 WHERE thread_id = 'thr_1'").run();
@@ -822,7 +822,7 @@ test("startup replay does not re-run the completion pipeline for an already-proc
   let spawns = 0;
   let timelineCalls = 0;
   const { bb } = makeRuntimeBb({
-    get: async ({ threadId }) => ({ ...makeThreadResponse({ id: threadId, status: "idle", updatedAt: 2, environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }), numEvents: 2 }),
+    get: async ({ threadId }) => ({ ...makeThreadResponse({ id: threadId, status: "idle", updatedAt: 2, environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }), numEvents: 2 }),
     events: async () => [],
   });
   Object.assign(bb.sdk.threads, {
@@ -834,7 +834,7 @@ test("startup replay does not re-run the completion pipeline for an already-proc
     },
     spawn: async () => {
       spawns += 1;
-      return makeThreadResponse({ id: "thr_next", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" });
+      return makeThreadResponse({ id: "thr_next", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
     },
   });
   const onSnapshot = makeSnapshotHandler(db, seeded, bb);
@@ -859,7 +859,7 @@ test("needs_approval notifies again for a second pending approval id while statu
   const db = makeDb();
   const mirror = new Map();
   seedSession(db);
-  db.prepare("UPDATE sessions SET hl_status = 'needs_approval' WHERE thread_id = 'thr_1'").run();
+  db.prepare("UPDATE sessions SET rpi_status = 'needs_approval' WHERE thread_id = 'thr_1'").run();
   mirrorSession(db, mirror, "thr_1");
   const published: unknown[] = [];
   const bb = { realtime: { publish: (_topic: string, payload: unknown) => published.push(payload) } };
@@ -867,10 +867,10 @@ test("needs_approval notifies again for a second pending approval id while statu
   const approvalOne = [{ id: "pint_1", status: "pending", payload: { kind: "approval", toolName: "mcp__a__b", toolInput: "x" } }];
   await onSnapshot("thr_1", approvalOne);
   assert.equal(published.length, 1);
-  // hlStatus stays needs_approval (no transition), but a second, different approval id arrives.
+  // rpiStatus stays needs_approval (no transition), but a second, different approval id arrives.
   const approvalTwo = [{ id: "pint_2", status: "pending", payload: { kind: "approval", toolName: "mcp__a__b", toolInput: "y" } }];
   await onSnapshot("thr_1", approvalTwo);
-  assert.equal(published.length, 2, "a second pending approval id must notify even though hlStatus did not change");
+  assert.equal(published.length, 2, "a second pending approval id must notify even though rpiStatus did not change");
   const rows = db.prepare("SELECT dedupe_key AS dedupeKey FROM notifications ORDER BY created_at").all() as Array<{ dedupeKey: string }>;
   assert.deepEqual(rows.map((row) => row.dedupeKey), ["approval:thr_1:pint_1", "approval:thr_1:pint_2"]);
   // Redelivering the same approval id must not duplicate.
@@ -883,7 +883,7 @@ test("two simultaneously pending approvals in one snapshot both notify; a second
   const db = makeDb();
   const mirror = new Map();
   seedSession(db);
-  db.prepare("UPDATE sessions SET hl_status = 'needs_approval' WHERE thread_id = 'thr_1'").run();
+  db.prepare("UPDATE sessions SET rpi_status = 'needs_approval' WHERE thread_id = 'thr_1'").run();
   mirrorSession(db, mirror, "thr_1");
   const published: unknown[] = [];
   const bb = { realtime: { publish: (_topic: string, payload: unknown) => published.push(payload) } };
@@ -989,7 +989,7 @@ test("thread delete evicts runtime mirror without deleting the session row", () 
 
 test("agent callbacks return non-Promise values", async () => {
   const { bb, harness } = createFakePluginHost({
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     sdk: { subscribe: () => () => undefined },
   });
   await plugin(bb);
@@ -1013,7 +1013,7 @@ test("agent callbacks return non-Promise values", async () => {
 
 test("agent child skills require a task parent and survive reload", async () => {
   const { bb, harness } = createFakePluginHost({
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     sdk: {
       subscribe: () => () => undefined,
       threads: {
@@ -1053,7 +1053,7 @@ test("agent child skills require a task parent and survive reload", async () => 
   bb.storage.database().prepare(`
     INSERT INTO sessions (
       thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
-      hl_status, hl_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at
+      rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at
     ) VALUES ('thr_parent', ?, 'research', 'create-research', 'user', NULL, 'running', 1, 1, 0, NULL, 1, 1)
   `).run(created.taskId);
 
@@ -1077,7 +1077,7 @@ test("agent child skills require a task parent and survive reload", async () => 
 test("agent child classification uses the thread record's actual parent", async () => {
   const actualParents = new Map<string, string | null>();
   const { bb, harness } = createFakePluginHost({
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     sdk: {
       subscribe: () => () => undefined,
       threads: {
@@ -1099,7 +1099,7 @@ test("agent child classification uses the thread record's actual parent", async 
   bb.storage.database().prepare(`
     INSERT INTO sessions (
       thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
-      hl_status, hl_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at
+      rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at
     ) VALUES ('thr_task_parent', ?, 'research', 'create-research', 'user', NULL, 'running', 1, 1, 0, NULL, 1, 1)
   `).run(created.taskId);
 
@@ -1133,12 +1133,12 @@ test("launch marker binds dispatch before spawn returns", async () => {
   const threadResponse = makeThreadResponse({
     id: "thr_spawned",
     projectId: "proj_1",
-    originPluginId: "humanlayer",
+    originPluginId: "rpi",
     status: "pending",
     runtime: { displayStatus: "pending", hostReconnectGraceExpiresAt: null },
   });
   const { bb, harness } = createFakePluginHost({
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     sdk: {
       subscribe: () => () => undefined,
       projects: { get: async ({ projectId }: { projectId: string }) => ({ id: projectId, name: "Proj", kind: "standard" as const, gitRemoteUrl: null, createdAt: 1, updatedAt: 1, sources: [{ id: "src_1", projectId, hostId: "host_seed", path: "/repo", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 }] }) },
@@ -1171,13 +1171,13 @@ test("launch marker binds dispatch before spawn returns", async () => {
     attempt: "start-turn",
     queuedMessage: null,
     origin: null,
-    originPluginId: "humanlayer",
+    originPluginId: "rpi",
     startedOnBehalfOf: null,
     parentThreadId: null,
   } as never);
   assert.deepEqual(decision, { action: "proceed" });
   const instructions = harness.inspection.registrations.instructionProvider?.({ threadId: "thr_spawned", projectId: "proj_1" });
-  assert.match(instructions ?? "", /HumanLayer task: Task/);
+  assert.match(instructions ?? "", /RPI task: Task/);
   resolveSpawn(threadResponse);
   await launchPromise;
   await harness.lifecycle.dispose();

@@ -11,22 +11,22 @@ This skill can read comments, summarize them, ask how to proceed, apply edits, r
 
 ## Step 0: Load bb task context
 
-Call `hl_task_context` before reading files. Use the returned task directory, artifact list, and task slug to resolve artifact names.
+Call `rpi_task_context` before reading files. Use the returned task directory, artifact list, and task slug to resolve artifact names.
 
 The available comment tools are:
 
-- `hl_get_artifact_comments`
-- `hl_update_artifact_comments`
-- `hl_reply_to_artifact_comment`
+- `rpi_get_artifact_comments`
+- `rpi_update_artifact_comments`
+- `rpi_reply_to_artifact_comment`
 
-If these tools are unavailable or `hl_task_context` says the thread is not attached to a task, tell the user that comment tools are not available in this session and ask them to move to a task session with artifact access.
+If these tools are unavailable or `rpi_task_context` says the thread is not attached to a task, tell the user that comment tools are not available in this session and ask them to move to a task session with artifact access.
 
 ## Input Format
 
 The user may invoke this skill with different levels of detail:
 
 1. If the prompt contains a `<comments>...</comments>` block, work from that block.
-2. If no comment block is present but an artifact file name is supplied or obvious from conversation, call `hl_get_artifact_comments` for that artifact.
+2. If no comment block is present but an artifact file name is supplied or obvious from conversation, call `rpi_get_artifact_comments` for that artifact.
 3. If neither comments nor an artifact name are provided, ask which artifact to inspect and wait for the answer.
 
 ### Comment block format
@@ -55,7 +55,7 @@ when you need a reminder of the XML shape.
 
 2. **Read or fetch comments**
 
-   Use the provided XML block when present. Otherwise fetch comments with `hl_get_artifact_comments`.
+   Use the provided XML block when present. Otherwise fetch comments with `rpi_get_artifact_comments`.
 
    Include unresolved comments by default. Include resolved comments only if the user asks or the task requires reviewing already handled discussion.
 
@@ -81,17 +81,17 @@ when you need a reminder of the XML shape.
 
    - update the same artifact unless the user asks for a new file
    - preserve frontmatter and section structure unless the edit requires a valid correction
-   - call `hl_artifact_save` after writing
+   - call `rpi_artifact_save` after writing
 
    If replying:
 
-   - use `hl_reply_to_artifact_comment`
+   - use `rpi_reply_to_artifact_comment`
    - keep replies specific to the comment
    - do not use replies to hide unresolved decisions
 
    If resolving or deleting:
 
-   - use `hl_update_artifact_comments`
+   - use `rpi_update_artifact_comments`
    - resolve only comments the user told you to resolve
    - delete only comments the user told you to delete
    - if you make a mistaken state change, use the same update tool to reverse it when possible
@@ -104,13 +104,13 @@ when you need a reminder of the XML shape.
    references/comments_template.md
    ```
 
-   Call `hl_next_artifact_number` and write:
+   Call `rpi_next_artifact_number` and write:
 
    ```text
    NN-comment-review-<2-4-word-kebab-summary>.md
    ```
 
-   Then call `hl_artifact_save`.
+   Then call `rpi_artifact_save`.
 
 6. **Final response**
 

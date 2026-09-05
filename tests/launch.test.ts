@@ -43,7 +43,7 @@ test("a failed attempt not yet retried can be retried; an already-retried failed
   let spawns = 0;
   const bb = {
     realtime: { publish: () => undefined },
-    sdk: { projects: stubDefaultSource(), threads: { spawn: async () => { spawns += 1; return makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }); }, get: async () => makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }) } },
+    sdk: { projects: stubDefaultSource(), threads: { spawn: async () => { spawns += 1; return makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" }); }, get: async () => makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" }) } },
     log: { warn: () => undefined },
   };
   await resolveLaunchAttempt(bb as never, db, new Map(), createLaunchBindingMirror(), "attempt_1", { type: "retry" });
@@ -81,9 +81,9 @@ test("launchPhase prompts start with marker then task context first-action line"
       threads: {
         spawn: async (input: { prompt: string }) => {
           prompt = input.prompt;
-          return makeThreadResponse({ id: "thr_new", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" });
+          return makeThreadResponse({ id: "thr_new", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
         },
-        get: async () => makeThreadResponse({ id: "thr_new", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }),
+        get: async () => makeThreadResponse({ id: "thr_new", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" }),
       },
     },
     log: { warn: () => undefined },
@@ -117,7 +117,7 @@ test("launchPhase prompts start with marker then task context first-action line"
     updatedAt: 1,
   }, { skillId: null, prompt: "do work", launchedBy: "user", fromThreadId: null });
   const lines = prompt.split("\n");
-  assert.match(lines[0]!, /^<!-- hl:launch:/);
+  assert.match(lines[0]!, /^<!-- rpi:launch:/);
   assert.equal(lines[1], TASK_CONTEXT_FIRST_ACTION);
   db.close();
 });
@@ -187,9 +187,9 @@ test("phase successor spawn is a sibling with plugin metadata only", async () =>
       threads: {
         spawn: async (input: Record<string, unknown>) => {
           spawnInput = input;
-          return makeThreadResponse({ id: "thr_new", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" });
+          return makeThreadResponse({ id: "thr_new", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
         },
-        get: async () => makeThreadResponse({ id: "thr_new", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }),
+        get: async () => makeThreadResponse({ id: "thr_new", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" }),
       },
     },
     log: { warn: () => undefined },
@@ -209,12 +209,12 @@ test("adopt rejects a thread already bound to a session without resolving the at
   db.prepare(`
     INSERT INTO sessions (
       thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
-      hl_status, hl_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at
+      rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at
     ) VALUES ('thr_bound', ?, NULL, NULL, 'user', NULL, 'running', 1, 1, 0, NULL, 1, 1)
   `).run(taskId);
-  const thread = makeThreadResponse({ id: "thr_bound", projectId: "proj_1", createdAt: 2, originPluginId: "humanlayer" });
+  const thread = makeThreadResponse({ id: "thr_bound", projectId: "proj_1", createdAt: 2, originPluginId: "rpi" });
   const bb = {
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     sdk: {
       threads: {
         list: async () => [thread],
@@ -237,9 +237,9 @@ test("adopt stores worktree environment when the attempt role is worktree", asyn
   const taskId = seedTask(db);
   db.prepare("INSERT INTO launch_attempts (id, task_id, from_thread_id, skill_id, command_line, label, environment_role, launched_by, status, thread_id, created_at) VALUES (?, ?, NULL, 'setup-worktree', '/rpi-setup-worktree', 'worktree-setup', 'worktree', 'auto_advance', 'uncertain', NULL, ?)")
     .run("attempt_1", taskId, 1);
-  const thread = makeThreadResponse({ id: "thr_adopt", projectId: "proj_1", createdAt: 2, originPluginId: "humanlayer" });
+  const thread = makeThreadResponse({ id: "thr_adopt", projectId: "proj_1", createdAt: 2, originPluginId: "rpi" });
   const bb = {
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     sdk: {
       threads: {
         list: async () => [thread],
@@ -261,11 +261,11 @@ test("adopting a launch attempt supersedes its origin thread's failed-advance re
   db.prepare("INSERT INTO launch_attempts (id, task_id, from_thread_id, skill_id, command_line, label, environment_role, launched_by, status, thread_id, created_at) VALUES (?, ?, 'thr_source', 'setup-worktree', '/rpi-setup-worktree', 'worktree-setup', 'worktree', 'auto_advance', 'uncertain', NULL, ?)")
     .run("attempt_1", taskId, 1);
   db.prepare("INSERT INTO notifications (id, thread_id, kind, dedupe_key, reason, sound, created_at, delivered_at) VALUES ('n1', 'thr_source', 'ready_after_failed_advance', 'ready-recover:thr_source:turn_1', 'notify', 1, 1, 1)").run();
-  const thread = makeThreadResponse({ id: "thr_adopt", projectId: "proj_1", createdAt: 2, originPluginId: "humanlayer" });
+  const thread = makeThreadResponse({ id: "thr_adopt", projectId: "proj_1", createdAt: 2, originPluginId: "rpi" });
   const published: unknown[] = [];
   const bb = {
-    pluginId: "humanlayer",
-    realtime: { publish: (topic: string, payload: unknown) => { if (topic === "hl:notify") published.push(payload); } },
+    pluginId: "rpi",
+    realtime: { publish: (topic: string, payload: unknown) => { if (topic === "rpi:notify") published.push(payload); } },
     sdk: {
       threads: {
         list: async () => [thread],
@@ -287,23 +287,23 @@ test("adoption candidates match plugin, project, time, and mark weak without mar
   db.prepare("INSERT INTO launch_attempts (id, task_id, from_thread_id, skill_id, status, thread_id, created_at) VALUES (?, ?, NULL, NULL, 'uncertain', NULL, ?)")
     .run("attempt_1", taskId, 10);
   const threads = [
-    makeThreadResponse({ id: "thr_strong", title: "Strong", projectId: "proj_1", createdAt: 11, originPluginId: "humanlayer" }),
-    makeThreadResponse({ id: "thr_weak", title: "Weak", projectId: "proj_1", createdAt: 12, originPluginId: "humanlayer" }),
-    makeThreadResponse({ id: "thr_wrong_project", projectId: "proj_2", createdAt: 13, originPluginId: "humanlayer" }),
-    makeThreadResponse({ id: "thr_old", projectId: "proj_1", createdAt: 10, originPluginId: "humanlayer" }),
+    makeThreadResponse({ id: "thr_strong", title: "Strong", projectId: "proj_1", createdAt: 11, originPluginId: "rpi" }),
+    makeThreadResponse({ id: "thr_weak", title: "Weak", projectId: "proj_1", createdAt: 12, originPluginId: "rpi" }),
+    makeThreadResponse({ id: "thr_wrong_project", projectId: "proj_2", createdAt: 13, originPluginId: "rpi" }),
+    makeThreadResponse({ id: "thr_old", projectId: "proj_1", createdAt: 10, originPluginId: "rpi" }),
     makeThreadResponse({ id: "thr_other_plugin", projectId: "proj_1", createdAt: 14, originPluginId: "other" }),
-    makeThreadResponse({ id: "thr_other_marker", projectId: "proj_1", createdAt: 15, originPluginId: "humanlayer" }),
+    makeThreadResponse({ id: "thr_other_marker", projectId: "proj_1", createdAt: 15, originPluginId: "rpi" }),
   ];
   const bb = {
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     sdk: {
       threads: {
         list: async () => threads,
         timeline: async ({ threadId }: { threadId: string }) => ({
           rows: threadId === "thr_strong"
-            ? [{ kind: "conversation", role: "user", text: "<!-- hl:launch:attempt_1 -->", sourceSeqStart: 1 }]
+            ? [{ kind: "conversation", role: "user", text: "<!-- rpi:launch:attempt_1 -->", sourceSeqStart: 1 }]
             : threadId === "thr_other_marker"
-              ? [{ kind: "conversation", role: "user", text: "<!-- hl:launch:other_attempt -->", sourceSeqStart: 1 }]
+              ? [{ kind: "conversation", role: "user", text: "<!-- rpi:launch:other_attempt -->", sourceSeqStart: 1 }]
               : [{ kind: "conversation", role: "user", text: "manual start", sourceSeqStart: 1 }],
         }),
       },
@@ -331,15 +331,15 @@ test("retry creates a new marked attempt with the same command and role", async 
       threads: {
         spawn: async (input: { prompt: string }) => {
           prompt = input.prompt;
-          return makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" });
+          return makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
         },
-        get: async () => makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }),
+        get: async () => makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" }),
       },
     },
     log: { warn: () => undefined },
   };
   await resolveLaunchAttempt(bb as never, db, new Map(), createLaunchBindingMirror(), "attempt_1", { type: "retry" });
-  assert.match(prompt, /^<!-- hl:launch:(?!attempt_1)/);
+  assert.match(prompt, /^<!-- rpi:launch:(?!attempt_1)/);
   assert.match(prompt, /\/rpi-create-research @x\.md/);
   const attempts = db.prepare("SELECT id, status, retried_from AS retriedFrom, environment_role AS environmentRole, thread_id AS threadId FROM launch_attempts ORDER BY created_at, id").all() as Array<{ id: string; status: string; retriedFrom: string | null; environmentRole: string; threadId: string | null }>;
   assert.equal(attempts.length, 2);
@@ -365,9 +365,9 @@ test("concurrent retries claim the old attempt once and spawn once", async () =>
         spawn: async () => {
           spawns += 1;
           await new Promise((resolve) => setTimeout(resolve, 10));
-          return makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" });
+          return makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
         },
-        get: async () => makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }),
+        get: async () => makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" }),
       },
     },
     log: { warn: () => undefined },
@@ -397,9 +397,9 @@ test("retry honors the stored base environment role", async () => {
       threads: {
         spawn: async (input: { environment: unknown }) => {
           environment = input.environment;
-          return makeThreadResponse({ id: "thr_retry", environmentId: "env_base", projectId: "proj_1", originPluginId: "humanlayer" });
+          return makeThreadResponse({ id: "thr_retry", environmentId: "env_base", projectId: "proj_1", originPluginId: "rpi" });
         },
-        get: async () => makeThreadResponse({ id: "thr_retry", environmentId: "env_base", projectId: "proj_1", originPluginId: "humanlayer" }),
+        get: async () => makeThreadResponse({ id: "thr_retry", environmentId: "env_base", projectId: "proj_1", originPluginId: "rpi" }),
       },
     },
     log: { warn: () => undefined },
@@ -500,9 +500,9 @@ test("launchPhase selects environments by worktree timing and phase", async () =
         threads: {
           spawn: async (input: { environment: unknown }) => {
             environment = input.environment;
-            return makeThreadResponse({ id: "thr_new", environmentId: null, projectId: "proj_1", originPluginId: "humanlayer" });
+            return makeThreadResponse({ id: "thr_new", environmentId: null, projectId: "proj_1", originPluginId: "rpi" });
           },
-          get: async () => makeThreadResponse({ id: "thr_new", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }),
+          get: async () => makeThreadResponse({ id: "thr_new", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" }),
         },
       },
       log: { warn: () => undefined },
@@ -563,9 +563,9 @@ test("a hostless base-role task targets the project's default source host, not t
         spawn: async (input: { environment: unknown }) => {
           environment = input.environment;
           spawned = true;
-          return makeThreadResponse({ id: "thr_new", environmentId: null, projectId: "proj_1", originPluginId: "humanlayer" });
+          return makeThreadResponse({ id: "thr_new", environmentId: null, projectId: "proj_1", originPluginId: "rpi" });
         },
-        get: async () => makeThreadResponse({ id: "thr_new", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }),
+        get: async () => makeThreadResponse({ id: "thr_new", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" }),
       },
     },
     log: { warn: () => undefined },
@@ -601,9 +601,9 @@ test("a hostless base-role task with no project source and no task.hostId reject
       threads: {
         spawn: async () => {
           spawned = true;
-          return makeThreadResponse({ id: "thr_new", environmentId: null, projectId: "proj_1", originPluginId: "humanlayer" });
+          return makeThreadResponse({ id: "thr_new", environmentId: null, projectId: "proj_1", originPluginId: "rpi" });
         },
-        get: async () => makeThreadResponse({ id: "thr_new", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }),
+        get: async () => makeThreadResponse({ id: "thr_new", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" }),
       },
     },
     log: { warn: () => undefined },

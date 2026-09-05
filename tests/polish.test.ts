@@ -5,7 +5,7 @@ import plugin from "../server";
 
 test("scratch pad round trips through task_ui_state without disturbing dismissed tips", async () => {
   const { bb, harness } = createFakePluginHost({
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     sdk: { subscribe: () => () => undefined },
   });
   await plugin(bb);
@@ -31,7 +31,7 @@ test("scratch pad round trips through task_ui_state without disturbing dismissed
 
 test("context warning dismissal is scoped per thread within one task", async () => {
   const { bb, harness } = createFakePluginHost({
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     sdk: { subscribe: () => () => undefined },
   });
   await plugin(bb);
@@ -51,7 +51,7 @@ test("context warning dismissal is scoped per thread within one task", async () 
 
 test("getSession reports context usage percent from threads.timeline summaryOnly, and null on failure", async () => {
   const { bb, harness } = createFakePluginHost({
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     sdk: {
       subscribe: () => () => undefined,
       threads: {
@@ -78,7 +78,7 @@ test("getSession reports context usage percent from threads.timeline summaryOnly
     db.prepare(`
       INSERT INTO sessions (
         thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
-        hl_status, hl_status_at, had_turn, interrupted, blocked_reason,
+        rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason,
         summary_json, created_at, updated_at
       ) VALUES (?, ?, NULL, NULL, 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, NULL, 1, 1)
     `).run(threadId, created.taskId);
@@ -99,7 +99,7 @@ test("getSession reports context usage percent from threads.timeline summaryOnly
 
 test("setPrefs merges workflowDefaults per workflow type instead of replacing the whole map", async () => {
   const { bb, harness } = createFakePluginHost({
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     sdk: { subscribe: () => () => undefined },
   });
   await plugin(bb);

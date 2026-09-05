@@ -1,6 +1,6 @@
-# HumanLayer RPI Skills
+# RPI Skills
 
-Each skill starts by calling hl_task_context, writes task artifacts under .humanlayer/tasks/<slug>/, saves artifacts through hl_artifact_save, and ends with one text-fenced command for extraction.
+Each skill starts by calling rpi_task_context, writes task artifacts under .rpi/tasks/<slug>/, saves artifacts through rpi_artifact_save, and ends with one text-fenced command for extraction.
 
 | Skill | Label | Next command | Human gate |
 |---|---|---|---|

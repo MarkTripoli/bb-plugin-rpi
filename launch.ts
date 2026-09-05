@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type * as BetterSqlite3 from "better-sqlite3";
+import { TASK_ROOT_DIR } from "./constants";
 import type { TaskRecord } from "./contract";
 import { nowMs, readRow, readRows, writeRow } from "./db";
 import { getTask } from "./tasks";
@@ -283,7 +284,7 @@ async function selectEnvironment(bb: BbPluginApi, task: TaskRecord, skillId: str
   // spawn a managed worktree for a new thread. `worktreeTiming` "never"/"later" is this plugin's
   // own guarantee that no worktree exists until the plan calls for one, so a base-role spawn must
   // not gamble on that ambient default, and it must not guess a host from `hosts.list()[0]`
-  // either (found live: a bare `bb humanlayer tasks create` with no `--host` on a project whose
+  // either (found live: a bare `bb rpi tasks create` with no `--host` on a project whose
   // ambient default happened to be a managed worktree silently broke `worktreeTiming: "later"`,
   // and a multi-host bb instance has no ordering guarantee over which host is "first"). The only
   // deterministic host for an unmanaged base workspace is the project's own default source
@@ -333,7 +334,7 @@ async function hostIdFromBaseEnvironment(bb: BbPluginApi, task: TaskRecord) {
 function promptFor(task: TaskRecord, input: { skillId: string | null; prompt?: string; commandLine?: string | null }) {
   const command = commandFor(input.skillId, input.commandLine);
   const body = command ?? input.prompt ?? task.draftPrompt;
-  const suffix = `Task artifact directory: .humanlayer/tasks/${task.slug}`;
+  const suffix = `Task artifact directory: ${TASK_ROOT_DIR}/tasks/${task.slug}`;
   return `${body}\n\n${suffix}`;
 }
 
@@ -441,7 +442,7 @@ export async function launchPhase(
   } catch (error) {
     failPreSpawnAttempt(db, attemptId, input.fromThreadId);
     clearPendingLaunch(bindings, attemptId);
-    bb.realtime.publish("hl:sessions", { taskId: task.id, threadId: null });
+    bb.realtime.publish("rpi:sessions", { taskId: task.id, threadId: null });
     throw error;
   }
   try {
@@ -463,7 +464,7 @@ export async function launchPhase(
     notePendingLaunchThread(bindings, attemptId, thread.id);
     const bound = bindPendingLaunch(db, mirror, bindings, attemptId, thread.id);
     if (!bound) {
-      bb.log.warn(`HumanLayer launch attempt ${attemptId} returned thread ${thread.id} after it was resolved; leaving thread unbound.`);
+      bb.log.warn(`RPI launch attempt ${attemptId} returned thread ${thread.id} after it was resolved; leaving thread unbound.`);
       return { threadId: thread.id };
     }
     const hydratedThread = await bb.sdk.threads.get({ threadId: thread.id, include: "environment" });
@@ -475,13 +476,13 @@ export async function launchPhase(
       writeRow(db, "UPDATE tasks SET worktree_environment_id = ?, updated_at = ? WHERE id = ?", environmentId, timestamp, task.id);
     }
     mirrorSession(db, mirror, thread.id);
-    bb.realtime.publish("hl:sessions", { taskId: task.id, threadId: thread.id });
+    bb.realtime.publish("rpi:sessions", { taskId: task.id, threadId: thread.id });
     bb.realtime.publish("tasks", { taskId: task.id });
     return { threadId: thread.id };
   } catch (error) {
     claimAttempt(db, attemptId, "uncertain", null);
     clearPendingLaunch(bindings, attemptId);
-    bb.realtime.publish("hl:sessions", { taskId: task.id, threadId: null });
+    bb.realtime.publish("rpi:sessions", { taskId: task.id, threadId: null });
     throw error;
   }
 }
@@ -537,7 +538,7 @@ export async function forkSession(
     `
     INSERT INTO sessions (
       thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
-      hl_status, hl_status_at, had_turn, interrupted, blocked_reason,
+      rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason,
       created_at, updated_at
     ) VALUES (?, ?, ?, ?, 'fork', ?, 'launching', ?, 0, 0, NULL, ?, ?)
     `,
@@ -551,7 +552,7 @@ export async function forkSession(
     timestamp,
   );
   mirrorSession(db, mirror, fork.id);
-  bb.realtime.publish("hl:sessions", { taskId: source.taskId, threadId: fork.id });
+  bb.realtime.publish("rpi:sessions", { taskId: source.taskId, threadId: fork.id });
   bb.realtime.publish("tasks", { taskId: source.taskId });
   return { threadId: fork.id };
 }
@@ -560,7 +561,7 @@ export async function interruptSession(bb: BbPluginApi, db: Database, mirror: Ma
   const source = mirror.get(threadId);
   if (!source) throw new Error(`No session found for thread ${threadId}`);
   await bb.sdk.threads.stop({ threadId });
-  bb.realtime.publish("hl:sessions", { taskId: source.taskId, threadId });
+  bb.realtime.publish("rpi:sessions", { taskId: source.taskId, threadId });
   return { ok: true as const };
 }
 
@@ -600,7 +601,7 @@ export async function resolveLaunchAttempt(
       const timestamp = nowMs();
       const result = db.transaction(() => {
         const existing = readRow<{ threadId: string }>(db, "SELECT thread_id AS threadId FROM sessions WHERE thread_id = ?", action.threadId);
-        if (existing) throw new Error("Thread is already bound to a HumanLayer session.");
+        if (existing) throw new Error("Thread is already bound to an RPI session.");
         const claim = writeRow(db, "UPDATE launch_attempts SET status = 'spawned', thread_id = ? WHERE id = ? AND status IN ('pending', 'uncertain')", action.threadId, id);
         if (claim.changes !== 1) return currentAttemptResult(db, fresh);
         writeRow(
@@ -608,7 +609,7 @@ export async function resolveLaunchAttempt(
           `
           INSERT INTO sessions (
             thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
-            hl_status, hl_status_at, had_turn, interrupted, blocked_reason,
+            rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason,
             created_at, updated_at
           ) VALUES (?, ?, ?, ?, ?, ?, 'launching', ?, 0, 0, NULL, ?, ?)
           `,

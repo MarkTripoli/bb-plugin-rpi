@@ -6,7 +6,7 @@ Summary:
 
 If you want to review it first, open the updated research artifact from the task sidebar.
 
-Choose the next command from `hl_task_context.task.workflow`. Emit only the matching variant and remove this instruction plus the other variants before replying.
+Choose the next command from `rpi_task_context.task.workflow`. Emit only the matching variant and remove this instruction plus the other variants before replying.
 
 <!-- workflow-variants -->
 For `rpi`:

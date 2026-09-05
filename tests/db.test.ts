@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import DatabaseCtor from "better-sqlite3";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
-import { consumeSuppression, MIGRATIONS } from "../db";
+import { consumeSuppression, MIGRATIONS, needsPreRenameReset } from "../db";
 
 test("migrations are idempotent", async () => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "humanlayer" });
+  const { bb, harness } = createFakePluginHost({ pluginId: "rpi" });
   const db = bb.storage.database();
   bb.storage.migrate(db, MIGRATIONS);
   bb.storage.migrate(db, MIGRATIONS);
@@ -43,8 +44,21 @@ test("migrations are idempotent", async () => {
   await harness.lifecycle.dispose();
 });
 
+test("needsPreRenameReset detects a sessions table from before the status-column rename", () => {
+  const fresh = new DatabaseCtor(":memory:");
+  assert.equal(needsPreRenameReset(fresh), false, "no sessions table yet: nothing to reset");
+
+  const stale = new DatabaseCtor(":memory:");
+  stale.exec("CREATE TABLE sessions (thread_id TEXT PRIMARY KEY, status TEXT NOT NULL)");
+  assert.equal(needsPreRenameReset(stale), true, "pre-rename column layout: needs a reset");
+
+  const current = new DatabaseCtor(":memory:");
+  current.exec("CREATE TABLE sessions (thread_id TEXT PRIMARY KEY, rpi_status TEXT NOT NULL)");
+  assert.equal(needsPreRenameReset(current), false, "already-renamed column: no reset needed");
+});
+
 test("notification suppression is consumed once per completed turn", async () => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "humanlayer" });
+  const { bb, harness } = createFakePluginHost({ pluginId: "rpi" });
   const db = bb.storage.database();
   bb.storage.migrate(db, MIGRATIONS);
   db.prepare("INSERT INTO notification_suppressions (thread_id, completed_turn_key, reason, created_at) VALUES ('thr_1', 'turn_1', 'auto_advance', 1)").run();

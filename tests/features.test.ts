@@ -20,7 +20,7 @@ test("FEATURES.md recount sentence matches the mechanical count (cannot drift)",
   assert.equal(counts["N/A"], 12);
   assert.match(
     markdown,
-    /\*\*90\nstatus-bearing rows, 1 of them mixed: 60 full, 12 partial, 7 omitted, 12\nN\/A\*\*/,
+    /\*\*90\nstatus-bearing rows, 1 of them mixed \(the palette row counts toward both N\/A and full\): 60\nfull, 12 partial, 7 omitted, 12 N\/A\*\*/,
     "FEATURES.md summary sentence must state the script's exact counts",
   );
 });

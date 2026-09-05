@@ -5,8 +5,8 @@
 - Added 23 rewritten user skills under `skills/rpi-*/SKILL.md`.
 - Added 7 child-thread agent skills under `skills/rpi-agent-*/SKILL.md`.
 - Added `skills/README.md` with skill, label, next-command, and human-gate mapping.
-- Added final-answer template coverage and a 12-word shingle guard against `docs/hl-reference`.
-- Enabled RPI launches, task-session skill selection, child `/rpi-agent-*` skill selection, model hints in `hl_task_context`, and task instructions.
+- Added final-answer template coverage and a 12-word shingle guard against the third-party reference directory.
+- Enabled RPI launches, task-session skill selection, child `/rpi-agent-*` skill selection, model hints in `rpi_task_context`, and task instructions.
 - Added Tips task/thread panels with per-label text and task-scoped "Don't show again" persistence in `task_ui_state`.
 - Added CLI helpers for `tasks update` auto-advance flags and `proceed --thread`.
 
@@ -25,7 +25,7 @@ Focused extraction and rewrite guard:
 ```text
 every final-answer template parses to the expected next skill
 all shipped final-answer templates are covered
-rewritten skills do not contain long HumanLayer reference shingles
+rewritten skills do not contain long RPI reference shingles
 tests 15
 pass 15
 fail 0
@@ -46,8 +46,8 @@ Live install:
 
 ```text
 bb plugin install . --yes
-bb plugin reload humanlayer
-humanlayer@0.1.0 running
+bb plugin reload rpi
+rpi@0.1.0 running
 service launch-attempt-sweep: running
 ```
 
@@ -95,15 +95,15 @@ Cleanup:
 bb thread archive thr_yv6f29k8cq
 bb thread archive thr_2y2c9c6gww
 bb thread archive thr_5w9dirqhvw
-bb plugin remove humanlayer
-Removed humanlayer.
+bb plugin remove rpi
+Removed rpi.
 ```
 
 ## Deviations
 
 - I added `rpi-show-me` to `transitions.ts` so its final-answer template can be parsed by the same deterministic extractor as the other 22 skills.
 - I added CLI wrappers for `tasks update` and `proceed`; the live acceptance path required exact auto-advance flags and a non-UI Proceed trigger.
-- The live task used the project default environment, which was already a managed worktree environment. `worktreeTiming: never` still prevented HumanLayer from creating a later worktree.
+- The live task used the project default environment, which was already a managed worktree environment. `worktreeTiming: never` still prevented RPI from creating a later worktree.
 
 ## Per-Skill Fidelity Checklist
 
@@ -224,25 +224,25 @@ bb plugin build: dist/server.js, dist/app.js, and metadata/css artifacts emitted
 | R7 resolve artifact/comment tools for recorded agent child threads | 4b331da, e4270bd |
 | S1 rewrite copied skill/reference text and expand shingle/final-answer tests | e4270bd |
 | S2 add Step 0 task context to agent skills and require implementer artifact saves | e4270bd |
-| S3 replace old comment reply tool names with hl_reply_to_artifact_comment and test tool references | e4270bd |
+| S3 replace old comment reply tool names with rpi_reply_to_artifact_comment and test tool references | e4270bd |
 | S4 make rpi-setup-worktree operate in the bb-created worktree and keep legacy setup branch complete | e4270bd |
 | S5 align skill routing, README, extraction, and workflow-aware auto-advance with ground truth graphs | e4270bd, 821de36, 38f074b, 2cc93b3 |
 | S6 restore full iterate-research frontmatter and Key Context Pointers | e4270bd |
 | S7 restore mandatory research/design/agent fidelity rules and output headings | e4270bd |
-| S8 use ::hl-artifact embeds for visual references | e4270bd |
+| S8 use ::rpi-artifact embeds for visual references | e4270bd |
 | S9 document describe-pr artifact save plus gh/glab publication path | e4270bd |
 | S10 fix nested fences, iterate-plan spawn guidance, workspace remote question, TDD resolution gate, and implementation handoff | e4270bd |
 
 ### Shingle triage
 
-The 10-word NFKC shingle scan now covers every file under `skills/` against every file under `docs/hl-reference/`.
+The 10-word NFKC shingle scan now covers every file under `skills/` against every file under the third-party reference directory.
 
 Allowed normalized shingles are limited to syntax-only overlap:
 
 - Frontmatter keys and placeholder metadata such as date, commit, branch, repository, task, type, and status.
 - Workspace JSON schema field sequences needed to show the config shape.
 - HTML document boilerplate for doctype, charset, and viewport metadata.
-- `/rpi-*` command names and registered `hl_*` tool names.
+- `/rpi-*` command names and registered `rpi_*` tool names.
 
 All other hits were rewritten in our text: copied PR template wording, show-me file-tree examples, structure-outline prose, workspace-config instructions, plan/PRD/TDD placeholders, and copied artifact-template CSS.
 
@@ -272,7 +272,7 @@ Focused checks covered:
 every final-answer template parses to the expected next skill
 all shipped final-answer templates are covered
 every hl tool referenced by skills is registered
-rewritten skills and references do not contain HumanLayer reference shingles
+rewritten skills and references do not contain RPI reference shingles
 outline-only research auto-advance expects structure
 auto advance resolves workflow-specific targets
 ```
@@ -283,8 +283,8 @@ Installed and reloaded the plugin from this worktree:
 
 ```text
 rtk bb plugin install . --yes
-rtk bb plugin reload humanlayer
-humanlayer@0.1.0 running
+rtk bb plugin reload rpi
+rpi@0.1.0 running
 ```
 
 Successful pinned task:
@@ -294,7 +294,7 @@ taskId: e73e99f7-49f4-468b-b253-124b5801e36a
 workflowType: outline_only
 worktreeTiming: never
 environment: env_quymdd2qrf
-path: /Users/marktripoli/.bb/worktrees/env_quymdd2qrf/bb-plugin-humanlayer
+path: /Users/marktripoli/.bb/worktrees/env_quymdd2qrf/bb-plugin-rpi
 ```
 
 Observed sessions:
@@ -334,7 +334,7 @@ The live run first exposed stale static auto-advance routing from `research` to 
 | Review item | Commit(s) |
 |---|---|
 | 1. Child thread classification uses the actual `threads.get(threadId).parentThreadId`; spoofed dispatch parents do not grant task child access. | 99070b4 |
-| 2. `hl_task_context` returns `prefs.researchModel`, resolved from the structured preference with task model fallback, through a zod-checked output object. | 99070b4 |
+| 2. `rpi_task_context` returns `prefs.researchModel`, resolved from the structured preference with task model fallback, through a zod-checked output object. | 99070b4 |
 | 3. Research final answers branch by workflow: `rpi` to design discussion, `outline_only` to structure outline, and `prd_tdd` to PRD; extraction tests render all three variants and transition rows match ground truth flags. | 99070b4 |
 | 4. The skill rewrite guard only exempts all-syntax-token windows; mixed prose is never exempt. | 99070b4 |
 | 5. `rpi-create-research` restores conditional third-party library/dependency researcher guidance, with web-search fallback when no such researcher is exposed. | 99070b4 |

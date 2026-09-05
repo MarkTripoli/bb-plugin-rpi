@@ -673,7 +673,7 @@ export async function sendCommentsToSession(
   const artifact = readRow<{ taskId: string; fileName: string }>(db, "SELECT task_id AS taskId, file_name AS fileName FROM artifacts WHERE id = ?", artifactId);
   if (!artifact) throw new Error("artifact not found");
   const session = readRow<{ taskId: string }>(db, "SELECT task_id AS taskId FROM sessions WHERE thread_id = ?", threadId);
-  if (!session || session.taskId !== artifact.taskId) throw new Error("not a HumanLayer task session");
+  if (!session || session.taskId !== artifact.taskId) throw new Error("not an RPI task session");
   const page = selectedThreadsByRootIds(db, artifactId, commentIds, options.includeResolved ?? false);
   const chunks = sendXmlChunks(page, options.byteLimit ?? XML_LIMIT_BYTES);
   let delivered: string[] = [];

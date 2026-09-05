@@ -11,7 +11,7 @@ Use this skill for explanation, not implementation.
 
 ## Step 0: Load bb task context
 
-Call `hl_task_context` before reading files. Use the returned task directory, task slug, artifact list, and artifact-save instructions.
+Call `rpi_task_context` before reading files. Use the returned task directory, task slug, artifact list, and artifact-save instructions.
 
 If the user named an artifact with `@...`, read that artifact fully. If they ask about the current conversation only, use the conversation context and avoid opening unrelated task files.
 
@@ -81,7 +81,7 @@ references/show_me_template.md
 
 as the artifact structure. If you write HTML, keep it self-contained, focused, responsive, and safe to preview. Match the product's existing colors, typography, spacing, and components when those are known. Use real labels and realistic data rather than placeholders when the task materials provide them.
 
-Save visual artifacts under the task directory returned by `hl_task_context`. If a numbered artifact is appropriate, call `hl_next_artifact_number` and use:
+Save visual artifacts under the task directory returned by `rpi_task_context`. If a numbered artifact is appropriate, call `rpi_next_artifact_number` and use:
 
 ```text
 NN-show-me-<2-4-word-kebab-summary>.html
@@ -89,7 +89,7 @@ NN-show-me-<2-4-word-kebab-summary>.html
 
 or `.md` when markdown is the better container.
 
-After writing, call `hl_artifact_save` with the file name and keep the returned `::hl-artifact{...}` directive.
+After writing, call `rpi_artifact_save` with the file name and keep the returned `::rpi-artifact{...}` directive.
 
 ## Rules
 

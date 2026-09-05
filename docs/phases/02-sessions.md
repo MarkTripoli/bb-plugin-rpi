@@ -12,7 +12,7 @@
   - `bb.sdk.subscribe({ event: "thread:changed" })` filters tracked session threads and derives on status, interaction, queue, and environment changes,
   - `thread.active`, `thread.idle`, and `thread.failed` listeners reconcile tracked sessions,
   - `thread.idle` appends `summary_json.summaryHistory` with the first 600 chars of `lastAssistantText`,
-  - `bb.realtime.publish("hl:sessions", { taskId, threadId })` fires after relevant updates.
+  - `bb.realtime.publish("rpi:sessions", { taskId, threadId })` fires after relevant updates.
 - Added `launch.ts`:
   - freeform and oneshot draft launch only,
   - `worktree_timing=never` only for this phase,
@@ -29,7 +29,7 @@
   - `interruptSession`,
   - `listLaunchAttempts`,
   - `resolveLaunchAttempt`.
-- Added `bb humanlayer` CLI:
+- Added `bb rpi` CLI:
   - `tasks create`,
   - `tasks list`,
   - `sessions list`.
@@ -52,7 +52,7 @@
 Command:
 
 ```text
-env npm_config_cache=/private/tmp/bb-plugin-humanlayer-npm-cache npm test
+env npm_config_cache=/private/tmp/bb-plugin-rpi-npm-cache npm test
 ```
 
 Excerpt:
@@ -69,7 +69,7 @@ Excerpt:
 Command:
 
 ```text
-env npm_config_cache=/private/tmp/bb-plugin-humanlayer-npm-cache npm run build
+env npm_config_cache=/private/tmp/bb-plugin-rpi-npm-cache npm run build
 ```
 
 Excerpt:
@@ -87,27 +87,27 @@ Live check:
 
 ```text
 bb plugin install . --yes
-bb humanlayer tasks create --name "Phase 2 live check" --project proj_v36xq75qse --prompt "Reply with a 1200 word plain-text test message about session status derivation. Do not run commands or edit files." --launch --provider codex --model gpt-5.4-mini --json
-bb humanlayer sessions list --task ff37a82b-8d38-4ef3-a3cc-dbaf0def14ed --json
+bb rpi tasks create --name "Phase 2 live check" --project proj_v36xq75qse --prompt "Reply with a 1200 word plain-text test message about session status derivation. Do not run commands or edit files." --launch --provider codex --model gpt-5.4-mini --json
+bb rpi sessions list --task ff37a82b-8d38-4ef3-a3cc-dbaf0def14ed --json
 bb thread wait thr_yn8dm9ph32 --status idle --timeout 300 --json
-bb humanlayer sessions list --task ff37a82b-8d38-4ef3-a3cc-dbaf0def14ed --json
+bb rpi sessions list --task ff37a82b-8d38-4ef3-a3cc-dbaf0def14ed --json
 bb thread output thr_yn8dm9ph32
-wc -c /private/tmp/humanlayer-phase2-live-output.txt
+wc -c /private/tmp/rpi-phase2-live-output.txt
 bb thread archive thr_yn8dm9ph32
-bb plugin remove humanlayer
+bb plugin remove rpi
 ```
 
 Observed:
 
 ```text
 {"taskId":"ff37a82b-8d38-4ef3-a3cc-dbaf0def14ed","threadId":"thr_yn8dm9ph32"}
-hlStatus "running", hadTurn true
+rpiStatus "running", hadTurn true
 thread wait matched idle
-hlStatus "ready_for_input", hadTurn true, blockedReason null
+rpiStatus "ready_for_input", hadTurn true, blockedReason null
 summary_json stored one 600-character summaryHistory entry
 8584 bytes in final assistant output
 Thread thr_yn8dm9ph32 archived
-Removed humanlayer.
+Removed rpi.
 ```
 
 The multi-KB reply confirms `thread.idle.lastAssistantText` was not truncated for the summary path in this phase.
@@ -118,7 +118,7 @@ The multi-KB reply confirms `thread.idle.lastAssistantText` was not truncated fo
 - `worktree_timing=now` and `later` are rejected until Phase 5 worktree behavior ships.
 - Hydration wait and recheck code is present but gated with `HYDRATION_ENABLED = false` until Phase 3.
 - Recover launch Adopt currently accepts a thread id rather than rendering a candidate picker. The backend still validates candidates through `threads.list({ originPluginId, parentThreadId? })` and created-at filtering.
-- `configure` selects no tools because no `hl_*` tools are registered until later phases.
+- `configure` selects no tools because no `rpi_*` tools are registered until later phases.
 
 ## Reviewer Notes
 
@@ -172,29 +172,29 @@ Live check:
 ```text
 bb plugin install . --yes
 Installed:
-humanlayer@0.1.0  running
+rpi@0.1.0  running
   service launch-attempt-sweep: running
 
-bb humanlayer tasks create --name "Phase 2 review fixes live check" --project proj_v36xq75qse --prompt "Reply with a short plain-text confirmation that the HumanLayer session status live check reached the model. Do not run commands or edit files." --launch --provider codex --model gpt-5.4-mini --json
+bb rpi tasks create --name "Phase 2 review fixes live check" --project proj_v36xq75qse --prompt "Reply with a short plain-text confirmation that the RPI session status live check reached the model. Do not run commands or edit files." --launch --provider codex --model gpt-5.4-mini --json
 {"taskId":"ff22ec4f-f617-4b41-af2c-cdf4c9ddf48b","threadId":"thr_628nfms6n4"}
 
-bb humanlayer sessions list --task ff22ec4f-f617-4b41-af2c-cdf4c9ddf48b --json
-hlStatus "running", hadTurn true, lastReconcileSeq 4
+bb rpi sessions list --task ff22ec4f-f617-4b41-af2c-cdf4c9ddf48b --json
+rpiStatus "running", hadTurn true, lastReconcileSeq 4
 
 bb thread wait thr_628nfms6n4 --status idle --timeout 300 --json
 "matched": true
 
-bb humanlayer sessions list --task ff22ec4f-f617-4b41-af2c-cdf4c9ddf48b --json
-hlStatus "ready_for_input", summaryHistory ["HumanLayer session status live check reached the model."], completedTurnKey "events:1788605291970"
+bb rpi sessions list --task ff22ec4f-f617-4b41-af2c-cdf4c9ddf48b --json
+rpiStatus "ready_for_input", summaryHistory ["RPI session status live check reached the model."], completedTurnKey "events:1788605291970"
 
 bb thread output thr_628nfms6n4
-HumanLayer session status live check reached the model.
+RPI session status live check reached the model.
 
 bb thread archive thr_628nfms6n4
 Thread thr_628nfms6n4 archived
 
-bb plugin remove humanlayer
-Removed humanlayer.
+bb plugin remove rpi
+Removed rpi.
 ```
 
 ## Review fixes round 2

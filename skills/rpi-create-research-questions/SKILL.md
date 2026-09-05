@@ -11,11 +11,11 @@ Your responsibility is not to design the change. It is to turn the user's reques
 
 ## Step 0: Load bb task context
 
-Before reading files, call `hl_task_context`.
+Before reading files, call `rpi_task_context`.
 
 Use the returned task directory, artifact inventory, artifact directive guidance, and preference hints. Treat the task directory from that tool as authoritative. If it reports a research model preference, use that model when spawning child research threads.
 
-Do not infer the task directory from old paths, thread titles, or previous messages when `hl_task_context` provides it.
+Do not infer the task directory from old paths, thread titles, or previous messages when `rpi_task_context` provides it.
 
 ## Research-planning workflow
 
@@ -23,7 +23,7 @@ Do not infer the task directory from old paths, thread titles, or previous messa
 
    Read these items in full before drafting questions:
 
-   - `task.md` or `ticket.md` from the task directory returned by `hl_task_context`
+   - `task.md` or `ticket.md` from the task directory returned by `rpi_task_context`
    - files the user named with `@...`
    - collateral documents the user explicitly tells you to use
 
@@ -46,7 +46,7 @@ Do not infer the task directory from old paths, thread titles, or previous messa
    Spawn child research threads with the bb-native form:
 
    ```text
-   bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context prefs> --prompt "/rpi-agent-<role> <assignment>"
+   bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context prefs> --prompt "/rpi-agent-<role> <assignment>"
    bb thread wait <thread-id>
    bb thread output <thread-id>
    ```
@@ -109,17 +109,17 @@ Do not infer the task directory from old paths, thread titles, or previous messa
 
 2. **Choose the artifact name**
 
-   Call `hl_next_artifact_number` for the task. Use the returned number for:
+   Call `rpi_next_artifact_number` for the task. Use the returned number for:
 
    ```text
    NN-research-questions-<2-4-word-kebab-summary>.md
    ```
 
-   Save it under the task directory returned by `hl_task_context`.
+   Save it under the task directory returned by `rpi_task_context`.
 
 3. **Write and register the artifact**
 
-   Write the research questions document into the task directory. Immediately call `hl_artifact_save` with the artifact file name after writing. Keep the returned `::hl-artifact{...}` directive for the final response.
+   Write the research questions document into the task directory. Immediately call `rpi_artifact_save` with the artifact file name after writing. Keep the returned `::rpi-artifact{...}` directive for the final response.
 
 4. **Read the final-answer template**
 
@@ -149,7 +149,7 @@ This design-system topic is required for possible frontend work even when the ti
 <guidance>
 ## bb artifact links
 
-`hl_artifact_save` returns a directive like `::hl-artifact{...}`. Include that directive in the final answer where the template asks for the saved artifact. Do not invent cloud URLs.
+`rpi_artifact_save` returns a directive like `::rpi-artifact{...}`. Include that directive in the final answer where the template asks for the saved artifact. Do not invent cloud URLs.
 
 If artifact saving fails, report the failure plainly and do not pretend the artifact is registered.
 </guidance>

@@ -1,5 +1,5 @@
 // Pure generation/revision bookkeeping for the scratch pad's debounced autosave
-// (ui/humanlayer.tsx ScratchPadPanel). No timers, no RPC: the component owns those and asks
+// (ui/rpi.tsx ScratchPadPanel). No timers, no RPC: the component owns those and asks
 // this state machine what to do.
 //
 // The bug this exists to prevent: a debounce timer captures text at keystroke time and fires

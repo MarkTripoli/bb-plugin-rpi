@@ -1,5 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type * as BetterSqlite3 from "better-sqlite3";
+import { TASK_ROOT_DIR } from "./constants";
 import { nowMs, parseJson, readRow, readRows, stringifyJson, writeRow } from "./db";
 import { extractNextStep } from "./extraction";
 import { hydrate, ingest } from "./mirror";
@@ -37,7 +38,7 @@ export type HlStatus =
   | "lost";
 
 export type StatusDerivation = {
-  hlStatus: HlStatus;
+  rpiStatus: HlStatus;
   blockedReason: "question" | "plugin" | null;
 };
 
@@ -57,8 +58,8 @@ export type ChildThreadMirrorRow = {
 };
 
 export const HYDRATION_ENABLED = true;
-export const LAUNCH_MARKER_PREFIX = "<!-- hl:launch:";
-const LAUNCH_MARKER_RE = /<!--\s*hl:launch:([A-Za-z0-9_-]+)\s*-->/;
+export const LAUNCH_MARKER_PREFIX = "<!-- rpi:launch:";
+const LAUNCH_MARKER_RE = /<!--\s*rpi:launch:([A-Za-z0-9_-]+)\s*-->/;
 
 const RELEVANT_THREAD_CHANGES = new Set([
   "status-changed",
@@ -144,7 +145,7 @@ export function bindPendingLaunch(
         `
         INSERT INTO sessions (
           thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
-          hl_status, hl_status_at, had_turn, interrupted, blocked_reason,
+          rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason,
           created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, 'launching', ?, 0, 0, NULL, ?, ?)
         `,
@@ -205,21 +206,21 @@ export function deriveStatus(
   const blockedReason = pendingBlockedReason(interactions);
 
   if (displayStatus === "waiting-for-host" || displayStatus === "host-reconnecting") {
-    return { hlStatus: "lost", blockedReason };
+    return { rpiStatus: "lost", blockedReason };
   }
   if (displayStatus === "provisioning" || thread.environment?.status === "provisioning") {
-    return { hlStatus: "waiting_for_workspace", blockedReason };
+    return { rpiStatus: "waiting_for_workspace", blockedReason };
   }
-  if (thread.status === "pending") return { hlStatus: "ready_for_launch", blockedReason };
-  if (thread.status === "starting" && !row.hadTurn) return { hlStatus: "launching", blockedReason };
-  if (thread.status === "starting" && row.hadTurn) return { hlStatus: "resuming", blockedReason };
-  if (thread.status === "active" && pendingInteractionKind(interactions, "approval")) return { hlStatus: "needs_approval", blockedReason };
-  if ((thread.status === "active" || thread.status === "idle") && blockedReason !== null) return { hlStatus: "ready_for_input", blockedReason };
-  if (thread.status === "active") return { hlStatus: "running", blockedReason };
-  if (thread.status === "stopping") return { hlStatus: "interrupt_requested", blockedReason };
-  if (thread.status === "error") return { hlStatus: "failed", blockedReason };
-  if (thread.status === "idle" && row.interrupted) return { hlStatus: "interrupted", blockedReason };
-  return { hlStatus: "ready_for_input", blockedReason };
+  if (thread.status === "pending") return { rpiStatus: "ready_for_launch", blockedReason };
+  if (thread.status === "starting" && !row.hadTurn) return { rpiStatus: "launching", blockedReason };
+  if (thread.status === "starting" && row.hadTurn) return { rpiStatus: "resuming", blockedReason };
+  if (thread.status === "active" && pendingInteractionKind(interactions, "approval")) return { rpiStatus: "needs_approval", blockedReason };
+  if ((thread.status === "active" || thread.status === "idle") && blockedReason !== null) return { rpiStatus: "ready_for_input", blockedReason };
+  if (thread.status === "active") return { rpiStatus: "running", blockedReason };
+  if (thread.status === "stopping") return { rpiStatus: "interrupt_requested", blockedReason };
+  if (thread.status === "error") return { rpiStatus: "failed", blockedReason };
+  if (thread.status === "idle" && row.interrupted) return { rpiStatus: "interrupted", blockedReason };
+  return { rpiStatus: "ready_for_input", blockedReason };
 }
 
 export function normalizeSessionRow(row: {
@@ -229,8 +230,8 @@ export function normalizeSessionRow(row: {
   skillId: string | null;
   launchedBy: string;
   forkedFromThreadId: string | null;
-  hlStatus: string;
-	  hlStatusAt: number;
+  rpiStatus: string;
+	  rpiStatusAt: number;
 	  hadTurn: number | boolean;
 	  interrupted: number | boolean;
 	  blockedReason: string | null;
@@ -266,8 +267,8 @@ export function readSession(db: Database, threadId: string) {
       skill_id AS skillId,
       launched_by AS launchedBy,
       forked_from_thread_id AS forkedFromThreadId,
-      hl_status AS hlStatus,
-      hl_status_at AS hlStatusAt,
+      rpi_status AS rpiStatus,
+      rpi_status_at AS rpiStatusAt,
       had_turn AS hadTurn,
 	      interrupted,
 	      blocked_reason AS blockedReason,
@@ -309,8 +310,8 @@ export function listSessions(db: Database, taskId?: string | null, page?: { limi
       skill_id AS skillId,
       launched_by AS launchedBy,
       forked_from_thread_id AS forkedFromThreadId,
-      hl_status AS hlStatus,
-      hl_status_at AS hlStatusAt,
+      rpi_status AS rpiStatus,
+      rpi_status_at AS rpiStatusAt,
 	      had_turn AS hadTurn,
 	      interrupted,
 	      blocked_reason AS blockedReason,
@@ -404,8 +405,8 @@ export function refreshSessionMirror(db: Database, mirror: Map<string, SessionMi
       sessions.skill_id AS skillId,
       sessions.launched_by AS launchedBy,
       sessions.forked_from_thread_id AS forkedFromThreadId,
-      sessions.hl_status AS hlStatus,
-      sessions.hl_status_at AS hlStatusAt,
+      sessions.rpi_status AS rpiStatus,
+      sessions.rpi_status_at AS rpiStatusAt,
       sessions.had_turn AS hadTurn,
 	      sessions.interrupted,
 	      sessions.blocked_reason AS blockedReason,
@@ -453,8 +454,8 @@ export function mirrorSession(db: Database, mirror: Map<string, SessionMirrorRow
       sessions.skill_id AS skillId,
       sessions.launched_by AS launchedBy,
       sessions.forked_from_thread_id AS forkedFromThreadId,
-      sessions.hl_status AS hlStatus,
-      sessions.hl_status_at AS hlStatusAt,
+      sessions.rpi_status AS rpiStatus,
+      sessions.rpi_status_at AS rpiStatusAt,
       sessions.had_turn AS hadTurn,
 	      sessions.interrupted,
 	      sessions.blocked_reason AS blockedReason,
@@ -504,16 +505,16 @@ export function applyStatusDerivation(
   }
   const derived = deriveStatus(thread, interactions, row);
   const timestamp = nowMs();
-  const changed = row.hlStatus !== derived.hlStatus || row.blockedReason !== derived.blockedReason;
+  const changed = row.rpiStatus !== derived.rpiStatus || row.blockedReason !== derived.blockedReason;
   if (changed || (sequence !== undefined && sequence > row.lastReconcileSeq)) {
     writeRow(
       db,
       `
       UPDATE sessions
-      SET hl_status = ?, hl_status_at = CASE WHEN ? THEN ? ELSE hl_status_at END, blocked_reason = ?, last_reconcile_seq = ?, updated_at = ?
+      SET rpi_status = ?, rpi_status_at = CASE WHEN ? THEN ? ELSE rpi_status_at END, blocked_reason = ?, last_reconcile_seq = ?, updated_at = ?
       WHERE thread_id = ?
       `,
-      derived.hlStatus,
+      derived.rpiStatus,
       changed ? 1 : 0,
       timestamp,
       derived.blockedReason,
@@ -611,14 +612,14 @@ function relevantDocuments(text: string, taskId: string, taskSlug: string | null
   if (!taskSlug) return [];
   const live = new Set(liveArtifactNames);
   const found = new Set<string>();
-  const prefix = `.humanlayer/tasks/${escapeRegExp(taskSlug)}/`;
+  const prefix = `${TASK_ROOT_DIR}/tasks/${escapeRegExp(taskSlug)}/`;
   for (const match of text.matchAll(new RegExp(`${prefix}([^\\s),;:"']+)`, "g"))) {
     const fileName = match[1]!;
     if (live.has(fileName)) found.add(fileName);
   }
   return [...found].map((fileName) => ({
-    localpath: `.humanlayer/tasks/${taskSlug}/${fileName}`,
-    permalink: `::hl-artifact{task="${taskId}" file="${fileName}"}`,
+    localpath: `${TASK_ROOT_DIR}/tasks/${taskSlug}/${fileName}`,
+    permalink: `::rpi-artifact{task="${taskId}" file="${fileName}"}`,
   }));
 }
 
@@ -693,7 +694,7 @@ export async function recordIdleCompletion(
       const message = String(error instanceof Error ? error.message : error);
       writeRow(db, "UPDATE sessions SET ingest_error = ?, updated_at = ? WHERE thread_id = ?", message, nowMs(), thread.id);
       mirrorSession(db, mirror, thread.id);
-      bb.log?.warn(`Failed to ingest HumanLayer artifacts for ${thread.id}: ${message}`);
+      bb.log?.warn(`Failed to ingest RPI artifacts for ${thread.id}: ${message}`);
       return false;
     }
   }
@@ -800,7 +801,7 @@ async function processCompletedTurn(
   try {
     interrupted = await idleWasInterrupted(bb, thread.id);
   } catch (error) {
-    bb.log.warn(`Failed to inspect HumanLayer idle events ${thread.id}: ${String(error)}`);
+    bb.log.warn(`Failed to inspect RPI idle events ${thread.id}: ${String(error)}`);
   }
   if (interrupted) {
     writeRow(db, "UPDATE sessions SET interrupted = 1, updated_at = ? WHERE thread_id = ?", nowMs(), thread.id);
@@ -808,13 +809,13 @@ async function processCompletedTurn(
     return;
   }
   const completed = mirror.get(thread.id);
-  if (completed?.hlStatus === "ready_for_input" && !completed.blockedReason) {
+  if (completed?.rpiStatus === "ready_for_input" && !completed.blockedReason) {
     try {
       await onCompletedTurn?.(completed);
     } catch (error) {
-      bb.log.warn(`HumanLayer auto-advance failed for ${thread.id}: ${String(error)}`);
+      bb.log.warn(`RPI auto-advance failed for ${thread.id}: ${String(error)}`);
       await onAdvanceFailed?.(completed).catch((recoveryError) =>
-        bb.log.warn(`HumanLayer advance-failure recovery notification failed for ${thread.id}: ${String(recoveryError)}`),
+        bb.log.warn(`RPI advance-failure recovery notification failed for ${thread.id}: ${String(recoveryError)}`),
       );
     }
   }
@@ -839,7 +840,7 @@ export function registerSessionRuntime(
   bindings: LaunchBindingMirror,
   onCompletedTurn?: (row: SessionMirrorRow) => Promise<unknown>,
   childThreads?: Map<string, ChildThreadMirrorRow>,
-  // Called after every derived snapshot (not gated on hlStatus having changed) so ready_for_input
+  // Called after every derived snapshot (not gated on rpiStatus having changed) so ready_for_input
   // and needs_approval notifications are evaluated from the persisted, final mirror row instead of
   // a possibly-stale transition snapshot. Idempotent via dedupe in notify.ts.
   onSnapshot?: (threadId: string, interactions: readonly unknown[]) => Promise<unknown>,
@@ -861,7 +862,7 @@ export function registerSessionRuntime(
 
   const publish = (threadId: string) => {
     const row = mirror.get(threadId);
-    if (row) bb.realtime.publish("hl:sessions", { taskId: row.taskId, threadId });
+    if (row) bb.realtime.publish("rpi:sessions", { taskId: row.taskId, threadId });
   };
 
   const enqueueThreadWork = (threadId: string, work: () => Promise<void>) => {
@@ -872,7 +873,7 @@ export function registerSessionRuntime(
         if (!mirror.has(threadId) || retiredThreads.has(threadId)) return;
         await work();
       })
-      .catch((error) => bb.log.warn(`Failed to process HumanLayer session ${threadId}: ${String(error)}`))
+      .catch((error) => bb.log.warn(`Failed to process RPI session ${threadId}: ${String(error)}`))
       .finally(() => {
         if (reconcileState.get(threadId) === chain) reconcileState.delete(threadId);
       });
@@ -891,7 +892,7 @@ export function registerSessionRuntime(
       if (!mirror.has(threadId) || retiredThreads.has(threadId)) return;
       const result = applyStatusDerivation(db, mirror, thread as ThreadLike, interactions as InteractionLike[], sequence);
       let completedNewTurn = false;
-      if (result?.row?.hlStatus === "ready_for_input" && !result.row.blockedReason) {
+      if (result?.row?.rpiStatus === "ready_for_input" && !result.row.blockedReason) {
         completedNewTurn = await reconstructMissingCompletedTurnKey(bb, db, mirror, thread as ThreadLike).catch((error) => {
           bb.log.warn(`Failed to reconstruct completed turn key for ${threadId}: ${String(error)}`);
           return false;
@@ -940,7 +941,7 @@ export function registerSessionRuntime(
       mirrorSession(db, mirror, thread.id);
       const activeRow = mirror.get(thread.id);
       if (HYDRATION_ENABLED && activeRow?.hydratedAt === null) {
-        await hydrateSession(bb, db, mirror, thread.id).catch((error) => bb.log.warn(`Failed to hydrate HumanLayer session ${thread.id}: ${String(error)}`));
+        await hydrateSession(bb, db, mirror, thread.id).catch((error) => bb.log.warn(`Failed to hydrate RPI session ${thread.id}: ${String(error)}`));
       }
       const interactions = await bb.sdk.threads.interactions.list({ threadId: thread.id });
       if (!mirror.has(thread.id) || retiredThreads.has(thread.id)) return;
@@ -960,7 +961,7 @@ export function registerSessionRuntime(
       try {
         interrupted = await idleWasInterrupted(bb, thread.id);
       } catch (error) {
-        bb.log.warn(`Failed to inspect HumanLayer idle events ${thread.id}: ${String(error)}`);
+        bb.log.warn(`Failed to inspect RPI idle events ${thread.id}: ${String(error)}`);
       }
       if (!mirror.has(thread.id) || retiredThreads.has(thread.id)) return;
       if (interrupted) {
@@ -1068,12 +1069,12 @@ export function registerSessionRuntime(
     if (HYDRATION_ENABLED && ctx.environment && row.hydratedAt === null) {
       if (hydrationWaited.has(ctx.thread.id)) return { action: "proceed" };
       hydrationWaited.add(ctx.thread.id);
-      bb.log.info(`HumanLayer dispatch waiting for hydration: ${ctx.thread.id}`);
+      bb.log.info(`RPI dispatch waiting for hydration: ${ctx.thread.id}`);
       setTimeout(() => {
         if (hydrating.has(ctx.thread.id)) return;
         hydrating.add(ctx.thread.id);
         void hydrateSession(bb, db, mirror, ctx.thread.id)
-          .catch((error) => bb.log.warn(`Failed to hydrate HumanLayer session ${ctx.thread.id}: ${String(error)}`))
+          .catch((error) => bb.log.warn(`Failed to hydrate RPI session ${ctx.thread.id}: ${String(error)}`))
           .finally(() => {
             hydrating.delete(ctx.thread.id);
             void bb.experimental_hooks.recheck("message.dispatch");
@@ -1091,14 +1092,14 @@ export function taskInstructions(row: SessionMirrorRow, options: { researchModel
   const researchModel = resolveResearchModel(row, options.researchModel ?? null);
   return [
     TASK_CONTEXT_FIRST_ACTION,
-    `HumanLayer task: ${row.taskName} (slug ${row.taskSlug}). Task artifact directory: .humanlayer/tasks/${row.taskSlug} (relative to the workspace root; a real directory, not a symlink).`,
+    `RPI task: ${row.taskName} (slug ${row.taskSlug}). Task artifact directory: ${TASK_ROOT_DIR}/tasks/${row.taskSlug} (relative to the workspace root; a real directory, not a symlink).`,
     `Current phase: ${row.label ?? "none"}. Current skill command: ${row.skillId ? skillInfo(row.skillId)?.command ?? `/rpi-${row.skillId}` : "none"}. Workflow: ${row.workflowType}.`,
-    "After writing or editing any file in the task artifact directory, call hl_artifact_save with its file name and include the returned permalink line in your final answer.",
+    "After writing or editing any file in the task artifact directory, call rpi_artifact_save with its file name and include the returned permalink line in your final answer.",
     `Research subagents model hint: ${researchModel}.`,
   ].join("\n");
 }
 
 export function resolveResearchModel(row: Pick<SessionMirrorRow, "providerId" | "model">, preference: string | null | undefined) {
   const taskModel = row.providerId && row.model ? `${row.providerId} ${row.model}` : null;
-  return preference ?? taskModel ?? "use the task's current provider/model unless hl_task_context says otherwise";
+  return preference ?? taskModel ?? "use the task's current provider/model unless rpi_task_context says otherwise";
 }

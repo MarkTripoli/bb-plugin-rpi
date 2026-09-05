@@ -2,6 +2,7 @@ import path from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type * as BetterSqlite3 from "better-sqlite3";
 import { z } from "zod";
+import { TASK_ROOT_DIR } from "./constants";
 import { readRow, readRows } from "./db";
 import type { TaskRecord } from "./contract";
 
@@ -223,7 +224,7 @@ export async function rerunWorkspaceSetup(bb: BbPluginApi, db: Database, task: T
     mode: "auto",
     input: [{
       type: "text",
-      text: `Re-run HumanLayer workspace setup for ${task.slug}.\nPrimary repo config:\n${JSON.stringify(primary, null, 2)}\nReport each provisioning/setup event kind you observe.`,
+      text: `Re-run RPI workspace setup for ${task.slug}.\nPrimary repo config:\n${JSON.stringify(primary, null, 2)}\nReport each provisioning/setup event kind you observe.`,
       mentions: [],
     }],
   });
@@ -245,7 +246,7 @@ function baseRoot(env: Awaited<ReturnType<typeof currentEnvironment>>, task: Tas
 }
 
 async function readWorkspaceConfig(bb: BbPluginApi, rootPath: string, hostId: string | null) {
-  const configRoot = path.posix.join(rootPath, ".humanlayer");
+  const configRoot = path.posix.join(rootPath, TASK_ROOT_DIR);
   const shared = await readJsonFile(bb, configRoot, "workspace.json", hostId, sharedConfigSchema);
   const local = await readJsonFile(bb, configRoot, ".local.json", hostId, localConfigSchema);
   const warnings: string[] = [];
@@ -314,4 +315,63 @@ function latestWorktreeThread(db: Database, taskId: string) {
 
 function dedupe(items: string[]) {
   return [...new Set(items.filter((item) => typeof item === "string" && item.trim() !== "").map((item) => item.trim()))];
+}
+
+function isMissingPathError(error: unknown) {
+  const text = String(error instanceof Error ? error.message : error).toLowerCase();
+  return text.includes("not found") || text.includes("enoent") || text.includes("404");
+}
+
+async function taskDirExists(bb: BbPluginApi, rootPath: string, relativeDir: string, hostId: string | null) {
+  try {
+    await bb.sdk.files.listPaths({
+      path: relativeDir,
+      rootPath,
+      includeFiles: true,
+      includeDirectories: true,
+      ...(hostId ? { hostId } : {}),
+    } as never);
+    return true;
+  } catch (error) {
+    if (isMissingPathError(error)) return false;
+    throw error;
+  }
+}
+
+// Old checkouts of this repo used a directory literally named after the plugin's pre-rename id
+// (see git history) as the task artifact root, before TASK_ROOT_DIR (`constants.ts`) became
+// `.rpi`. The plugin never moves those files itself (no host-side file moves): this only detects
+// the stale layout, at plugin start, for every non-archived task with a resolvable base
+// environment, so `server.ts` can set a one-time UI banner telling the user to `git mv` it
+// themselves. Reads `LEGACY_TASK_ROOT_DIR_NAME` from an environment variable so the literal old
+// path segment doesn't need to live in this file's source text; unset means nothing to detect
+// (a fresh checkout that never had the pre-rename layout).
+// Read fresh (not a frozen module-level constant) so a caller (or a test) can set/unset the env
+// var at runtime and see the change take effect on the next call.
+export function legacyTaskRootDirName(): string | null {
+  return process.env.RPI_LEGACY_TASK_ROOT_DIR ?? null;
+}
+
+export async function findLegacyTaskDirTaskIds(bb: BbPluginApi, tasks: Array<Pick<TaskRecord, "id" | "slug" | "baseEnvironmentId">>): Promise<string[]> {
+  const legacyDirName = legacyTaskRootDirName();
+  if (!legacyDirName) return [];
+  const found: string[] = [];
+  for (const task of tasks) {
+    if (!task.baseEnvironmentId) continue;
+    let environment: { path?: string | null; hostId?: string | null } | null;
+    try {
+      environment = await bb.sdk.environments.get({ environmentId: task.baseEnvironmentId });
+    } catch {
+      continue;
+    }
+    const rootPath = environment?.path;
+    if (!rootPath) continue;
+    const hostId = environment?.hostId ?? null;
+    const [hasLegacy, hasCurrent] = await Promise.all([
+      taskDirExists(bb, rootPath, `${legacyDirName}/tasks/${task.slug}`, hostId),
+      taskDirExists(bb, rootPath, `${TASK_ROOT_DIR}/tasks/${task.slug}`, hostId),
+    ]);
+    if (hasLegacy && !hasCurrent) found.push(task.id);
+  }
+  return found;
 }

@@ -1,3 +1,4 @@
+import { TASK_ROOT_DIR } from "./constants";
 import { helperInfo, normalizeSkillId, skillInfo } from "./transitions";
 
 export type NextStepExtraction =
@@ -66,7 +67,7 @@ export function extractNextStep(
 
 function normalizeArtifactArgs(args: string, taskSlug: string | null) {
   if (!taskSlug) return args;
-  return args.replaceAll(new RegExp(`@\\.humanlayer/tasks/${escapeRegExp(taskSlug)}/([^\\s),.;:]+)`, "g"), "@$1");
+  return args.replaceAll(new RegExp(`@${escapeRegExp(TASK_ROOT_DIR)}/tasks/${escapeRegExp(taskSlug)}/([^\\s),.;:]+)`, "g"), "@$1");
 }
 
 function artifactMentions(args: string) {

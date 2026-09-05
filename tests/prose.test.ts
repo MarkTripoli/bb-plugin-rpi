@@ -6,10 +6,11 @@ import assert from "node:assert/strict";
 const root = path.resolve(import.meta.dirname, "..");
 const EM_DASH = "\u2014";
 
-// AGENTS.md: "No em dashes in prose or UI copy." docs/research/ and the moved-out
-// docs/hl-reference/ are excluded: research notes quote external sources verbatim, and
-// hl-reference is HumanLayer's own material (not this repo's prose) kept outside the tree.
-const EXCLUDED_DIR_PARTS = ["docs/research", "docs/hl-reference", "node_modules"];
+// AGENTS.md: "No em dashes in prose or UI copy." node_modules is excluded because it isn't this
+// repo's prose. The research notes and third-party reference material this repo's design work is
+// grounded in both live outside the tree entirely (see AGENTS.md item 6), so there is nothing
+// left in-tree to exclude for them.
+const EXCLUDED_DIR_PARTS = ["node_modules"];
 
 function listMarkdownFiles(dir: string): string[] {
   const entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -27,7 +28,7 @@ function listMarkdownFiles(dir: string): string[] {
   return files;
 }
 
-test("repo prose (*.md outside docs/research and docs/hl-reference) contains no em dashes", () => {
+test("repo prose (*.md) contains no em dashes", () => {
   const offenders: string[] = [];
   for (const file of listMarkdownFiles(root)) {
     const content = fs.readFileSync(file, "utf8");
@@ -36,7 +37,7 @@ test("repo prose (*.md outside docs/research and docs/hl-reference) contains no 
   assert.deepEqual(offenders, []);
 });
 
-test("UI copy (ui/humanlayer.tsx string/JSX text) contains no em dashes", () => {
-  const content = fs.readFileSync(path.join(root, "ui", "humanlayer.tsx"), "utf8");
+test("UI copy (ui/rpi.tsx string/JSX text) contains no em dashes", () => {
+  const content = fs.readFileSync(path.join(root, "ui", "rpi.tsx"), "utf8");
   assert.equal(content.includes(EM_DASH), false);
 });

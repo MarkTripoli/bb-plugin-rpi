@@ -2,11 +2,11 @@
 
 ## Shipped
 
-- Added `extraction.ts` for deterministic next-step extraction from the last fenced `text` or bare command block, including `/rpi:x` legacy normalization, alias resolution, argument preservation, live artifact validation, task slug references, and HumanLayer-shaped `next_step_suggestions`.
-- Persisted `sessions.next_step_json` on completed idle turns and added `structured_summary.relevantRPIDocuments` from live `.humanlayer/tasks/<slug>/<file>` mentions.
+- Added `extraction.ts` for deterministic next-step extraction from the last fenced `text` or bare command block, including `/rpi:x` legacy normalization, alias resolution, argument preservation, live artifact validation, task slug references, and RPI-shaped `next_step_suggestions`.
+- Persisted `sessions.next_step_json` on completed idle turns and added `structured_summary.relevantRPIDocuments` from live `.rpi/tasks/<slug>/<file>` mentions.
 - Added `advance.ts` with completed-turn auto-advance gating, human-gate skips, master and per-transition flags, double-fire `advanced_at` CAS protection, launch attempt checks, notification suppression rows, `proceed`, manual `launchSkill`, and fresh-session iteration.
 - Extended `launchPhase` to select environments by `worktree_timing`, create managed worktrees through `threads.spawn`, read `environmentId` back through `threads.get({ include: "environment" })`, persist `worktree_environment_id`, launch first workflow skills from drafts, and use the required prompt shape.
-- Added `workspace.ts` for `.humanlayer/workspace.json` plus root `.local.json` parsing, local overrides, repo delete patches, additive deduped `copyGlobs`, sourceRef-to-baseBranch mapping, workspace view data, provisioning event capture, and setup rerun prompting through the worktree thread.
+- Added `workspace.ts` for `.rpi/workspace.json` plus root `.local.json` parsing, local overrides, repo delete patches, additive deduped `copyGlobs`, sourceRef-to-baseBranch mapping, workspace view data, provisioning event capture, and setup rerun prompting through the worktree thread.
 - Added UI for Auto-advance toggles, Proceed, Iterate in fresh session, Workspace tab status/config/provisioning data, session next-step hints, and the RPI workflow strip.
 - Added CLI support for `launch-skill`, `launch-attempts`, `suppressions`, and `workspace` live verification.
 
@@ -50,20 +50,20 @@ dist/app.meta.json
 
 ```text
 Installed:
-humanlayer@0.1.0  running
+rpi@0.1.0  running
 service launch-attempt-sweep: running
 ```
 
-`bb plugin reload humanlayer`
+`bb plugin reload rpi`
 
 ```text
-humanlayer@0.1.0  running
+rpi@0.1.0  running
 ```
 
 Live task:
 
 ```text
-bb humanlayer tasks create --name Phase 5 live auto advance --project proj_v36xq75qse --prompt Phase 5 live auto advance check --workflow outline_only --worktree later --auto true --provider codex --model gpt-5.4-mini --json
+bb rpi tasks create --name Phase 5 live auto advance --project proj_v36xq75qse --prompt Phase 5 live auto advance check --workflow outline_only --worktree later --auto true --provider codex --model gpt-5.4-mini --json
 ```
 
 Observed task:
@@ -75,7 +75,7 @@ Observed task:
 Launched the first RPI skill with the requested override:
 
 ```text
-bb humanlayer launch-skill --task a0f93340-84f2-4174-83d3-e4fa4a4dd355 --skill create-research-questions --provider codex --model gpt-5.4-mini --prompt "write .humanlayer/tasks/phase/01-research-questions-live.md with frontmatter type: research-questions and two questions, call hl_artifact_save, then end your reply with a fenced text block containing exactly: /rpi-create-research" --json
+bb rpi launch-skill --task a0f93340-84f2-4174-83d3-e4fa4a4dd355 --skill create-research-questions --provider codex --model gpt-5.4-mini --prompt "write .rpi/tasks/phase/01-research-questions-live.md with frontmatter type: research-questions and two questions, call rpi_artifact_save, then end your reply with a fenced text block containing exactly: /rpi-create-research" --json
 {"threadId":"thr_rzwrdxcsxa"}
 ```
 
@@ -108,7 +108,7 @@ The suppression row was recorded:
 Then launched implementation to trigger the `later` managed-worktree path:
 
 ```text
-bb humanlayer launch-skill --task a0f93340-84f2-4174-83d3-e4fa4a4dd355 --skill implement-outline --provider codex --model gpt-5.4-mini --prompt "Phase 5 live worktree check. Call hl_task_context first, report the current workspace path and branch, then stop." --json
+bb rpi launch-skill --task a0f93340-84f2-4174-83d3-e4fa4a4dd355 --skill implement-outline --provider codex --model gpt-5.4-mini --prompt "Phase 5 live worktree check. Call rpi_task_context first, report the current workspace path and branch, then stop." --json
 {"threadId":"thr_pbtdsi8szc"}
 ```
 
@@ -119,7 +119,7 @@ Workspace state:
   "environment": {
     "id": "env_9bmwsv535h",
     "status": "ready",
-    "path": "/Users/marktripoli/.bb/worktrees/env_9bmwsv535h/bb-plugin-humanlayer",
+    "path": "/Users/marktripoli/.bb/worktrees/env_9bmwsv535h/bb-plugin-rpi",
     "branch": "bb/implementation-phase-thr_pbtdsi8szc",
     "baseBranch": null,
     "kind": "managed-worktree"
@@ -159,7 +159,7 @@ Thread thr_pbtdsi8szc archived
 ## Deviations
 
 - The live task create command left the name and prompt unquoted, so bb stored the task name and slug as `Phase` / `phase`. The workflow, auto-advance, launch, artifact, and worktree behavior under test were unaffected.
-- The repository had no `.humanlayer/workspace.json`, so the live sourceRef case used the default branch path. Unit tests cover named `origin/<branch>`, plain `<branch>`, branch names with slashes, `HEAD`/absent default, SHA rejection, and unsupported `refs/...` rejection.
+- The repository had no `.rpi/workspace.json`, so the live sourceRef case used the default branch path. Unit tests cover named `origin/<branch>`, plain `<branch>`, branch names with slashes, `HEAD`/absent default, SHA rejection, and unsupported `refs/...` rejection.
 - The auto-advanced child completion caused bb to post a system follow-up into the parent thread. That produced a later parent assistant turn with no command block, so the current `next_step_json` on the parent became `no_next_step`; the first completed turn had already been advanced and stamped with `advanced_at`.
 
 ## Open Items
@@ -225,10 +225,10 @@ Live sibling check:
 
 ```text
 bb plugin install . --yes
-humanlayer@0.1.0 running
+rpi@0.1.0 running
 
-bb plugin reload humanlayer
-humanlayer@0.1.0 running
+bb plugin reload rpi
+rpi@0.1.0 running
 ```
 
 Live task `d3decaa3-d22f-434a-a055-2b2753fd1761`:

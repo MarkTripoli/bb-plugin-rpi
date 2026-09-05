@@ -5,18 +5,18 @@ description: Run for /rpi-implement-outline requests. Orchestrate implementation
 
 # Outline Implementation Orchestrator
 
-You coordinate phased implementation from a structure outline in `.humanlayer/tasks/<slug>/`. This skill is itself the implementation orchestrator. Do not redirect to `/rpi-implement-plan` or `/rpi-create-plan`; launch the outline implementer child thread directly.
+You coordinate phased implementation from a structure outline in `.rpi/tasks/<slug>/`. This skill is itself the implementation orchestrator. Do not redirect to `/rpi-implement-plan` or `/rpi-create-plan`; launch the outline implementer child thread directly.
 
 ## Getting Started
 
 ### 0. Load task context and discover documents
 
-Call `hl_task_context` before reading files. Use the returned task directory, task slug, artifact manifest, bb environment, provider, and model preferences.
+Call `rpi_task_context` before reading files. Use the returned task directory, task slug, artifact manifest, bb environment, provider, and model preferences.
 
 List the task directory with:
 
 ```bash
-ls -La .humanlayer/tasks/<task-slug>
+ls -La .rpi/tasks/<task-slug>
 ```
 
 Use `ls -La` because task directories can be symlinks. Do not rely on glob-only discovery or a recursive repository search.
@@ -46,7 +46,7 @@ The outline implementer updates the outline artifact as work completes:
 - Validation checkboxes move from open to checked only when automated verification passes.
 - A phase title is marked complete only after all validation, including human confirmation, is done.
 
-If you or a child thread writes the outline or an implementation receipt, call `hl_artifact_save` immediately after the write and preserve the returned artifact directive.
+If you or a child thread writes the outline or an implementation receipt, call `rpi_artifact_save` immediately after the write and preserve the returned artifact directive.
 
 ## Workflow
 
@@ -55,7 +55,7 @@ If you or a child thread writes the outline or an implementation receipt, call `
 Spawn one child thread for the current phase. Include paths to the outline and companion documents, but do not paste their contents into the prompt.
 
 ```bash
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same provider> --model <implementation model from hl_task_context prefs, or current model> --prompt "/rpi-agent-outline-implementer Implement Phase [N] from .humanlayer/tasks/<task-slug>/<outline-file>. Companion documents: research=<path if present>; design=<path if present>; prd=<path if present>; tdd=<path if present>. The outline wins on conflicts. Stop after automated verification and update progress markers you can verify."
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same provider> --model <implementation model from rpi_task_context prefs, or current model> --prompt "/rpi-agent-outline-implementer Implement Phase [N] from .rpi/tasks/<task-slug>/<outline-file>. Companion documents: research=<path if present>; design=<path if present>; prd=<path if present>; tdd=<path if present>. The outline wins on conflicts. Stop after automated verification and update progress markers you can verify."
 ```
 
 Wait and read the final child message:
@@ -94,7 +94,7 @@ Pause before moving on unless the user explicitly requested several phases in on
 
 ### 4. Commit the changes
 
-After confirmation, create a focused commit or hand off to `/rpi-ci-commit`, depending on the current workflow. Do not commit `.humanlayer/tasks/`; it is a task mirror and may be a symlink. Use explicit `git add <path>` commands.
+After confirmation, create a focused commit or hand off to `/rpi-ci-commit`, depending on the current workflow. Do not commit `.rpi/tasks/`; it is a task mirror and may be a symlink. Use explicit `git add <path>` commands.
 
 ### 5. Repeat for the next phase
 
@@ -140,11 +140,11 @@ If the user explicitly asks for multiple phases in one run:
 
 Read reference files relative to the installed skill directory. Locate that directory through the skills tier listing, then read `references/implementation_template.md` when writing an implementation receipt and `references/implementation_final_answer.md` for the final answer.
 
-Call `hl_next_artifact_number` before creating a new `NN-implementation-*.md` receipt. After every write in `.humanlayer/tasks/<slug>/`, call `hl_artifact_save`.
+Call `rpi_next_artifact_number` before creating a new `NN-implementation-*.md` receipt. After every write in `.rpi/tasks/<slug>/`, call `rpi_artifact_save`.
 
 ## Workflow Checklist
 
-- [ ] Call `hl_task_context`.
+- [ ] Call `rpi_task_context`.
 - [ ] List the task directory with `ls -La`.
 - [ ] Read the structure outline fully.
 - [ ] Read companion documents needed for implementation.
@@ -158,7 +158,7 @@ Call `hl_next_artifact_number` before creating a new `NN-implementation-*.md` re
 
 When all outline phases are complete and verified:
 
-1. Save any changed task artifacts with `hl_artifact_save`.
-2. Commit all remaining repository work before the PR handoff. Use the `/rpi-ci-commit` conventions: inspect the diff, stage explicit files, exclude `.humanlayer/tasks/` task mirrors unless the user specifically asks for them, and write a focused message.
+1. Save any changed task artifacts with `rpi_artifact_save`.
+2. Commit all remaining repository work before the PR handoff. Use the `/rpi-ci-commit` conventions: inspect the diff, stage explicit files, exclude `.rpi/tasks/` task mirrors unless the user specifically asks for them, and write a focused message.
 3. Read `references/implementation_final_answer.md`.
 4. Respond using that template only, including the artifact directive and the single fenced `text` command for `/rpi-describe-pr`.

@@ -9,12 +9,12 @@ You are revising an existing research-questions document. Preserve its purpose: 
 
 ## Step 0: Load bb task context
 
-Call `hl_task_context` before reading files. Use the returned task directory and artifact list to resolve the selected document. If the user passed an `@artifact` reference, match it against that artifact list.
+Call `rpi_task_context` before reading files. Use the returned task directory and artifact list to resolve the selected document. If the user passed an `@artifact` reference, match it against that artifact list.
 
 If only a task directory or task slug is given, list the task artifact directory with:
 
 ```text
-ls -La .humanlayer/tasks/<task slug>
+ls -La .rpi/tasks/<task slug>
 ```
 
 Use `-L` and `-a`. Do not use a bare `ls`, `ls -l`, grep, or shell globbing for this lookup because the task directory may be linked.
@@ -23,7 +23,7 @@ Use `-L` and `-a`. Do not use a bare `ls`, `ls -l`, grep, or shell globbing for 
 
 The invocation may provide:
 
-- `docPath`: the research-questions file to revise, for example `.humanlayer/tasks/<slug>/01-research-questions-auth-flow.md`
+- `docPath`: the research-questions file to revise, for example `.rpi/tasks/<slug>/01-research-questions-auth-flow.md`
 - an `@...` artifact reference
 - a feedback file, ticket comment export, or pasted comments
 - plain-language instructions from the user
@@ -38,7 +38,7 @@ If more than one research-questions artifact is present and the prompt does not 
 
 2. **Read feedback if it was provided**
 
-   If the prompt includes a feedback file, comment block, or explicit `@...` input, read it fully. If the feedback lives in artifact comments and the user asks you to use those comments, call `hl_get_artifact_comments` for the selected artifact.
+   If the prompt includes a feedback file, comment block, or explicit `@...` input, read it fully. If the feedback lives in artifact comments and the user asks you to use those comments, call `rpi_get_artifact_comments` for the selected artifact.
 
    Do not read `task.md`, `ticket.md`, design artifacts, research artifacts, plans, PR descriptions, or unrelated task files unless the user explicitly names them. Iteration is scoped to the research-questions document and feedback.
 
@@ -61,9 +61,9 @@ If more than one research-questions artifact is present and the prompt does not 
 
 5. **Save the revised artifact**
 
-   If you changed the document, write it back to the same path. Then call `hl_artifact_save` with the same artifact file name and retain the returned `::hl-artifact{...}` directive.
+   If you changed the document, write it back to the same path. Then call `rpi_artifact_save` with the same artifact file name and retain the returned `::rpi-artifact{...}` directive.
 
-   If no edit is needed, do not create a duplicate file. You may still call `hl_artifact_save` if the artifact needs to be registered in the task mirror.
+   If no edit is needed, do not create a duplicate file. You may still call `rpi_artifact_save` if the artifact needs to be registered in the task mirror.
 
 6. **Update the user**
 
@@ -103,5 +103,5 @@ If frontend work is plausible, keep or add design-system questions. The research
 <guidance>
 ## bb artifact links
 
-Use the directive returned by `hl_artifact_save` in the final answer. Do not create manual permalink text.
+Use the directive returned by `rpi_artifact_save` in the final answer. Do not create manual permalink text.
 </guidance>

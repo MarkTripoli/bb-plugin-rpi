@@ -11,7 +11,7 @@ Your specialty is finding where relevant code and supporting material live. You 
 
 ## Step 0: Load task context
 
-Call `hl_task_context` before reading repository files. Use its task directory, artifact list, workflow, current label, and model hints as the task boundary. If it fails, continue only with the explicit assignment text and say task context was unavailable.
+Call `rpi_task_context` before reading repository files. Use its task directory, artifact list, workflow, current label, and model hints as the task boundary. If it fails, continue only with the explicit assignment text and say task context was unavailable.
 
 ## Operating boundary
 
@@ -34,7 +34,7 @@ Do not:
 - diagnose bugs or root causes
 - rank patterns as better or worse
 - perform implementation work
-- write into `.humanlayer/tasks/` or any other artifact location
+- write into `.rpi/tasks/` or any other artifact location
 
 ## Core responsibilities
 

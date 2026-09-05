@@ -31,18 +31,18 @@ The artifact is a technical map of the current system.
 
 ## Step 0: Load bb task context
 
-Call `hl_task_context` before reading files. Use its returned task directory, artifact list, task slug, artifact-save guidance, and research model preferences.
+Call `rpi_task_context` before reading files. Use its returned task directory, artifact list, task slug, artifact-save guidance, and research model preferences.
 
 If the context identifies a research-questions artifact, use it as the default input. If the context does not identify one, inspect the task directory as described below.
 
 ## Initial Setup
 
-When invoked, look in the task artifact directory returned by `hl_task_context` for files whose names include `research-questions`.
+When invoked, look in the task artifact directory returned by `rpi_task_context` for files whose names include `research-questions`.
 
 Use:
 
 ```text
-ls -La .humanlayer/tasks/<task slug>
+ls -La .rpi/tasks/<task slug>
 ```
 
 The task directory may be a link, so use this command shape rather than bare `ls`, shell globs, or grep-driven filtering.
@@ -93,7 +93,7 @@ Important: do not read `task.md`, `ticket.md`, design artifacts, plans, PR descr
    Command pattern:
 
    ```text
-   bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context prefs> --prompt "/rpi-agent-<role> <assignment>"
+   bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context prefs> --prompt "/rpi-agent-<role> <assignment>"
    bb thread wait <thread-id>
    bb thread output <thread-id>
    ```
@@ -131,7 +131,7 @@ Important: do not read `task.md`, `ticket.md`, design artifacts, plans, PR descr
    - connect related findings across components
    - cite exact file paths and line numbers for code claims
    - include links from web research when web research was used
-   - verify that task artifact paths stay under `.humanlayer/tasks/<slug>/`
+   - verify that task artifact paths stay under `.rpi/tasks/<slug>/`
    - document tests for each researched area, including when no tests were found
 
 5. **Gather metadata before writing**
@@ -145,13 +145,13 @@ Important: do not read `task.md`, `ticket.md`, design artifacts, plans, PR descr
    - short topic
    - selected research-questions artifact name, when any
 
-   Call `hl_next_artifact_number` for the task. Use:
+   Call `rpi_next_artifact_number` for the task. Use:
 
    ```text
    NN-research-<2-4-word-kebab-summary>.md
    ```
 
-   Save under the task directory returned by `hl_task_context`.
+   Save under the task directory returned by `rpi_task_context`.
 
 6. **Write the research document**
 
@@ -161,7 +161,7 @@ Important: do not read `task.md`, `ticket.md`, design artifacts, plans, PR descr
    references/research_template.md
    ```
 
-   Use that structure. Write a complete document, not notes for later completion. Then call `hl_artifact_save` with the artifact file name and keep the returned `::hl-artifact{...}` directive for the final response.
+   Use that structure. Write a complete document, not notes for later completion. Then call `rpi_artifact_save` with the artifact file name and keep the returned `::rpi-artifact{...}` directive for the final response.
 
 7. **Try one more pass for open questions**
 
@@ -174,13 +174,13 @@ Important: do not read `task.md`, `ticket.md`, design artifacts, plans, PR descr
    - merge findings into the relevant sections
    - remove open questions that are answered
    - do not append a changelog at the bottom
-   - call `hl_artifact_save` again after the update
+   - call `rpi_artifact_save` again after the update
 
    If the second pass still cannot answer everything, leave the remaining unknowns in **Open Questions** and proceed.
 
 8. **Prepare artifact and code links**
 
-   Use the `::hl-artifact{...}` directive returned by `hl_artifact_save` in the final answer.
+   Use the `::rpi-artifact{...}` directive returned by `rpi_artifact_save` in the final answer.
 
    For repository links, prefer file paths with line numbers in the artifact. If the repository is pushed and GitHub metadata is available, you may include permanent GitHub links, but do not block completion on that.
 
@@ -194,7 +194,7 @@ Important: do not read `task.md`, `ticket.md`, design artifacts, plans, PR descr
 
    Respond using that template only. Include the saved artifact directive and mention open-question count only in the template's designated place. The last lines must be one fenced `text` block copied from the template, not an inline command. Never repeat the current command `/rpi-create-research` as the next step.
 
-   Choose that final fenced command from `hl_task_context.task.workflow`:
+   Choose that final fenced command from `rpi_task_context.task.workflow`:
 
    - `rpi` -> `/rpi-create-design-discussion`
    - `outline_only` -> `/rpi-create-structure-outline`
@@ -276,7 +276,7 @@ Every major findings section should include how that area is tested today:
 - Wait for all child threads before writing.
 - Gather metadata before writing, not after.
 - Do not write placeholder sections.
-- Keep research artifacts under `.humanlayer/tasks/<slug>/`.
+- Keep research artifacts under `.rpi/tasks/<slug>/`.
 - If the artifact contains code blocks that themselves show markdown fences, use four backticks for the outer fence.
 
 <open-question-note>

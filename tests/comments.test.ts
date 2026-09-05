@@ -363,9 +363,9 @@ test("comment updates restore only the requested deleted id and resolve roots on
   db.close();
 });
 
-test("comment tool errors outside HumanLayer task sessions", async () => {
+test("comment tool errors outside RPI task sessions", async () => {
   const { bb, harness } = createFakePluginHost({
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     sdk: {
       subscribe: () => () => undefined,
       threads: {
@@ -374,14 +374,14 @@ test("comment tool errors outside HumanLayer task sessions", async () => {
     },
   });
   await plugin(bb);
-  const result = await harness.behavior.callAgentTool("hl_get_artifact_comments", { artifact_filename: "notes.md" });
-  assert.match(typeof result === "string" ? result : JSON.stringify(result), /not a HumanLayer task session/);
+  const result = await harness.behavior.callAgentTool("rpi_get_artifact_comments", { artifact_filename: "notes.md" });
+  assert.match(typeof result === "string" ? result : JSON.stringify(result), /not an RPI task session/);
   await harness.lifecycle.dispose();
 });
 
 test("comment tools inherit the parent task for recorded agent children", async () => {
   const { bb, harness } = createFakePluginHost({
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     sdk: {
       subscribe: () => () => undefined,
       threads: {
@@ -398,7 +398,7 @@ test("comment tools inherit the parent task for recorded agent children", async 
   bb.storage.database().prepare(`
     INSERT INTO sessions (
       thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
-      hl_status, hl_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at
+      rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at
     ) VALUES ('thr_parent', ?, 'research', 'create-research', 'user', NULL, 'running', 1, 1, 0, NULL, 1, 1)
   `).run(created.taskId);
   await harness.inspection.registrations.hooks["message.dispatch"]?.({
@@ -412,16 +412,16 @@ test("comment tools inherit the parent task for recorded agent children", async 
     fileName: "notes.md",
     content: "A\n\nB",
   });
-  const result = await harness.behavior.callAgentTool("hl_get_artifact_comments", {
+  const result = await harness.behavior.callAgentTool("rpi_get_artifact_comments", {
     artifact_filename: "notes.md",
   }, { threadId: "thr_child" });
-  assert.equal(typeof result === "string" && result.includes("not a HumanLayer task session"), false);
+  assert.equal(typeof result === "string" && result.includes("not an RPI task session"), false);
   await harness.lifecycle.dispose();
 });
 
 test("send-and-resolve resolves only after threads.send succeeds", async () => {
   const { bb, harness } = createFakePluginHost({
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     sdk: {
       subscribe: () => () => undefined,
       threads: { send: async () => { throw new Error("send failed"); } },
@@ -439,7 +439,7 @@ test("send-and-resolve resolves only after threads.send succeeds", async () => {
   db.prepare(`
     INSERT INTO sessions (
       thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
-      hl_status, hl_status_at, had_turn, interrupted, blocked_reason,
+      rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason,
       created_at, updated_at
     ) VALUES ('thr_1', ?, NULL, NULL, 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, 1, 1)
   `).run(created.taskId);
@@ -458,7 +458,7 @@ test("send-and-resolve resolves only after threads.send succeeds", async () => {
 
 test("comment RPC validates version ownership, roots, edit ownership, and realtime kinds", async () => {
   const { bb, harness } = createFakePluginHost({
-    pluginId: "humanlayer",
+    pluginId: "rpi",
     sdk: { subscribe: () => () => undefined },
   });
   await plugin(bb);
@@ -496,7 +496,7 @@ test("comment RPC validates version ownership, roots, edit ownership, and realti
     anchorJson: anchor(0, "A"),
   }) as { comment: { id: string } };
   const createdSignal = harness.inspection.realtimeSignals.at(-2);
-  assert.equal(createdSignal?.channel, "hl:comments");
+  assert.equal(createdSignal?.channel, "rpi:comments");
   assert.equal((createdSignal?.payload as { kind?: string }).kind, "created");
 
   const replyResult = await harness.behavior.callRpc("replyComment", {
@@ -542,7 +542,7 @@ test("sendCommentsToSession splits selected roots without dropping requested ids
   db.prepare(`
     INSERT INTO sessions (
       thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
-      hl_status, hl_status_at, had_turn, interrupted, blocked_reason,
+      rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason,
       created_at, updated_at
     ) VALUES ('thr_1', ?, NULL, NULL, 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, 1, 1)
   `).run(taskId);
@@ -595,7 +595,7 @@ test("sendCommentsToSession claims request ids and resumes undelivered chunks", 
   db.prepare(`
     INSERT INTO sessions (
       thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
-      hl_status, hl_status_at, had_turn, interrupted, blocked_reason,
+      rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason,
       created_at, updated_at
     ) VALUES ('thr_1', ?, NULL, NULL, 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, 1, 1)
   `).run(taskId);

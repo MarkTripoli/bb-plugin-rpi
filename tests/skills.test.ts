@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -84,31 +85,31 @@ test("all shipped final-answer templates are covered", () => {
   assert.deepEqual(found, finalTemplateExpectations.map(([file]) => file).sort());
 });
 
-test("every hl tool referenced by skills is registered", () => {
+test("every rpi tool referenced by skills is registered", () => {
   const registered = new Set<string>(ARTIFACT_TOOL_NAMES);
   for (const file of listFiles(path.join(root, "skills"))) {
     const content = fs.readFileSync(file, "utf8");
-    for (const match of content.matchAll(/\bhl_[a-z_]+\b/g)) {
+    for (const match of content.matchAll(/\brpi_[a-z_]+\b/g)) {
       assert.equal(registered.has(match[0]), true, `${path.relative(root, file)} references unknown tool ${match[0]}`);
     }
   }
 });
 
-// docs/hl-reference/ is HumanLayer's original material (All Rights Reserved): it lives outside
-// this repo (see AGENTS.md item 6 / package.json `files`) at HL_REFERENCE_DIR, defaulting to a
-// sibling checkout so a plain clone never ships or copies it. When that directory is absent this
-// test skips loudly (not a silent pass) so CI without the sibling checkout still shows the gap.
-const HL_REFERENCE_DIR = process.env.HL_REFERENCE_DIR
-  ? path.resolve(process.env.HL_REFERENCE_DIR)
-  : path.resolve(root, "..", "bb-plugin-humanlayer-hl-reference");
+// Third-party reference material (All Rights Reserved) lives outside this repo (see AGENTS.md
+// item 6 / package.json `files`) at RPI_REFERENCE_DIR, defaulting to a sibling checkout so a
+// plain clone never ships or copies it. When that directory is absent this test skips loudly
+// (not a silent pass) so CI without the sibling checkout still shows the gap.
+const RPI_REFERENCE_DIR = process.env.RPI_REFERENCE_DIR
+  ? path.resolve(process.env.RPI_REFERENCE_DIR)
+  : path.join(os.homedir(), "PersonalDevelopment", "bb-plugin-rpi-reference", "third-party");
 
-test("rewritten skills and references do not contain HumanLayer reference shingles", (t) => {
-  if (!fs.existsSync(HL_REFERENCE_DIR)) {
-    t.skip(`HL_REFERENCE_DIR not found at ${HL_REFERENCE_DIR}: shingle check against HumanLayer's reference material did NOT run. Set HL_REFERENCE_DIR or checkout the sibling dir to enforce this.`);
+test("rewritten skills and references do not contain third-party reference shingles", (t) => {
+  if (!fs.existsSync(RPI_REFERENCE_DIR)) {
+    t.skip(`RPI_REFERENCE_DIR not found at ${RPI_REFERENCE_DIR}: shingle check against the third-party reference material did NOT run. Set RPI_REFERENCE_DIR or checkout the sibling dir to enforce this.`);
     return;
   }
   const referenceShingles = new Set<string>();
-  for (const file of listFiles(HL_REFERENCE_DIR)) {
+  for (const file of listFiles(RPI_REFERENCE_DIR)) {
     for (const shingle of shingles(fs.readFileSync(file, "utf8"), 10)) referenceShingles.add(shingle);
   }
 
@@ -122,7 +123,7 @@ test("rewritten skills and references do not contain HumanLayer reference shingl
 
 function fillTemplate(input: string) {
   return input
-    .replaceAll("{artifact_directive}", "::hl-artifact{task=\"task-id\" file=\"01-artifact.md\"}")
+    .replaceAll("{artifact_directive}", "::rpi-artifact{task=\"task-id\" file=\"01-artifact.md\"}")
     .replaceAll("{summary}", "Saved the requested artifact.")
     .replaceAll("{artifact_file}", "01-artifact.md")
     .replaceAll("{artifact_arg}", " @01-artifact.md")

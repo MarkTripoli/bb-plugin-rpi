@@ -5,18 +5,18 @@ description: Run for /rpi-implement-plan requests. Orchestrate phased implementa
 
 # Plan Implementation Orchestrator
 
-You coordinate an approved plan artifact in `.humanlayer/tasks/<slug>/`. Do not do bulk implementation inline. Launch focused child threads, verify them, preserve the human gate, and hand off after implementation is complete.
+You coordinate an approved plan artifact in `.rpi/tasks/<slug>/`. Do not do bulk implementation inline. Launch focused child threads, verify them, preserve the human gate, and hand off after implementation is complete.
 
 ## Workflow
 
 ### 0. Load task context and locate the plan
 
-Call `hl_task_context` before any file read. Use its task directory, slug, artifact list, bb environment, provider, model preferences, and artifact links as the source of truth.
+Call `rpi_task_context` before any file read. Use its task directory, slug, artifact list, bb environment, provider, model preferences, and artifact links as the source of truth.
 
 If the user supplied a specific plan path or `@file`, use that file. If they supplied only a task directory, list it with:
 
 ```bash
-ls -La .humanlayer/tasks/<task-slug>
+ls -La .rpi/tasks/<task-slug>
 ```
 
 Use `ls -La` because the task path may be a symlink. Do not use lowercase `-l`, glob-only discovery, or broad repository search. Select the current `*-plan-*.md` unless the user named another file.
@@ -32,7 +32,7 @@ For each phase that still needs work, spawn one implementation child thread. Kee
 Use this bb-native pattern:
 
 ```bash
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same provider> --model <implementation model from hl_task_context prefs, or current model> --prompt "/rpi-agent-implementer Implement Phase [N] of the plan at .humanlayer/tasks/<task-slug>/<plan-file>. Focus only on Phase [N]. Stop after automated verification and report manual checks."
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same provider> --model <implementation model from rpi_task_context prefs, or current model> --prompt "/rpi-agent-implementer Implement Phase [N] of the plan at .rpi/tasks/<task-slug>/<plan-file>. Focus only on Phase [N]. Stop after automated verification and report manual checks."
 ```
 
 Then collect the result:
@@ -85,7 +85,7 @@ Pause unless the user explicitly requested multiple phases in one run. Wait for 
 
 ### 6. Commit changes after approval
 
-When the user confirms the phase and asks you to commit, create a focused commit. Do not commit `.humanlayer/tasks/` or generated task mirrors. Use explicit paths with `git add`; never stage the whole repository. In the normal RPI flow, `/rpi-ci-commit` owns this handoff.
+When the user confirms the phase and asks you to commit, create a focused commit. Do not commit `.rpi/tasks/` or generated task mirrors. Use explicit paths with `git add`; never stage the whole repository. In the normal RPI flow, `/rpi-ci-commit` owns this handoff.
 
 ### 7. Repeat for the next phase
 
@@ -123,13 +123,13 @@ When the user explicitly asks for multiple phases, spawn a fresh implementer chi
 
 ### Artifact Notes
 
-If you write an implementation receipt or update the plan artifact, call `hl_next_artifact_number` for a new `NN-implementation-*.md` file. After every task-directory write, call `hl_artifact_save` and keep the returned `::hl-artifact{...}` directive.
+If you write an implementation receipt or update the plan artifact, call `rpi_next_artifact_number` for a new `NN-implementation-*.md` file. After every task-directory write, call `rpi_artifact_save` and keep the returned `::rpi-artifact{...}` directive.
 
 Read references relative to this skill directory. Locate the directory through the skills tier listing, then read `references/implementation_template.md` and `references/implementation_final_answer.md`.
 
 ## Workflow Checklist
 
-- [ ] Call `hl_task_context`.
+- [ ] Call `rpi_task_context`.
 - [ ] Read the plan artifact.
 - [ ] Launch `/rpi-agent-implementer`.
 - [ ] Read `bb thread output`.
@@ -141,7 +141,7 @@ Read references relative to this skill directory. Locate the directory through t
 
 When every phase is complete, automated checks pass, and the human gate is satisfied:
 
-1. Save changed task artifacts with `hl_artifact_save`.
-2. Commit all remaining repository work before the PR handoff. Use the `/rpi-ci-commit` conventions: inspect the diff, stage explicit files, exclude `.humanlayer/tasks/` task mirrors unless the user specifically asks for them, and write a focused message.
+1. Save changed task artifacts with `rpi_artifact_save`.
+2. Commit all remaining repository work before the PR handoff. Use the `/rpi-ci-commit` conventions: inspect the diff, stage explicit files, exclude `.rpi/tasks/` task mirrors unless the user specifically asks for them, and write a focused message.
 3. Read `references/implementation_final_answer.md`.
 4. Respond with that template only, including the `/rpi-describe-pr` block.

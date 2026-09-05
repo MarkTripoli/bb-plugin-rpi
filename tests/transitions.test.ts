@@ -112,7 +112,7 @@ test("parseNextStepExtraction reads the persisted nextStepJson shape, tolerating
 
 function baseSuggestedNextSession(overrides: Partial<SuggestedNextSessionFields> = {}): SuggestedNextSessionFields {
   return {
-    hlStatus: "ready_for_input",
+    rpiStatus: "ready_for_input",
     blockedReason: null,
     completedTurnKey: "turn_1",
     lastSummarizedTurnKey: "turn_1",
@@ -124,11 +124,11 @@ function baseSuggestedNextSession(overrides: Partial<SuggestedNextSessionFields>
 }
 
 test("suggestedNextForSession/suggestedNextHint share one precondition gate: not ready, blocked, or unsummarized -> null", () => {
-  assert.equal(suggestedNextForSession(baseSuggestedNextSession({ hlStatus: "running" })), null);
+  assert.equal(suggestedNextForSession(baseSuggestedNextSession({ rpiStatus: "running" })), null);
   assert.equal(suggestedNextForSession(baseSuggestedNextSession({ blockedReason: "question" })), null);
   assert.equal(suggestedNextForSession(baseSuggestedNextSession({ completedTurnKey: null })), null);
   assert.equal(suggestedNextForSession(baseSuggestedNextSession({ completedTurnKey: "turn_2", lastSummarizedTurnKey: "turn_1" })), null);
-  assert.equal(suggestedNextHint(baseSuggestedNextSession({ hlStatus: "running" })), null);
+  assert.equal(suggestedNextHint(baseSuggestedNextSession({ rpiStatus: "running" })), null);
 });
 
 test("suggestedNextForSession/suggestedNextHint compute the same result once preconditions hold", () => {
