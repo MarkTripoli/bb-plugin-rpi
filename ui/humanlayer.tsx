@@ -9,11 +9,13 @@ import {
   useRpc,
   useSettings,
 } from "@get-bb/plugin-sdk/app";
+import { toast } from "sonner";
 import type {
   ArtifactRecord,
   ArtifactVersionRecord,
   LaunchAttemptRecord,
   NextStepSuggestionsRecord,
+  Prefs,
   RpcContract,
   SessionView,
   TaskRecord,
@@ -26,6 +28,7 @@ import type {
 import { AUTO_ADVANCE, BOARD_COLUMNS, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS } from "../transitions";
 import { markdownBlocks } from "../blocks";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -77,14 +80,14 @@ function TaskStepPill({ task }: { task: TaskRow }) {
 function statusMeta(status: string) {
   switch (status) {
     case "ready_for_input":
-      return { text: "idle", icon: "Circle" as const, className: "text-destructive" };
+      return { text: "idle", icon: "AlertCircle" as const, className: "text-destructive" };
     case "needs_approval":
-      return { text: "needs approval", icon: "AlertTriangle" as const, className: "text-foreground" };
+      return { text: "needs approval", icon: "AlertTriangle" as const, className: "text-warning" };
     case "running":
-      return { text: "running", icon: "Loading" as const, className: "text-foreground" };
+      return { text: "running", icon: "Loading" as const, className: "text-success animate-pulse" };
     case "launching":
     case "resuming":
-      return { text: status.replaceAll("_", " "), icon: "Spinner" as const, className: "text-foreground" };
+      return { text: status.replaceAll("_", " "), icon: "Spinner" as const, className: "text-success animate-pulse" };
     case "failed":
       return { text: "failed", icon: "AlertCircle" as const, className: "text-destructive" };
     case "interrupted":
@@ -105,6 +108,175 @@ function SessionStatus({ status }: { status: string }) {
       {meta.text}
     </span>
   );
+}
+
+type NotifySignal = {
+  id: string;
+  kind: "ready_for_input" | "needs_approval" | "comment";
+  threadId: string;
+  sound: boolean;
+  toast: { title: string; body: string; threadId: string } | null;
+  volume?: number;
+};
+
+const DEFAULT_NOTIFICATION_PREFS: Prefs["notifications"] = {
+  enabled: true,
+  sound: { ready_for_input: true, needs_approval: true, comment: true },
+  toast: { ready_for_input: true, needs_approval: true, comment: true },
+  volume: 0.2,
+  jumpHotkey: "mod+shift+u",
+};
+const seenNotificationIds = new Set<string>();
+const pendingToastThreads: string[] = [];
+const pendingToastIds = new Map<string, string>();
+let notificationAudio: HTMLAudioElement | null = null;
+let audioUnlocked = false;
+let warnedAudioBlocked = false;
+let lastChimeAt = 0;
+let hotkeyCycleIndex = 0;
+
+function normalizeClientNotificationPrefs(input: Prefs["notifications"] | null | undefined): Prefs["notifications"] {
+  return {
+    enabled: input?.enabled ?? DEFAULT_NOTIFICATION_PREFS.enabled,
+    sound: { ...DEFAULT_NOTIFICATION_PREFS.sound, ...(input?.sound ?? {}) },
+    toast: { ...DEFAULT_NOTIFICATION_PREFS.toast, ...(input?.toast ?? {}) },
+    volume: Math.min(1, Math.max(0, Number(input?.volume ?? DEFAULT_NOTIFICATION_PREFS.volume))),
+    jumpHotkey: input?.jumpHotkey || DEFAULT_NOTIFICATION_PREFS.jumpHotkey,
+  };
+}
+
+function displayHotkey(input: string) {
+  return input
+    .split("+")
+    .map((part) => part === "mod" ? "⌘" : part === "shift" ? "⇧" : part.toUpperCase())
+    .join("");
+}
+
+function ensureAudio() {
+  if (!notificationAudio) notificationAudio = new Audio("/api/v1/plugins/humanlayer/http/sound/notification.mp3");
+  return notificationAudio;
+}
+
+async function playNotificationSound(volume: number, force = false) {
+  if (!force && !audioUnlocked) {
+    if (!warnedAudioBlocked) {
+      warnedAudioBlocked = true;
+      toast("Notification sound is blocked until a click or Test sound.");
+    }
+    return;
+  }
+  const now = Date.now();
+  if (!force && now - lastChimeAt < 500) return;
+  lastChimeAt = now;
+  const audio = ensureAudio();
+  audio.volume = Math.min(1, Math.max(0, volume));
+  audio.currentTime = 0;
+  try {
+    await audio.play();
+    audioUnlocked = true;
+  } catch {
+    if (!warnedAudioBlocked) {
+      warnedAudioBlocked = true;
+      toast("Notification sound is blocked. Use Test sound in settings.");
+    }
+  }
+}
+
+function shouldHandleHotkey(event: KeyboardEvent, hotkey: string) {
+  const target = event.target as HTMLElement | null;
+  if (target?.closest("input, textarea, select, [contenteditable=true]")) return false;
+  const parts = new Set(hotkey.toLowerCase().split("+").map((part) => part.trim()).filter(Boolean));
+  const modPressed = /mac|iphone|ipad/i.test(navigator.platform) ? event.metaKey : event.ctrlKey;
+  if (parts.has("mod") && !modPressed) return false;
+  if (parts.has("shift") !== event.shiftKey) return false;
+  if (parts.has("alt") !== event.altKey) return false;
+  const key = [...parts].find((part) => !["mod", "shift", "alt", "ctrl"].includes(part));
+  return key ? event.key.toLowerCase() === key : false;
+}
+
+export function HumanLayerNotificationBridge() {
+  const rpc = useRpc<RpcContract>();
+  const navigate = useBbNavigate();
+  const { threadId } = useBbContext();
+  const [prefs, setPrefs] = useState<Prefs["notifications"]>(DEFAULT_NOTIFICATION_PREFS);
+
+  const refetchPrefs = () => {
+    rpc.call("getPrefs", {}).then((next) => setPrefs(normalizeClientNotificationPrefs(next.notifications)));
+  };
+
+  useEffect(() => {
+    refetchPrefs();
+  }, []);
+  useRealtime("prefs", refetchPrefs);
+  useRealtime("hl:sessions", () => undefined);
+  useRealtime("hl:comments", () => undefined);
+
+  useEffect(() => {
+    const unlock = () => {
+      audioUnlocked = true;
+      ensureAudio();
+    };
+    document.addEventListener("pointerdown", unlock, { once: true });
+    document.addEventListener("keydown", unlock, { once: true });
+    return () => {
+      document.removeEventListener("pointerdown", unlock);
+      document.removeEventListener("keydown", unlock);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!threadId) return;
+    const toastId = pendingToastIds.get(threadId);
+    if (!toastId) return;
+    toast.dismiss(toastId);
+    pendingToastIds.delete(threadId);
+  }, [threadId]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!shouldHandleHotkey(event, prefs.jumpHotkey)) return;
+      event.preventDefault();
+      const pendingThread = pendingToastThreads.shift();
+      if (pendingThread) {
+        navigate.toThread(pendingThread);
+        return;
+      }
+      rpc.call("listSessions", { taskId: null }).then(({ sessions }) => {
+        const targets = sessions
+          .filter((session) => session.hlStatus === "ready_for_input" || session.hlStatus === "needs_approval")
+          .sort((a, b) => a.hlStatusAt - b.hlStatusAt);
+        if (targets.length === 0) return;
+        hotkeyCycleIndex %= targets.length;
+        const target = targets[hotkeyCycleIndex];
+        hotkeyCycleIndex = (hotkeyCycleIndex + 1) % targets.length;
+        navigate.toThread(target.threadId);
+      });
+    };
+    document.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => document.removeEventListener("keydown", onKeyDown, { capture: true });
+  }, [navigate, prefs.jumpHotkey, rpc]);
+
+  useRealtime("hl:notify", (payload) => {
+    const signal = payload as NotifySignal;
+    if (!signal?.id || seenNotificationIds.has(signal.id)) return;
+    seenNotificationIds.add(signal.id);
+    if (signal.sound) void playNotificationSound(signal.volume ?? prefs.volume);
+    if (!signal.toast) return;
+    pendingToastThreads.push(signal.toast.threadId);
+    const id = signal.id;
+    pendingToastIds.set(signal.toast.threadId, id);
+    toast(signal.toast.title, {
+      id,
+      description: signal.toast.body,
+      duration: 8000,
+      action: {
+        label: `Jump to Session ${displayHotkey(prefs.jumpHotkey)}`,
+        onClick: () => navigate.toThread(signal.toast!.threadId),
+      },
+    });
+  });
+
+  return null;
 }
 
 function nextStep(session: Pick<SessionView, "nextStepJson">) {
@@ -141,7 +313,10 @@ function TaskTable({ tasks }: { tasks: TaskRow[] }) {
               <td className="px-4 py-3">
                 <div className="flex flex-col gap-1">
                   <span className="font-medium text-foreground">{task.name}</span>
-                  <span className="text-xs text-muted-foreground">{task.slug}</span>
+                  <span className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                    {task.attentionCount > 0 ? <span className="size-2 rounded-full bg-destructive" aria-label={`${task.attentionCount} sessions need attention`} /> : null}
+                    {task.slug}
+                  </span>
                 </div>
               </td>
               <td className="px-4 py-3">
@@ -200,7 +375,10 @@ function TaskBoard({ tasks }: { tasks: TaskRow[] }) {
                 <div className="space-y-2">
                   <div className="flex items-start justify-between gap-3">
                     <h4 className="font-medium leading-tight text-foreground">{task.name}</h4>
-                    <span className="text-xs text-muted-foreground">{relativeTime(task.updatedAt)}</span>
+                    <span className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                      {task.attentionCount > 0 ? <span className="size-2 rounded-full bg-destructive" aria-label={`${task.attentionCount} sessions need attention`} /> : null}
+                      {relativeTime(task.updatedAt)}
+                    </span>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <TaskStepPill task={task} />
@@ -1645,6 +1823,86 @@ export function HumanLayerArtifactDirective({ attributes, source }: { attributes
 
 export const viewing = new Set<string>();
 
+function NotificationCheckbox({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="flex items-center justify-between gap-3 rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground">
+      <span>{label}</span>
+      <Checkbox checked={checked} onCheckedChange={(value) => onChange(value === true)} />
+    </label>
+  );
+}
+
+export function HumanLayerNotificationSettings() {
+  const rpc = useRpc<RpcContract>();
+  const [prefs, setPrefs] = useState<Prefs["notifications"]>(DEFAULT_NOTIFICATION_PREFS);
+
+  const refresh = () => {
+    rpc.call("getPrefs", {}).then((next) => setPrefs(normalizeClientNotificationPrefs(next.notifications)));
+  };
+  useEffect(() => {
+    refresh();
+  }, []);
+  useRealtime("prefs", refresh);
+
+  const save = (next: Prefs["notifications"]) => {
+    const normalized = normalizeClientNotificationPrefs(next);
+    setPrefs(normalized);
+    void rpc.call("setPrefs", { notifications: normalized });
+  };
+  const updateKind = (channel: "sound" | "toast", kind: keyof Prefs["notifications"]["sound"], checked: boolean) => {
+    save({ ...prefs, [channel]: { ...prefs[channel], [kind]: checked } });
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-sm font-semibold uppercase tracking-[0.24em] text-foreground">Notifications</h2>
+        <p className="mt-1 text-sm text-muted-foreground">Cmd Shift J is reserved by Chromium, so HumanLayer uses Cmd Shift U by default.</p>
+      </div>
+      <div className="grid gap-3 lg:grid-cols-2">
+        <NotificationCheckbox label="Enable notifications" checked={prefs.enabled} onChange={(checked) => save({ ...prefs, enabled: checked })} />
+        <NotificationCheckbox label="Sound for ready sessions" checked={prefs.sound.ready_for_input} onChange={(checked) => updateKind("sound", "ready_for_input", checked)} />
+        <NotificationCheckbox label="Toast for ready sessions" checked={prefs.toast.ready_for_input} onChange={(checked) => updateKind("toast", "ready_for_input", checked)} />
+        <NotificationCheckbox label="Sound for approvals" checked={prefs.sound.needs_approval} onChange={(checked) => updateKind("sound", "needs_approval", checked)} />
+        <NotificationCheckbox label="Toast for approvals" checked={prefs.toast.needs_approval} onChange={(checked) => updateKind("toast", "needs_approval", checked)} />
+        <NotificationCheckbox label="Sound for comments" checked={prefs.sound.comment} onChange={(checked) => updateKind("sound", "comment", checked)} />
+        <NotificationCheckbox label="Toast for comments" checked={prefs.toast.comment} onChange={(checked) => updateKind("toast", "comment", checked)} />
+      </div>
+      <div className="grid gap-3 lg:grid-cols-2">
+        <label className="space-y-2 rounded-md border border-border bg-card p-3 text-sm text-foreground">
+          <span className="block font-medium">Volume {Math.round(prefs.volume * 100)}%</span>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            value={prefs.volume}
+            onChange={(event) => save({ ...prefs, volume: Number(event.currentTarget.value) })}
+            className="w-full accent-foreground"
+          />
+        </label>
+        <label className="space-y-2 rounded-md border border-border bg-card p-3 text-sm text-foreground">
+          <span className="block font-medium">Jump hotkey</span>
+          <Input value={prefs.jumpHotkey} onChange={(event) => save({ ...prefs, jumpHotkey: event.currentTarget.value })} />
+        </label>
+      </div>
+      <Button type="button" variant="outline" onClick={() => void playNotificationSound(prefs.volume, true)}>
+        <Icon name="Play" className="size-4" />
+        Test sound
+      </Button>
+      <HumanLayerNotificationBridge />
+    </div>
+  );
+}
+
 export function HumanLayerThreadHeaderAction({ threadId }: { threadId: string; projectId: string; isCompactViewport: boolean }) {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
@@ -1656,9 +1914,11 @@ export function HumanLayerThreadHeaderAction({ threadId }: { threadId: string; p
 
   useEffect(() => {
     viewing.add(threadId);
+    void rpc.call("setViewingSession", { threadId, viewing: true });
     refetch();
     return () => {
       viewing.delete(threadId);
+      void rpc.call("setViewingSession", { threadId, viewing: false });
     };
   }, [threadId]);
   useRealtime("hl:sessions", refetch);
@@ -1668,6 +1928,7 @@ export function HumanLayerThreadHeaderAction({ threadId }: { threadId: string; p
 
   return (
     <div className="flex items-center gap-2">
+      <HumanLayerNotificationBridge />
       <span className={pillClassName(session.label ? "step" : "ghost")}>{session.label ?? "freeform"}</span>
       <SessionStatus status={session.hlStatus} />
       <Button
@@ -1807,6 +2068,7 @@ export function HumanLayerPanel({ subPath }: { subPath: string }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 overflow-hidden p-4">
+      <HumanLayerNotificationBridge />
       <div className="flex items-center justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold tracking-tight text-foreground">HumanLayer</h1>

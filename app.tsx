@@ -3,6 +3,7 @@ import {
   HumanLayerArtifactDirective,
   HumanLayerArtifactThreadPanel,
   HumanLayerPanel,
+  HumanLayerNotificationSettings,
   HumanLayerTipsThreadPanel,
   HumanLayerThreadHeaderAction,
   HumanLayerWorkspaceThreadPanel,
@@ -45,5 +46,10 @@ export default definePluginApp((app) => {
   app.slots.messageDirective({
     id: "hl-artifact",
     component: HumanLayerArtifactDirective,
+  });
+  app.slots.settingsSection({
+    id: "notifications",
+    title: "Notifications",
+    component: HumanLayerNotificationSettings,
   });
 });
