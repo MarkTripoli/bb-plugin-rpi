@@ -381,6 +381,11 @@ function recordChildThread(db: Database, mirror: Map<string, ChildThreadMirrorRo
   return row ?? null;
 }
 
+async function actualParentThreadId(bb: BbPluginApi, threadId: string) {
+  const thread = await bb.sdk.threads.get({ threadId }).catch(() => null) as { parentThreadId?: string | null } | null;
+  return thread?.parentThreadId ?? null;
+}
+
 export function refreshSessionMirror(db: Database, mirror: Map<string, SessionMirrorRow>) {
   mirror.clear();
   const rows = readRows<Parameters<typeof normalizeSessionRow>[0] & {
@@ -894,10 +899,12 @@ export function registerSessionRuntime(
     forgetThread(thread.id);
   });
 
-  bb.experimental_hooks.on("message.dispatch", (ctx) => {
+  bb.experimental_hooks.on("message.dispatch", async (ctx) => {
     const agentRole = parseAgentRole(ctx.input.text ?? "");
-    const parentThreadId = (ctx as { parentThreadId?: string | null }).parentThreadId ?? (ctx.thread as { parentThreadId?: string | null }).parentThreadId ?? null;
-    if (agentRole && parentThreadId && childThreads) recordChildThread(db, childThreads, ctx.thread.id, parentThreadId, agentRole);
+    if (agentRole && childThreads) {
+      const parentThreadId = await actualParentThreadId(bb, ctx.thread.id);
+      if (parentThreadId) recordChildThread(db, childThreads, ctx.thread.id, parentThreadId, agentRole);
+    }
     let row = mirror.get(ctx.thread.id);
     if (!row && ctx.originPluginId === bb.pluginId) {
       const token = extractLaunchToken(ctx.input.text);
@@ -931,8 +938,7 @@ export function registerSessionRuntime(
 }
 
 export function taskInstructions(row: SessionMirrorRow, options: { researchModel?: string | null } = {}) {
-  const taskModel = row.providerId && row.model ? `${row.providerId} ${row.model}` : null;
-  const researchModel = options.researchModel ?? taskModel ?? "use the task's current provider/model unless hl_task_context says otherwise";
+  const researchModel = resolveResearchModel(row, options.researchModel ?? null);
   return [
     TASK_CONTEXT_FIRST_ACTION,
     `HumanLayer task: ${row.taskName} (slug ${row.taskSlug}). Task artifact directory: .humanlayer/tasks/${row.taskSlug} (relative to the workspace root; a real directory, not a symlink).`,
@@ -940,4 +946,9 @@ export function taskInstructions(row: SessionMirrorRow, options: { researchModel
     "After writing or editing any file in the task artifact directory, call hl_artifact_save with its file name and include the returned permalink line in your final answer.",
     `Research subagents model hint: ${researchModel}.`,
   ].join("\n");
+}
+
+export function resolveResearchModel(row: Pick<SessionMirrorRow, "providerId" | "model">, preference: string | null | undefined) {
+  const taskModel = row.providerId && row.model ? `${row.providerId} ${row.model}` : null;
+  return preference ?? taskModel ?? "use the task's current provider/model unless hl_task_context says otherwise";
 }

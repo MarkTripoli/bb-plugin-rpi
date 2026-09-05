@@ -3,15 +3,22 @@ import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { extractNextStep } from "../extraction";
+import { autoAdvanceTransition } from "../transitions";
 import { ARTIFACT_TOOL_NAMES } from "../tools";
 
 const root = path.resolve(import.meta.dirname, "..");
 
+const researchFinalAnswerByWorkflow = {
+  rpi: "create-design-discussion",
+  outline_only: "create-structure-outline",
+  prd_tdd: "create-prd",
+} as const;
+
 const finalTemplateExpectations = [
   ["skills/rpi-create-research-questions/references/research_questions_final_answer.md", "create-research"],
   ["skills/rpi-iterate-research-questions/references/research_questions_final_answer.md", "create-research"],
-  ["skills/rpi-create-research/references/research_final_answer.md", "create-structure-outline"],
-  ["skills/rpi-iterate-research/references/research_final_answer.md", "create-structure-outline"],
+  ["skills/rpi-create-research/references/research_final_answer.md", researchFinalAnswerByWorkflow],
+  ["skills/rpi-iterate-research/references/research_final_answer.md", researchFinalAnswerByWorkflow],
   ["skills/rpi-create-design-discussion/references/design_discussion_final_answer.md", "create-plan"],
   ["skills/rpi-create-design-discussion/references/design_discussion_review_answer.md", "iterate-design-discussion"],
   ["skills/rpi-iterate-design-discussion/references/design_discussion_final_answer.md", "create-plan"],
@@ -48,18 +55,25 @@ const finalTemplateExpectations = [
 
 test("every final-answer template parses to the expected next skill", () => {
   for (const [relativePath, expectedSkill] of finalTemplateExpectations) {
-    const content = fillTemplate(fs.readFileSync(path.join(root, relativePath), "utf8"));
-    const result = extractNextStep(content, {
-      liveArtifactNames: ["01-artifact.md"],
-      taskSlug: "task-slug",
-      parsedAt: 1,
-    });
-    assert.equal(result.extraction.type, expectedSkill === null ? "no_next_step" : "next_step_found", relativePath);
-    if (result.extraction.type === "next_step_found" && expectedSkill !== null) {
-      assert.equal(result.extraction.nextStepType, expectedSkill, relativePath);
+    const raw = fs.readFileSync(path.join(root, relativePath), "utf8");
+    if (expectedSkill && typeof expectedSkill === "object") {
+      for (const [workflowType, workflowSkill] of Object.entries(expectedSkill)) {
+        const content = renderWorkflowVariant(fillTemplate(raw), workflowType);
+        assertExtractsSkill(content, workflowSkill, `${relativePath} ${workflowType}`);
+        assertFinalTextFenceOnly(content, `${relativePath} ${workflowType}`);
+      }
+    } else {
+      const content = fillTemplate(raw);
+      assertExtractsSkill(content, expectedSkill, relativePath);
+      assertFinalTextFenceOnly(content, relativePath);
     }
-    assertFinalTextFenceOnly(content, relativePath);
   }
+});
+
+test("workflow-aware auto-advance rows match research ground truth", () => {
+  assert.deepEqual(autoAdvanceTransition("research", "rpi"), { flag: "aa_research_to_design", next: "create-design-discussion", to: "design" });
+  assert.deepEqual(autoAdvanceTransition("research", "outline_only"), { flag: "aa_research_to_design", next: "create-structure-outline", to: "structure" });
+  assert.deepEqual(autoAdvanceTransition("research", "prd_tdd"), { flag: "aa_research_to_design", next: "create-prd", to: "design-prd" });
 });
 
 test("all shipped final-answer templates are covered", () => {
@@ -103,6 +117,25 @@ function fillTemplate(input: string) {
     .replaceAll("{implementation_command}", "/rpi-implement-plan");
 }
 
+function renderWorkflowVariant(input: string, workflowType: string) {
+  const command = new RegExp(`For \`${escapeRegExp(workflowType)}\`:\\s*\\\`\\\`\\\`text\\r?\\n([\\s\\S]*?)\\\`\\\`\\\``).exec(input)?.[1]?.trim();
+  assert.ok(command, `missing workflow variant ${workflowType}`);
+  const [head] = input.split("<!-- workflow-variants -->");
+  return `${head!.trimEnd()}\n\n\`\`\`text\n${command}\n\`\`\`\n`;
+}
+
+function assertExtractsSkill(content: string, expectedSkill: string | null, label: string) {
+  const result = extractNextStep(content, {
+    liveArtifactNames: ["01-artifact.md"],
+    taskSlug: "task-slug",
+    parsedAt: 1,
+  });
+  assert.equal(result.extraction.type, expectedSkill === null ? "no_next_step" : "next_step_found", label);
+  if (result.extraction.type === "next_step_found" && expectedSkill !== null) {
+    assert.equal(result.extraction.nextStepType, expectedSkill, label);
+  }
+}
+
 function assertFinalTextFenceOnly(content: string, label: string) {
   const fences = [...content.matchAll(/```([^\r\n]*)\r?\n([\s\S]*?)```/g)];
   assert.equal(fences.length, 1, `expected exactly one fenced block in ${label}`);
@@ -130,28 +163,99 @@ function shingles(input: string, size: number) {
 }
 
 function allowedReferenceShingle(shingle: string) {
-  return [
-    { match: /^name description$/, reason: "frontmatter keys" },
-    { match: /^date current date and time with timezone in iso format$/, reason: "template frontmatter placeholders" },
-    { match: /^current date and time with timezone in iso format git$/, reason: "template frontmatter placeholders" },
-    { match: /^date and time with timezone in iso format git commit$/, reason: "template frontmatter placeholders" },
-    { match: /^task eng xxxx description type [a-z]+/, reason: "template frontmatter placeholders" },
-    { match: /^eng xxxx description type [a-z]+/, reason: "template frontmatter placeholders" },
-    { match: /^xxxx description type [a-z]+/, reason: "template frontmatter placeholders" },
-    { match: /^description type [a-z]+ [a-z]+ repo current repository branch/, reason: "template frontmatter placeholders" },
-    { match: /^type [a-z]+ [a-z]+ repo current repository branch current branch name$/, reason: "template frontmatter placeholders" },
-    { match: /repo current repository branch current branch name sha/, reason: "template frontmatter placeholders" },
-    { match: /current repository branch current branch name sha result of git/, reason: "template frontmatter placeholders" },
-    { match: /^disabled false pathtemplate humanlayer workspaces taskslug repobasename branchtemplate taskslug sourceref$/, reason: "workspace json schema example" },
-    { match: /^false pathtemplate humanlayer workspaces taskslug repobasename branchtemplate taskslug sourceref origin$/, reason: "workspace json schema example" },
-    { match: /^pathtemplate humanlayer workspaces taskslug repobasename branchtemplate taskslug sourceref origin main$/, reason: "workspace json schema example" },
-    { match: /^doctype html html lang en head meta charset utf 8$/, reason: "html document boilerplate" },
-    { match: /^html html lang en head meta charset utf 8 meta$/, reason: "html document boilerplate" },
-    { match: /^html lang en head meta charset utf 8 meta name$/, reason: "html document boilerplate" },
-    { match: /^lang en head meta charset utf 8 meta name viewport$/, reason: "html document boilerplate" },
-    { match: /^en head meta charset utf 8 meta name viewport content$/, reason: "html document boilerplate" },
-    { match: /^meta name viewport content width device width initial scale 1$/, reason: "html document boilerplate" },
-    { match: /\brpi\b/, reason: "command names" },
-    { match: /\bhl task context\b|\bhl artifact save\b|\bhl get artifact comments\b|\bhl update artifact comments\b|\bhl reply to artifact comment\b/, reason: "tool names" },
-  ].some((rule) => rule.match.test(shingle) && rule.reason);
+  const tokens = shingle.split(" ");
+  return tokens.every((token) => SYNTAX_TOKENS.has(token));
 }
+
+function escapeRegExp(input: string) {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const SYNTAX_TOKENS = new Set([
+  "name",
+  "description",
+  "date",
+  "git",
+  "commit",
+  "branch",
+  "repository",
+  "repo",
+  "topic",
+  "tags",
+  "status",
+  "task",
+  "id",
+  "type",
+  "sha",
+  "artifact",
+  "file",
+  "filename",
+  "path",
+  "disabled",
+  "pathtemplate",
+  "branchtemplate",
+  "sourceref",
+  "setupcommand",
+  "copyglobs",
+  "repos",
+  "localpath",
+  "primary",
+  "false",
+  "true",
+  "doctype",
+  "html",
+  "lang",
+  "en",
+  "head",
+  "meta",
+  "charset",
+  "utf",
+  "8",
+  "viewport",
+  "content",
+  "width",
+  "device",
+  "initial",
+  "scale",
+  "1",
+  "rpi",
+  "create",
+  "iterate",
+  "research",
+  "questions",
+  "design",
+  "discussion",
+  "prd",
+  "tdd",
+  "structure",
+  "outline",
+  "plan",
+  "configure",
+  "workspaces",
+  "setup",
+  "worktree",
+  "implement",
+  "implementation",
+  "describe",
+  "pr",
+  "ci",
+  "review",
+  "comments",
+  "show",
+  "me",
+  "agent",
+  "codebase",
+  "locator",
+  "analyzer",
+  "pattern",
+  "finder",
+  "web",
+  "search",
+  "researcher",
+  "hl",
+  "context",
+  "save",
+  "get",
+  "update",
+  "reply",
+]);

@@ -19,7 +19,7 @@ import {
   softDeleteComments,
 } from "./comments";
 import { ingest, hydrate } from "./mirror";
-import { mirrorSession, type ChildThreadMirrorRow, type SessionMirrorRow } from "./sessions";
+import { mirrorSession, resolveResearchModel, type ChildThreadMirrorRow, type SessionMirrorRow } from "./sessions";
 
 type Database = BetterSqlite3.Database;
 
@@ -64,11 +64,46 @@ function toolJson(value: unknown, isError = false) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }], isError };
 }
 
+export const hlTaskContextOutputSchema = z.object({
+  task: z.object({
+    id: z.string(),
+    name: z.string(),
+    slug: z.string(),
+    workflow: z.string(),
+    currentLabel: z.string().nullable(),
+    artifactDir: z.string(),
+  }).strict(),
+  workspace: z.object({
+    worktreeTiming: z.string().nullable(),
+    defaultDirectory: z.string().nullable(),
+    baseEnvironmentId: z.string().nullable(),
+    worktreeEnvironmentId: z.string().nullable(),
+    currentEnvironmentId: z.string().nullable(),
+    currentPath: z.string().nullable(),
+    currentBranch: z.string().nullable(),
+    sessionThreadId: z.string(),
+    currentThreadId: z.string(),
+  }).strict(),
+  prefs: z.object({
+    researchModel: z.string(),
+    researchSubagentModel: z.string(),
+    providerId: z.string().nullable(),
+    model: z.string().nullable(),
+  }).strict(),
+  artifacts: z.array(z.object({
+    name: z.string(),
+    type: z.string(),
+    version: z.number().int(),
+  }).strict()),
+  taskMd: z.string().nullable(),
+}).strict();
+
 export function registerArtifactTools(
   bb: BbPluginApi,
   db: Database,
   mirror: Map<string, SessionMirrorRow>,
   childThreads = new Map<string, ChildThreadMirrorRow>(),
+  options: { getResearchModel?: () => string | null } = {},
 ) {
   const hydrationByTask = new Map<string, Promise<void>>();
 
@@ -113,7 +148,8 @@ export function registerArtifactTools(
         FROM tasks WHERE id = ?
       `).get(row.taskId) as { defaultDirectory: string | null; baseEnvironmentId: string | null; worktreeEnvironmentId: string | null; worktreeTiming: string } | undefined;
       const thread = await bb.sdk.threads.get({ threadId, include: "environment" }).catch(() => null) as { environment?: { id?: string | null; path?: string | null; branchName?: string | null } | null; environmentId?: string | null } | null;
-      return JSON.stringify({
+      const researchModel = resolveResearchModel(row, options.getResearchModel?.() ?? null);
+      const output = hlTaskContextOutputSchema.parse({
         task: {
           id: row.taskId,
           name: row.taskName,
@@ -134,13 +170,15 @@ export function registerArtifactTools(
           currentThreadId: threadId,
         },
         prefs: {
-          researchSubagentModel: row.providerId && row.model ? `${row.providerId} ${row.model}` : null,
+          researchModel,
+          researchSubagentModel: researchModel,
           providerId: row.providerId,
           model: row.model,
         },
         artifacts,
         taskMd: task ? trimToolContent(task.version.content.toString("utf8")) : null,
-      }, null, 2);
+      });
+      return JSON.stringify(output, null, 2);
     },
   });
 

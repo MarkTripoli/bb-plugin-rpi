@@ -838,7 +838,7 @@ export default async function plugin(bb: BbPluginApi) {
     });
   }, { auth: "local" });
 
-  registerArtifactTools(bb, db, sessionMirror, childThreadMirror);
+  registerArtifactTools(bb, db, sessionMirror, childThreadMirror, { getResearchModel: () => researchModelPreference });
 
   bb.agents.configure((context) => {
     bindPendingThread(db, sessionMirror, launchBindings, context.thread.id);

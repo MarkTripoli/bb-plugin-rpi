@@ -139,4 +139,9 @@ Read references relative to this skill directory. Locate the directory through t
 
 ## After Final Phase Completion
 
-When every phase is complete, automated checks pass, and the human gate is satisfied, save changed task artifacts, read `references/implementation_final_answer.md`, and respond with that template only.
+When every phase is complete, automated checks pass, and the human gate is satisfied:
+
+1. Save changed task artifacts with `hl_artifact_save`.
+2. Commit all remaining repository work before the PR handoff. Use the `/rpi-ci-commit` conventions: inspect the diff, stage explicit files, exclude `.humanlayer/tasks/` task mirrors unless the user specifically asks for them, and write a focused message.
+3. Read `references/implementation_final_answer.md`.
+4. Respond with that template only, including the `/rpi-describe-pr` block.

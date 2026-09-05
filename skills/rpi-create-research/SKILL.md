@@ -105,6 +105,8 @@ Important: do not read `task.md`, `ticket.md`, design artifacts, plans, PR descr
    - `rpi-agent-codebase-pattern-finder`: collect existing examples, conventions, and comparable implementations.
    - `rpi-agent-web-search-researcher`: gather external documentation when a dependency, SDK, API, or current web source is needed.
 
+   If the task touches a third-party package, framework, API, or SDK and a dependency/library researcher is available in the current runtime, use it for those scoped library questions. If no such researcher is exposed, use `rpi-agent-web-search-researcher` for current docs and do not mention the missing helper.
+
    Use the roles intentionally:
 
    - Combine related questions touching the same subsystem into one assignment.
@@ -192,17 +194,11 @@ Important: do not read `task.md`, `ticket.md`, design artifacts, plans, PR descr
 
    Respond using that template only. Include the saved artifact directive and mention open-question count only in the template's designated place. The last lines must be one fenced `text` block copied from the template, not an inline command. Never repeat the current command `/rpi-create-research` as the next step.
 
-   For `outline_only`, the final block is:
+   Choose that final fenced command from `hl_task_context.task.workflow`:
 
-   ```text
-   /rpi-create-structure-outline
-   ```
-
-   For `rpi`, the final block is:
-
-   ```text
-   /rpi-create-design-discussion
-   ```
+   - `rpi` -> `/rpi-create-design-discussion`
+   - `outline_only` -> `/rpi-create-structure-outline`
+   - `prd_tdd` -> `/rpi-create-prd`
 
 10. **Handle follow-up research in place**
 

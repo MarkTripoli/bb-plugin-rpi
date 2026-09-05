@@ -159,5 +159,6 @@ Call `hl_next_artifact_number` before creating a new `NN-implementation-*.md` re
 When all outline phases are complete and verified:
 
 1. Save any changed task artifacts with `hl_artifact_save`.
-2. Read `references/implementation_final_answer.md`.
-3. Respond using that template only, including the artifact directive and the single fenced `text` command.
+2. Commit all remaining repository work before the PR handoff. Use the `/rpi-ci-commit` conventions: inspect the diff, stage explicit files, exclude `.humanlayer/tasks/` task mirrors unless the user specifically asks for them, and write a focused message.
+3. Read `references/implementation_final_answer.md`.
+4. Respond using that template only, including the artifact directive and the single fenced `text` command for `/rpi-describe-pr`.

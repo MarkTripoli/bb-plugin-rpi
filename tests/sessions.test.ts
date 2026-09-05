@@ -516,7 +516,15 @@ test("agent callbacks return non-Promise values", async () => {
 test("agent child skills require a task parent and survive reload", async () => {
   const { bb, harness } = createFakePluginHost({
     pluginId: "humanlayer",
-    sdk: { subscribe: () => () => undefined },
+    sdk: {
+      subscribe: () => () => undefined,
+      threads: {
+        get: async ({ threadId }) => makeThreadResponse({
+          id: threadId,
+          parentThreadId: threadId === "thr_child" ? "thr_parent" : "thr_plain_parent",
+        }),
+      },
+    },
   });
   await plugin(bb);
   const configure = () => harness.inspection.registrations.agentConfigurationProvider;
@@ -565,6 +573,57 @@ test("agent child skills require a task parent and survive reload", async () => 
   childConfig = configure()?.(context("thr_child"));
   assert.ok(childConfig?.skills.includes("rpi-agent-codebase-locator"));
   assert.equal(childConfig?.skills.includes("rpi-create-research"), false);
+  await harness.lifecycle.dispose();
+});
+
+test("agent child classification uses the thread record's actual parent", async () => {
+  const actualParents = new Map<string, string | null>();
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "humanlayer",
+    sdk: {
+      subscribe: () => () => undefined,
+      threads: {
+        get: async ({ threadId }) => makeThreadResponse({
+          id: threadId,
+          parentThreadId: actualParents.get(threadId) ?? null,
+        }),
+      },
+    },
+  });
+  await plugin(bb);
+  const hook = harness.inspection.registrations.hooks["message.dispatch"];
+  assert.ok(hook);
+  const created = await harness.behavior.callRpc("createTask", {
+    request: { text: "prompt", projectId: "proj_1", workflowType: "freeform", worktreeTiming: "never", permissionMode: "default", autoAdvance: false },
+    name: "Task",
+    draft: true,
+  }) as { taskId: string };
+  bb.storage.database().prepare(`
+    INSERT INTO sessions (
+      thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
+      hl_status, hl_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at
+    ) VALUES ('thr_task_parent', ?, 'research', 'create-research', 'user', NULL, 'running', 1, 1, 0, NULL, 1, 1)
+  `).run(created.taskId);
+
+  actualParents.set("thr_claimed_child", "thr_plain_parent");
+  await hook({
+    thread: { id: "thr_claimed_child", parentThreadId: "thr_task_parent" },
+    input: { text: "/rpi-agent-codebase-locator find files", blocks: [] },
+    parentThreadId: "thr_task_parent",
+    originPluginId: null,
+  } as never);
+  let stored = bb.storage.database().prepare("SELECT COUNT(*) AS count FROM child_threads WHERE thread_id = ?").get("thr_claimed_child") as { count: number };
+  assert.equal(stored.count, 0);
+
+  actualParents.set("thr_actual_child", "thr_task_parent");
+  await hook({
+    thread: { id: "thr_actual_child", parentThreadId: "thr_plain_parent" },
+    input: { text: "/rpi-agent-codebase-locator find files", blocks: [] },
+    parentThreadId: "thr_plain_parent",
+    originPluginId: null,
+  } as never);
+  stored = bb.storage.database().prepare("SELECT COUNT(*) AS count FROM child_threads WHERE thread_id = ? AND parent_thread_id = ? AND task_id = ?").get("thr_actual_child", "thr_task_parent", created.taskId) as { count: number };
+  assert.equal(stored.count, 1);
   await harness.lifecycle.dispose();
 });
 

@@ -366,7 +366,12 @@ test("comment updates restore only the requested deleted id and resolve roots on
 test("comment tool errors outside HumanLayer task sessions", async () => {
   const { bb, harness } = createFakePluginHost({
     pluginId: "humanlayer",
-    sdk: { subscribe: () => () => undefined },
+    sdk: {
+      subscribe: () => () => undefined,
+      threads: {
+        get: async ({ threadId }) => ({ id: threadId, parentThreadId: threadId === "thr_child" ? "thr_parent" : null }),
+      },
+    },
   });
   await plugin(bb);
   const result = await harness.behavior.callAgentTool("hl_get_artifact_comments", { artifact_filename: "notes.md" });
@@ -377,7 +382,12 @@ test("comment tool errors outside HumanLayer task sessions", async () => {
 test("comment tools inherit the parent task for recorded agent children", async () => {
   const { bb, harness } = createFakePluginHost({
     pluginId: "humanlayer",
-    sdk: { subscribe: () => () => undefined },
+    sdk: {
+      subscribe: () => () => undefined,
+      threads: {
+        get: async ({ threadId }) => ({ id: threadId, parentThreadId: threadId === "thr_child" ? "thr_parent" : null }),
+      },
+    },
   });
   await plugin(bb);
   const created = await harness.behavior.callRpc("createTask", {
