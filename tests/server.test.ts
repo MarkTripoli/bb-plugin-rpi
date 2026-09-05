@@ -229,3 +229,47 @@ test("saveScratchPad is compare-and-swap on revision: stale write conflicts and 
 
   await harness.lifecycle.dispose();
 });
+
+test("listSessions never makes a per-session SDK call; getSession still fetches live contextUsage", async () => {
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "humanlayer",
+    sdk: {
+      subscribe: () => () => undefined,
+      threads: {
+        get: async ({ threadId }: { threadId: string }) => ({ id: threadId, title: "Some thread", titleFallback: null, updatedAt: 42, environment: { path: "/repo" } }),
+        timeline: async () => ({ contextWindowUsage: { usedTokens: 100, modelContextWindow: 1000, estimated: false } }),
+        interactions: { list: async () => [] },
+      },
+    },
+  });
+  await plugin(bb);
+  const created = await harness.behavior.callRpc("createTask", {
+    request: { text: "prompt", projectId: "proj_1", workflowType: "freeform", worktreeTiming: "never", permissionMode: "default", autoAdvance: false },
+    name: "Task",
+    draft: true,
+  }) as { taskId: string };
+
+  const db = bb.storage.database();
+  for (let index = 0; index < 5; index += 1) {
+    db.prepare(`
+      INSERT INTO sessions (
+        thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
+        hl_status, hl_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at
+      ) VALUES (?, ?, NULL, NULL, 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, 1, 1)
+    `).run(`thr_${index}`, created.taskId);
+  }
+
+  const before = harness.inspection.sdk.callsTo("threads.get").length + harness.inspection.sdk.callsTo("threads.timeline").length;
+  const listed = await harness.behavior.callRpc("listSessions", { taskId: created.taskId }) as { sessions: Array<{ threadId: string }> };
+  const after = harness.inspection.sdk.callsTo("threads.get").length + harness.inspection.sdk.callsTo("threads.timeline").length;
+  assert.equal(listed.sessions.length, 5);
+  assert.equal(after, before, "listSessions must not call threads.get or threads.timeline per session");
+
+  const beforeGet = harness.inspection.sdk.callsTo("threads.get").length;
+  const beforeTimeline = harness.inspection.sdk.callsTo("threads.timeline").length;
+  await harness.behavior.callRpc("getSession", { threadId: "thr_0" });
+  assert.equal(harness.inspection.sdk.callsTo("threads.get").length, beforeGet + 1, "getSession fetches the thread directly");
+  assert.equal(harness.inspection.sdk.callsTo("threads.timeline").length, beforeTimeline + 1, "getSession fetches live contextUsage directly");
+
+  await harness.lifecycle.dispose();
+});

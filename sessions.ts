@@ -8,7 +8,7 @@ import { TASK_CONTEXT_FIRST_ACTION } from "./instructions";
 import { RPI_AGENT_SKILL_IDS, skillInfo } from "./transitions";
 
 type Database = BetterSqlite3.Database;
-type ThreadLike = {
+export type ThreadLike = {
   id: string;
   status: "pending" | "starting" | "active" | "stopping" | "idle" | "error";
   runtime?: { displayStatus?: string } | null;
@@ -846,6 +846,11 @@ export function registerSessionRuntime(
   // Called when an auto-advance launch attempt for a completed turn fails or throws, so the
   // suppressed ready_for_input notification for that turn is recovered instead of lost silently.
   onAdvanceFailed?: (session: SessionMirrorRow) => Promise<unknown>,
+  // Fired with the freshest `threads.get` snapshot every time a real `thread:changed` reconcile
+  // fetches one, so a caller-owned cache (title/workingDirectory/contextUsage for listSessions,
+  // perf item: listSessions must not make a per-session SDK call) can stay current without
+  // listSessions ever calling the SDK itself. Fire-and-forget: never awaited here.
+  onThreadSnapshot?: (threadId: string, thread: ThreadLike) => void,
 ) {
   const maxSeq = readRow<{ maxSeq: number }>(db, "SELECT COALESCE(MAX(last_reconcile_seq), 0) + 1 AS maxSeq FROM sessions")?.maxSeq ?? 1;
   let nextSeq = maxSeq;
@@ -881,6 +886,7 @@ export function registerSessionRuntime(
     nextSeq += 1;
     return enqueueThreadWork(threadId, async () => {
       const thread = await bb.sdk.threads.get({ threadId, include: "environment" });
+      onThreadSnapshot?.(threadId, thread as ThreadLike);
       const interactions = await bb.sdk.threads.interactions.list({ threadId });
       if (!mirror.has(threadId) || retiredThreads.has(threadId)) return;
       const result = applyStatusDerivation(db, mirror, thread as ThreadLike, interactions as InteractionLike[], sequence);
@@ -928,6 +934,7 @@ export function registerSessionRuntime(
   };
 
   const handleActive = (thread: ThreadLike) => {
+    onThreadSnapshot?.(thread.id, thread);
     return enqueueThreadWork(thread.id, async () => {
       writeRow(db, "UPDATE sessions SET had_turn = 1, interrupted = 0, updated_at = ? WHERE thread_id = ?", nowMs(), thread.id);
       mirrorSession(db, mirror, thread.id);
@@ -946,6 +953,7 @@ export function registerSessionRuntime(
   };
 
   const handleIdle = (thread: ThreadLike, lastAssistantText: string | null) => {
+    onThreadSnapshot?.(thread.id, thread);
     return enqueueThreadWork(thread.id, async () => {
       let completedNewTurn = false;
       let interrupted = false;

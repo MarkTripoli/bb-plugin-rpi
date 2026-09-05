@@ -53,6 +53,7 @@ import {
   readSession,
   registerSessionRuntime,
   taskInstructions,
+  type ThreadLike,
 } from "./sessions";
 import {
   approvalsFromInteractions,
@@ -222,6 +223,7 @@ export default async function plugin(bb: BbPluginApi) {
   const childThreadMirror = loadChildThreadMirror(db);
   const launchBindings = createLaunchBindingMirror();
   const viewingSessions = new Set<string>();
+  const threadInfoCache: ThreadInfoCache = new Map();
   const initialPrefs = prefsSchema.safeParse(await bb.storage.kv.get<unknown>(PREFS_KEY));
   let researchModelPreference = initialPrefs.success ? initialPrefs.data.defaults.researchModel ?? null : null;
   let notificationPrefs = normalizeNotificationPrefs(initialPrefs.success ? initialPrefs.data.notifications : null);
@@ -549,7 +551,7 @@ export default async function plugin(bb: BbPluginApi) {
 	      return iterateInFreshSession(bb, db, sessionMirror, launchBindings, threadId);
 	    },
     listSessions: async ({ taskId }) => ({
-      sessions: await Promise.all(listSessions(db, taskId ?? null).map((session) => sessionView(bb, session))),
+      sessions: listSessions(db, taskId ?? null).map((session) => cachedSessionView(threadInfoCache, session)),
     }),
     getSession: async ({ threadId }) => {
       const session = readSession(db, threadId);
@@ -1134,6 +1136,7 @@ export default async function plugin(bb: BbPluginApi) {
     childThreadMirror,
     notifySnapshot,
     notifyAdvanceFailed,
+    (threadId, thread) => cacheThreadSnapshot(bb, threadInfoCache, threadId, thread),
   );
 
   bb.background.service("launch-attempt-sweep", {
@@ -1265,6 +1268,46 @@ async function sessionView(bb: BbPluginApi, session: ReturnType<typeof readSessi
     // Thread lookup failed (e.g. archived/host offline): fall back to nulls, same as before.
   }
   return { ...session, title, workingDirectory, threadUpdatedAt, contextUsage: await readContextUsage(bb, session.threadId) };
+}
+
+type ThreadInfoCacheEntry = {
+  title: string | null;
+  workingDirectory: string | null;
+  threadUpdatedAt: number | null;
+  contextUsage: Awaited<ReturnType<typeof readContextUsage>>;
+};
+type ThreadInfoCache = Map<string, ThreadInfoCacheEntry>;
+
+// Perf (item 7): listSessions must not make a per-session SDK call. registerSessionRuntime's own
+// thread:changed reconcile already fetches a fresh `threads.get` for hl_status derivation; this
+// callback rides that same fetch (and the cheaper thread.active/thread.idle event payloads) to
+// keep a title/workingDirectory/threadUpdatedAt/contextUsage cache current, so listSessions can
+// read it synchronously instead of calling the SDK itself. contextUsage is refreshed by a
+// fire-and-forget follow-up fetch (never awaited here) so this stays a cheap, synchronous cache
+// write on the hot reconcile path.
+function cacheThreadSnapshot(bb: BbPluginApi, cache: ThreadInfoCache, threadId: string, thread: ThreadLike) {
+  const previous = cache.get(threadId);
+  cache.set(threadId, {
+    title: thread.title ?? previous?.title ?? null,
+    workingDirectory: thread.environment?.path ?? previous?.workingDirectory ?? null,
+    threadUpdatedAt: thread.updatedAt ?? previous?.threadUpdatedAt ?? null,
+    contextUsage: previous?.contextUsage ?? null,
+  });
+  void readContextUsage(bb, threadId).then((contextUsage) => {
+    const current = cache.get(threadId);
+    if (current) cache.set(threadId, { ...current, contextUsage });
+  });
+}
+
+function cachedSessionView(cache: ThreadInfoCache, session: ReturnType<typeof readSession> extends infer T ? NonNullable<T> : never) {
+  const cached = cache.get(session.threadId);
+  return {
+    ...session,
+    title: cached?.title ?? null,
+    workingDirectory: cached?.workingDirectory ?? null,
+    threadUpdatedAt: cached?.threadUpdatedAt ?? null,
+    contextUsage: cached?.contextUsage ?? null,
+  };
 }
 
 // Context gauge (plan §2.8): bb reports usage via `threads.timeline({summaryOnly:"true"})`, which
