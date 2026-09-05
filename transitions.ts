@@ -190,7 +190,7 @@ export type SuggestedNext = {
   // the button launches. Null when the label has no defined transition (e.g. a terminal phase).
   skillId: SkillId | null;
   buttonText: string | null;
-  // True when the agent's own extraction found a next step, but it differs from `skillId` — shows
+  // True when the agent's own extraction found a next step, but it differs from `skillId`; shows
   // "Agent suggested X; workflow expects Y" instead of the single-hint copy.
   mismatch: boolean;
   extractedSkillId: string | null;
@@ -198,7 +198,7 @@ export type SuggestedNext = {
 
 // Suggested-next affordance (plan §2.9 / phase 8 review): visible whenever the agent's own
 // extraction did not find a next step, or found one that disagrees with what this workflow type
-// defines as the canonical next skill for this label — uniformly, whether or not the label is a
+// defines as the canonical next skill for this label, uniformly, whether or not the label is a
 // human gate (a human-gated label never auto-advances, but still gets the same one-click launch
 // when its own extraction is missing or wrong). Comparison against `transition.next` is a raw
 // string equality on the same two fields advanceSession's auto-advance gate already compares, so

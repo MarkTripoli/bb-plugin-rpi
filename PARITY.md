@@ -1,14 +1,14 @@
-# PARITY.md — HumanLayer vs bb-plugin-humanlayer
+# PARITY.md - HumanLayer vs bb-plugin-humanlayer
 
 Ground truth is `docs/research/01-research-humanlayer-system.md`. The plan is
 `docs/research/04-plan-merged-humanlayer-bb-plugin.md`. This ledger is
 verified against the code in this repository as of phase 8, not aspirational.
 `status` is one of:
 
-- **full** — same behavior, same rules.
-- **partial** — shipped, with a named gap.
-- **omitted** — deliberately not shipped in v1, with a reason.
-- **N/A** — bb owns this surface, or HL's version has no local equivalent.
+- **full** - same behavior, same rules.
+- **partial** - shipped, with a named gap.
+- **omitted** - deliberately not shipped in v1, with a reason.
+- **N/A** - bb owns this surface, or HL's version has no local equivalent.
 
 ## Tasks
 
@@ -71,7 +71,7 @@ verified against the code in this repository as of phase 8, not aspirational.
 | Block-anchored comments, re-anchoring across versions, three `hl_*` tools | Same, exact-match then `>=0.8` token-ratio fuzzy fallback | partial (superset) | `comments.ts` | Fable §9 specified no fuzzy matching; the phase 4 acceptance criteria required a fallback, so this is a deliberate superset, not a gap. |
 | Send-to-session (`send` / `send-and-resolve`) | Same two modes, request-id dedupe | full | `comments.ts` `sendCommentsToSession` | |
 | Truncated-id prefix matching | `resolveTruncatedId` | full | `comments.ts` | |
-| Patch-anchored diff comments; Changes ALL / TO REVIEW tracking | Not shipped | omitted (plan §5) | — | bb's environment diff panel is reused as-is and has no plugin comment/annotation slot; needs an upstream SDK extension. |
+| Patch-anchored diff comments; Changes ALL / TO REVIEW tracking | Not shipped | omitted (plan §5) | - | bb's environment diff panel is reused as-is and has no plugin comment/annotation slot; needs an upstream SDK extension. |
 
 ## Context management
 
@@ -81,7 +81,7 @@ verified against the code in this repository as of phase 8, not aspirational.
 | Context gauge `usedTokens/contextWindow (pct)` in the footer | `contextUsage` on every `SessionView`, from `bb.sdk.threads.timeline({summaryOnly:"true"}).contextWindowUsage`; shown on session rows and the thread header | full | `server.ts` `readContextUsage`/`sessionView`, `ui/humanlayer.tsx` `ContextGauge` | Percent, not the exact `122,016/353,400` token pair, is the default display; both numbers are in the tooltip. Null (shown as no gauge) when bb has not reported usage yet, not a fabricated 0%. |
 | ≥70% warning banner offering "Iterate in a fresh session" | Same threshold, banner in the thread header wired to the existing `iterateInFreshSession` RPC, dismiss stored per-thread in `task_ui_state.contextWarningDismissed` | full | `ui/humanlayer.tsx` `HumanLayerThreadHeaderAction` | |
 | `structured_summary` + `next_step_suggestions` | `summaryHistory` (last 600 chars per idle) + deterministic `next_step_json` extraction; no separate `hl_phase_finish` tool | full (decision §2.3) | `advance.ts`, `extraction.ts` | Astra's AI-extraction/second-reporting-channel idea was judged unnecessary duplication; deterministic parsing already yields both. |
-| Context shards (cross-session AI-extracted facts, evidence, per-user enable/disable/dismiss) | Not shipped | omitted (plan §5) | — | Needs an LLM extraction pass and a durable-facts store; bb's Memory plugin already covers the user-preference half. |
+| Context shards (cross-session AI-extracted facts, evidence, per-user enable/disable/dismiss) | Not shipped | omitted (plan §5) | - | Needs an LLM extraction pass and a durable-facts store; bb's Memory plugin already covers the user-preference half. |
 | Handoff artifacts by convention (`handoff.md`) | Same convention, no special-casing needed (plain artifact) | full | `skills/rpi-*` | |
 | Subagent delegation for research/implementation | 7 agent skills spawned as `--parent-self` child threads | full | `sessions.ts` `registerSessionRuntime`, `child_threads` table | |
 
@@ -111,7 +111,7 @@ verified against the code in this repository as of phase 8, not aspirational.
 | Sound: `/sounds/notification.mp3`, volume default 0.2, gated by a sounds-enabled setting | Same, own synthesized chime asset | full | `server.ts` sound route, `assets/notification.mp3` | Chime is generated for this project, not HumanLayer's asset (licensing). |
 | Autoplay without a prior gesture | Probed on first click/keydown; `NotAllowedError` shows a one-time hint, Test Sound always works | full | `ui/humanlayer.tsx` `HumanLayerNotificationBridge` | Per spike hard rule #6. |
 | Batch Queue Delivery | Setting exists (`preferBatchQueueDelivery`, default off) but not wired to `queuedMessages.setGroupBoundary` | omitted (plan §2.9 / §5) | `server.ts` settings | No plugin-level batch policy hook exists in the SDK surfaces inspected; shipping it unverified against a race would violate the plan's own gate ("remove if the phase 8 test shows loss/duplication"). The setting is kept, inert, so a later phase can wire it without a schema change. |
-| Slack mute per task | Not shipped | N/A | — | No Slack integration in bb; not a local concept. |
+| Slack mute per task | Not shipped | N/A | - | No Slack integration in bb; not a local concept. |
 
 ## Settings (68 HL keys)
 
@@ -121,14 +121,14 @@ verified against the code in this repository as of phase 8, not aspirational.
 | Defaults for new tasks | `defaultDirectory`, `launcherV3PermissionsMode`, `launcherV3WorkflowType`, `launcherV3AutoAdvance` | full (`defaultWorktreeTiming`, `defaultPermissionMode`, `defaultWorkflowType`, `autoAdvanceDefault`) | `server.ts` settings |
 | Model/provider defaults | `defaultAgent`, `defaultModel`, `defaultClaudeCodeModel/Effort/FastMode`, `defaultCodelayerProvider` + per-provider model/effort | full, generalized: `prefs.defaults` (provider/model/reasoning/researchModel/serviceTier) + `prefs.workflowDefaults` per workflow type | `contract.ts`, `ui/humanlayer.tsx` `HumanLayerDefaultsSettings` |
 | Phase/UI toggles | `showTaskPhaseLabels`, `workflowGraphEnabled`, `scratchPadEnabled`, `showPhaseTips`, `showIterateConfirmation`, `showBypassPermissionsNudge`, `showFastModeWarning`, `showSessionUiExplainer`, `confirmBeforeInterruptingSubAgents` | full (all present as bb settings) | `server.ts` settings |
-| Queueing | `preferBatchQueueDelivery` | partial — setting exists, unwired (see Notifications table) | `server.ts` |
-| Delete confirm | `confirmBeforeDeletingArtifacts` | N/A — not implemented as a setting; delete/restore is already reversible via `.trash/` and the Artifacts tab | — |
+| Queueing | `preferBatchQueueDelivery` | partial - setting exists, unwired (see Notifications table) | `server.ts` |
+| Delete confirm | `confirmBeforeDeletingArtifacts` | N/A - not implemented as a setting; delete/restore is already reversible via `.trash/` and the Artifacts tab | - |
 | Research subagents | `haikuResearchSubagentsEnabled` | full, as `researchModel` (a model id, not a boolean) | `contract.ts` `prefsDefaultsSchema` |
-| `experimentalSubagentsEnabled` | Not applicable: all 7 agent skills ship, none gated behind an experiment flag | N/A | — |
+| `experimentalSubagentsEnabled` | Not applicable: all 7 agent skills ship, none gated behind an experiment flag | N/A | - |
 | Diff/editor/theme/zoom | `diffStyle`, `diffStyleFullscreen`, `zoomLevel`, `theme`, `streamingRenderingEnabled`, `defaultEditor` | mostly N/A (bb owns diff viewer, theme, zoom, streaming rendering) / partial (`diffStyle`, `defaultEditor` kept as settings for parity but bb's own diff panel and file-open behavior are authoritative) | `server.ts` settings |
-| Cost | `showSessionCosts` | N/A | — | bb exposes no pricing; `$cost` is omitted everywhere (plan §2.8). |
-| Keybindings | `archiveKeybinding`, `sendMessageKeybinding` | partial — `⌘E` is hardcoded (not user-remappable); `⌘⏎` send is bb's own composer, not this plugin's concern | `ui/humanlayer.tsx` |
-| Multiplayer/thinking-verbs/nudges | `multiplayerPromptingLastDuration`, `thinkingVerbsDisabled`, `bypassNudgeSilenced`, `fastModeWarningAcknowledged` | N/A | — | Single-user; no multiplayer prompting, no bypass/fast-mode concepts distinct from bb's own permission-mode picker. |
+| Cost | `showSessionCosts` | N/A | - | bb exposes no pricing; `$cost` is omitted everywhere (plan §2.8). |
+| Keybindings | `archiveKeybinding`, `sendMessageKeybinding` | partial - `⌘E` is hardcoded (not user-remappable); `⌘⏎` send is bb's own composer, not this plugin's concern | `ui/humanlayer.tsx` |
+| Multiplayer/thinking-verbs/nudges | `multiplayerPromptingLastDuration`, `thinkingVerbsDisabled`, `bypassNudgeSilenced`, `fastModeWarningAcknowledged` | N/A | - | Single-user; no multiplayer prompting, no bypass/fast-mode concepts distinct from bb's own permission-mode picker. |
 | Per-task local state | scratch pad text, selected artifact, selected sidebar tab, terminal height/open, last working dir | partial | `task_ui_state` (scratch, dismissed tips, context-warning dismissal), `ui/humanlayer.tsx` | Terminal height/open and "last working dir" are bb's own terminal/composer state, not this plugin's to track. |
 
 ## Hotkeys
@@ -138,15 +138,15 @@ verified against the code in this repository as of phase 8, not aspirational.
 | `⌘K` palette | bb's own `⌘⇧P` quick palette, with 3 HumanLayer rows | N/A (bb owns the palette) / full (rows) | `app.tsx` `commandPaletteAction` | |
 | `T` create task | `T`, scoped to the HumanLayer panel | full | `ui/humanlayer.tsx` `HumanLayerPanel` | |
 | `g t` tasks | `g` then `t` chord, 800ms window | full | `ui/humanlayer.tsx` `HumanLayerPanel` | |
-| `⌘,` settings | bb's own settings shortcut | N/A | — | |
-| `⌘B` sidebar, `S` toggle sidebar | bb's own sidebar | N/A | — | |
+| `⌘,` settings | bb's own settings shortcut | N/A | - | |
+| `⌘B` sidebar, `S` toggle sidebar | bb's own sidebar | N/A | - | |
 | `⌘E` archive | `⌘E`, confirms first | full | `ui/humanlayer.tsx` `HumanLayerThreadHeaderAction` | |
-| `⌘⏎` send | bb's own composer | N/A | — | |
+| `⌘⏎` send | bb's own composer | N/A | - | |
 | `⌘⇧J` jump to notified session | `⌘⇧U` (configurable) | partial (renamed, reason above) | `ui/humanlayer.tsx`, `notify.ts` | |
-| `⌘J` terminal, `⌘⇧O` open dir in editor | bb's own terminal/file-open | N/A | — | |
-| `h/j/k/l`, `⇧H/⇧L` pane focus | bb's own pane navigation | N/A | — | |
-| `⏎` focus input, `esc` blur | bb's own composer | N/A | — | |
-| `⇧?` hotkeys guide | Not shipped | omitted | — | No dedicated help overlay; hotkeys are documented in `README.md`. |
+| `⌘J` terminal, `⌘⇧O` open dir in editor | bb's own terminal/file-open | N/A | - | |
+| `h/j/k/l`, `⇧H/⇧L` pane focus | bb's own pane navigation | N/A | - | |
+| `⏎` focus input, `esc` blur | bb's own composer | N/A | - | |
+| `⇧?` hotkeys guide | Not shipped | omitted | - | No dedicated help overlay; hotkeys are documented in `README.md`. |
 
 ## UI surfaces
 
@@ -156,7 +156,7 @@ verified against the code in this repository as of phase 8, not aspirational.
 | New task composer (permissions, auto-advance, host, project/dir, worktree timing, workflow type, workflow strip) | Same fields | full | `ui/humanlayer.tsx` `NewTaskPage` | |
 | Task detail tabs: Artifacts, Sessions, Workspace, Scratch, Auto-advance, Tips | Same 6, plus **Minimap** | full (superset) | `ui/humanlayer.tsx` `TaskDetailPage` | |
 | Thread panel tabs: Artifacts, Workspace, Scratch pad, Tips, Minimap | All 5 | full | `app.tsx` `threadPanelAction` registrations | |
-| CHANGES / DIFFS tabs | Not shipped as plugin tabs | omitted (plan §5, Fable §13) | — | bb's environment diff panel is reused as-is (link out); no plugin comment/annotation slot exists to replicate the collaborative diff-comment surface. |
+| CHANGES / DIFFS tabs | Not shipped as plugin tabs | omitted (plan §5, Fable §13) | - | bb's environment diff panel is reused as-is (link out); no plugin comment/annotation slot exists to replicate the collaborative diff-comment surface. |
 | Thread header: phase pill, HL status, proceed/fork/auto-advance controls | Phase pill, status, **context gauge**, context-warning banner, Proceed/Iterate/Fork/Interrupt | full (superset) | `ui/humanlayer.tsx` `HumanLayerThreadHeaderAction` | |
 | `::hl-artifact{...}` permalinks | Same | full | `app.tsx`, `ui/humanlayer.tsx` | |
 | Settings section | Notifications + **Defaults** (new in phase 8) | full | `app.tsx` | |

@@ -91,7 +91,7 @@ toggles, confirm-before-interrupting-subagents, batch queue delivery
 ## Notifications
 
 A toast (8s) and/or a chime fires when a session becomes `ready_for_input`,
-gets a pending approval, or receives an inbound artifact comment — unless
+gets a pending approval, or receives an inbound artifact comment - unless
 you're already viewing that session (sound only), auto-advance is about to
 launch the next phase for that transition (no toast, still launches), or the
 notification already fired for that exact event. `⌘⇧U` jumps to the oldest
@@ -107,7 +107,7 @@ dedupe/suppression state.
 | `g` then `t` | Go to the tasks list (same scoping as `T`) |
 | `⌘E` | Archive the current task (confirms first) |
 | `⌘⇧U` | Jump to the oldest outstanding notified session (configurable, works anywhere in bb) |
-| `⌘⇧P` | bb's command palette — lists "HumanLayer: Open Artifacts / Open Scratch pad / Archive current task" |
+| `⌘⇧P` | bb's command palette - lists "HumanLayer: Open Artifacts / Open Scratch pad / Archive current task" |
 
 `T` and `g t` are scoped to the HumanLayer panel's own root DOM element (a
 keydown listener on that element, not `document`), so they only fire while
@@ -124,7 +124,7 @@ archive action both ask for confirmation before archiving.
 
 This repository's code and skills (`skills/rpi-*`) are original rewrites of
 HumanLayer's workflow shape (step order, "read fully", "do not leak intent",
-final-answer template rules) in this project's own words — see
+final-answer template rules) in this project's own words - see
 `docs/research/01-research-humanlayer-system.md` and the plan docs for the
 research this was built from. HumanLayer's own skill/agent/hook source, kept
 only for local reference during development, lives outside this repository
@@ -133,7 +133,7 @@ entirely (a sibling checkout, default path
 see `tests/skills.test.ts`). At HEAD, this repository does not contain that
 material: it is **All Rights Reserved**, is never copied into `skills/`, and
 `package.json`'s `files` allowlist excludes `docs/` (along with `tests/`)
-from every published package regardless — verify with `npm run check:pack`
+from every published package regardless - verify with `npm run check:pack`
 after changes to either. **Release step:** an earlier commit in this
 repository's history contained `docs/hl-reference/` before it was moved out;
 before any public push, a maintainer must purge that material from git
@@ -144,13 +144,13 @@ synthesized for this project, not HumanLayer's asset.
 
 ## Troubleshooting
 
-**"Notification sound is blocked"** — browsers require a user gesture before
+**"Notification sound is blocked"** - browsers require a user gesture before
 `new Audio().play()` succeeds. The bridge tries to unlock on the first click
 or keypress; until then it shows this toast. Settings → Notifications → **Test
 sound** always works (it's triggered by that same click) and clears the
 warning once playback succeeds.
 
-**Worktree provisioning is stuck / the Workspace tab shows an error** — bb
+**Worktree provisioning is stuck / the Workspace tab shows an error** - bb
 creates a worktree environment only as a side effect of the first thread
 spawned into it (there is no standalone `environments.create`), so a failed
 provisioning surfaces as a `failed` session with the hook's log in the
@@ -158,25 +158,25 @@ Workspace tab, not a separate retry step. Use **Rerun workspace setup** on the
 Workspace tab, which spawns a fresh `rpi-setup-worktree` session into the same
 environment.
 
-**A launch attempt is stuck "pending" or shows "uncertain"** — the task
+**A launch attempt is stuck "pending" or shows "uncertain"** - the task
 refuses to launch again while a `pending`/`uncertain` attempt is unresolved
 (bb has no idempotency key for `threads.spawn`, so elapsed time alone can't
 prove whether a thread was created). Resolve it from the Sessions tab's
 Recover-launch row:
-- **Adopt** — pick a matching thread bb already created for this task after
+- **Adopt** - pick a matching thread bb already created for this task after
   the attempt started (candidates come from `threads.list` filtered to
   `originPluginId`/`parentThreadId`).
-- **Retry** — start a fresh attempt with the same command.
-- **Dismiss** — mark it `failed` without adopting or retrying (a failed
+- **Retry** - start a fresh attempt with the same command.
+- **Dismiss** - mark it `failed` without adopting or retrying (a failed
   attempt without a retry stays visible so a recovery toast's "Retry it from
   Launch Attempts" instruction stays actionable).
 
-**A skill's Proceed button is disabled** — next-step extraction is
+**A skill's Proceed button is disabled** - next-step extraction is
 deterministic (Fable §7): the final-answer block must be an exact
 `/rpi-<skill> [args]` (or legacy `/rpi:<skill>`) fenced `text` block. A
 freeform reply, a missing/renamed artifact reference, or a template the
 model altered will not parse; the session still finished, it just has no
-machine-readable next step (`no_next_step`) — start the next phase manually
+machine-readable next step (`no_next_step`) - start the next phase manually
 with `bb humanlayer launch-skill`.
 
 ## Development

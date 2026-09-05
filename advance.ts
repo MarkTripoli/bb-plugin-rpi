@@ -80,8 +80,8 @@ export async function launchSkill(
   // this call's read-check-then-insert of the task's launch_attempts state from interleaving with
   // another in-flight call for the same task (retry/adopt/proceed already run under this lock;
   // the plain "launch a skill" entry point did not). launchPhase's own activeLaunchAttempt check
-  // still does the actual rejection — "disable while a launch_attempt for that task is pending"
-  // (item 5's Suggested-next button) — whenever a prior attempt for this task has not yet
+  // still does the actual rejection: "disable while a launch_attempt for that task is pending"
+  // (item 5's Suggested-next button), whenever a prior attempt for this task has not yet
   // resolved to spawned/failed.
   return withTaskLock(taskId, async () => {
     const task = taskRecord(db, taskId);

@@ -1,7 +1,7 @@
 // Asserts the published npm tarball actually ships dist/** (the built plugin) and never leaks
 // docs/ or tests/ (source-only / reference-only material, docs/hl-reference/ in particular is
 // HumanLayer's own All-Rights-Reserved reference material and must never be published or
-// committed — see LICENSE, README.md "Licensing", and AGENTS.md item 6).
+// committed; see LICENSE, README.md "Licensing", and AGENTS.md item 6).
 import { execFileSync } from "node:child_process";
 
 type PackEntry = { path: string };
