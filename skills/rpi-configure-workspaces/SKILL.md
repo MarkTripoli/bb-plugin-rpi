@@ -1,29 +1,284 @@
 ---
 name: rpi-configure-workspaces
-description: Only use when the user explicitly invokes /rpi-configure-workspaces. Configure task workspaces.
+description: Only use when the user explicitly invokes /rpi-configure-workspaces. Propose, write, and validate HumanLayer workspace config files for bb-managed task environments.
 ---
 
 # Configure Workspaces
 
-## Steps
+## Purpose
 
-0. Call hl_task_context and read its output before any file read. Use the returned task directory, task slug, artifact list, and model hints.
-1. Read task.md or ticket.md from the task directory, plus every explicit @-mentioned file in full.
-2. If an artifact number is needed, call hl_next_artifact_number and use the returned number in NN-workspace-config-short-slug.md.
-3. Read references/workspace_template.md and draft the artifact in that shape.
-4. Write or update the artifact under .humanlayer/tasks/<slug>/.
-5. Call hl_artifact_save with the artifact file name immediately after writing. Save the returned ::hl-artifact{...} line for your final answer.
-6. Read references/workspace_final_answer.md and answer using that structure exactly. The final answer must end with one fenced text block containing /rpi-setup-worktree.
+This skill reads the selected repository, proposes `.humanlayer/workspace.json` and optional `.humanlayer/workspace.local.json`, writes the approved files, and validates that the config can drive task workspace setup.
 
-## Rules
+The files control how RPI tasks request workspace behavior:
 
-- Do not open unrelated task artifacts. Use only task.md, ticket.md, @ files, and comments the user asked you to inspect.
-- For workspace.json, keep the documented schema. In a worktree thread, perform copyGlobs and setupCommand and record the exact evidence. Do not run git worktree yourself.
-- For child research, spawn codebase-locator, codebase-analyzer, codebase-pattern-finder, and web-search-researcher as useful. Use:
+- `.humanlayer/workspace.json` is shared repository config and can be committed.
+- `.humanlayer/workspace.local.json` is machine-specific override data and must stay out of git.
 
-  bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <cheap research model from hl_task_context prefs> --prompt "/rpi-agent-<role> <short assignment>"
-  bb thread wait <id>
-  bb thread output <id>
+bb owns actual managed-worktree creation. This config still records source refs, setup commands, file-copy requests, and multi-repo intent so `/rpi-setup-worktree` can finish setup inside the bb environment.
 
-- Spawn all independent child threads first, then wait for each one and summarize only their results.
-- Treat tool or CLI errors as blockers, not as permission to write untracked side files.
+Use plain, brief language when talking to the user.
+
+## Steps to Follow
+
+### Step 0: Select the repository
+
+Call `hl_task_context` first when this skill runs inside a task session. If no task context is available, continue as a repository configuration session and say that no task artifact will be saved.
+
+Check the current location:
+
+```bash
+pwd
+printf '%s\n' "$HOME"
+git rev-parse --show-toplevel
+```
+
+If `git rev-parse` succeeds, use that repository root and state it in one sentence.
+
+If the current directory is home or is not inside a git repository, ask exactly one question:
+
+```text
+Which repository should I configure? Send its path.
+```
+
+After the user gives a path, confirm it with:
+
+```bash
+git -C <path> rev-parse --show-toplevel
+```
+
+Use the returned repository root for every later read and command.
+
+### Step 1: Read the project
+
+From the selected repository root, read any current workspace config:
+
+```text
+.humanlayer/workspace.json
+.humanlayer/workspace.local.json
+```
+
+Use existing config as the starting point. Then inspect only the signals needed to infer workspace setup:
+
+```text
+.claude/settings.json
+package.json
+Makefile
+README.md
+```
+
+Also inspect sibling repo names and remotes:
+
+```bash
+ls -la ../
+git remote -v
+```
+
+If the task context named `task.md`, `ticket.md`, or explicit `@file` artifacts, read those only when they change the workspace proposal. Do not browse unrelated artifacts.
+
+### Step 2: Build the proposal
+
+Infer a complete proposal from the project and the user's request.
+
+Use these defaults unless the repository provides better evidence:
+
+- Single repo unless sibling repos are clearly part of normal development.
+- `localPath: "."` and `primary: true` for one repo.
+- Exactly one primary repo in a multi-repo config.
+- The repo with shared agent settings, MCP-style config, or team policy is usually primary.
+- `~/.humanlayer/workspaces/{{ TASKSLUG }}/{{ REPOBASENAME }}` as `pathTemplate`.
+- `{{ TASKSLUG }}` as `branchTemplate`.
+- `origin/main` as `sourceRef` when that remote branch exists; use `HEAD` when no reliable branch is known.
+- Setup command inferred from package-manager files, Makefile targets, or README instructions.
+- `copyGlobs` for local files that usually matter in a new worktree: env files, machine-only tool settings, and `.humanlayer/workspace.local.json`.
+- Machine-specific paths, secrets, and local-only commands go in `.humanlayer/workspace.local.json`.
+
+For multi-repo workspaces:
+
+- Sessions start in the primary repo's bb environment by default.
+- Instruction and skill files may exist in several repos, but the launch directory controls repo-local settings.
+- Add related sibling repos with paths such as `../api` or `../web`.
+- Mark exactly one repo with `primary: true` when there is a clear default.
+
+The first response after inspection must show the proposed shared config in a fenced `json` block. If local overrides are useful, show a second fenced `json` block for `.humanlayer/workspace.local.json`.
+
+End that response with:
+
+```text
+Tell me what to change, or approve this config.
+```
+
+If the user requests changes, print the full updated JSON again. Do not write files before approval.
+
+### Step 3: Validate the proposal
+
+Validate before asking for final approval.
+
+For a single repository, the shared config should follow this shape:
+
+```json
+{
+  "repos": [
+    {
+      "localPath": ".",
+      "description": "Selected repository",
+      "primary": true
+    }
+  ],
+  "disabled": false,
+  "sourceRef": "origin/main",
+  "branchTemplate": "{{ TASKSLUG }}",
+  "pathTemplate": "~/.humanlayer/workspaces/{{ TASKSLUG }}/{{ REPOBASENAME }}",
+  "copyGlobs": [
+    ".humanlayer/workspace.local.json",
+    ".env.local",
+    ".claude/settings.local.json",
+    ".env",
+    ".env.development.local"
+  ],
+  "setupCommand": ""
+}
+```
+
+For a coordinated multi-repo workspace, use the same root fields and list every repo:
+
+```json
+{
+  "repos": [
+    {
+      "localPath": ".",
+      "description": "Coordination repository",
+      "primary": true
+    },
+    {
+      "localPath": "../api",
+      "description": "API service",
+      "setupCommand": "npm install"
+    },
+    {
+      "localPath": "../web",
+      "description": "Web app",
+      "sourceRef": "origin/main"
+    }
+  ],
+  "disabled": false,
+  "sourceRef": "origin/main",
+  "branchTemplate": "{{ TASKSLUG }}",
+  "pathTemplate": "~/.humanlayer/workspaces/{{ TASKSLUG }}/{{ REPOBASENAME }}",
+  "copyGlobs": [
+    ".humanlayer/workspace.local.json",
+    ".env.local",
+    ".env"
+  ],
+  "setupCommand": "npm install"
+}
+```
+
+Config rules:
+
+- `localPath: "."` means the repository being configured.
+- Other `localPath` values are resolved relative to that repository.
+- Only `{{ TASKSLUG }}` and `{{ REPOBASENAME }}` are valid template variables.
+- `copyGlobs` merges additively with de-duplication. Local and per-repo lists extend inherited lists; they do not replace them.
+- Repo entries may override `sourceRef`, `setupCommand`, `copyGlobs`, and `primary`.
+- `branchTemplate` stays at the root level.
+- `.humanlayer/workspace.local.json` may use `{ "$patch": "delete" }` on a repo entry to remove it locally. Do not put that patch marker in shared config.
+- `disabled: true` at the root disables workspace setup.
+- In bb, `sourceRef` maps to task launch base branch only when it is `HEAD`, absent, `origin/<branch>`, or a named branch. Treat raw SHAs or unsupported refs as invalid for automatic launch.
+
+Validate with commands:
+
+```bash
+git remote -v
+ls -la <localPath>
+git -C <localPath> rev-parse --git-dir
+git -C <localPath> remote -v
+```
+
+For each repo, confirm the directory exists and is a git repo. If `sourceRef` names a remote, verify that remote exists. If a setup command is proposed, state what it will do in one sentence.
+
+### Step 4: Write the approved config
+
+After approval, write `.humanlayer/workspace.json` with the approved shared content.
+
+If local overrides are part of the proposal, write `.humanlayer/workspace.local.json` too and ensure it is ignored by git:
+
+```text
+.humanlayer/workspace.local.json
+```
+
+Read `.gitignore`. Add the ignore entry only when missing.
+
+Repository config files are normal repo files. Do not call `hl_artifact_save` for them unless you also create a task artifact receipt in `.humanlayer/tasks/<slug>/`.
+
+### Step 5: Confirm and summarize
+
+Write a short confirmation covering:
+
+- Files written.
+- Repo count.
+- Primary repo.
+- Path template.
+- Branch template.
+- Source ref.
+- Setup command and whether it runs.
+- Files requested for copy.
+
+Explain the next step in bb terms:
+
+```text
+The workspace configuration is ready.
+
+When a task requests a workspace, bb creates or reuses the task environment. Then /rpi-setup-worktree verifies the environment, copies configured files, runs setup commands, and starts implementation in the primary repo.
+```
+
+For team repositories, remind the user to commit `.humanlayer/workspace.json` and not `.humanlayer/workspace.local.json`.
+
+If you write a task receipt, call `hl_next_artifact_number`, write it from `references/workspace_template.md`, call `hl_artifact_save`, and include the returned directive in the final answer. Then read `references/workspace_final_answer.md` and use it exactly.
+
+## Key Concepts for This Skill
+
+### Template variables
+
+Only two variables are supported:
+
+- `{{ TASKSLUG }}`: the task slug, such as `eng-123-small-fix`.
+- `{{ REPOBASENAME }}`: the basename of each resolved repository path, such as `api` or `web`.
+
+Reject or ask about any other template variable.
+
+### Repo precedence rules
+
+Effective config is:
+
+```text
+defaults -> workspace.json -> workspace.local.json
+```
+
+For `repos[]`, entries with the same `localPath` merge, and later fields win. A new `localPath` adds a repo. A local override entry with `$patch: "delete"` removes the matching repo for this machine.
+
+### copyGlobs semantics
+
+Every `copyGlobs` list extends the inherited list. Build the effective list in order and drop duplicates while preserving the first occurrence.
+
+Root lists apply to every repo. Repo-level lists add repo-specific files. There is no removal syntax for individual globs in v1.
+
+### Primary repo
+
+In a multi-repo workspace, one repo should usually be primary. That repo is the default launch directory for task sessions. A single-repo config is implicitly primary even if the field is omitted.
+
+Choose the repo that should own local agent settings and day-to-day implementation commands. If no clear primary exists, ask the user rather than guessing.
+
+### Coordination repos
+
+A coordination repo may hold planning files while implementation lives in sibling repos. In that case, `localPath: "."` still means the coordination repo. Mark the implementation repo as primary when it should be the default session location.
+
+### disabled field
+
+`disabled: true` disables workspace setup. Use it when a project should always run in the selected checkout. A local override can set `disabled: false` to re-enable setup on one machine without changing shared config.
+
+## Reference Files
+
+Locate this skill through the skills tier listing. Read reference files relative to this skill directory:
+
+- `references/workspace_template.md` for the receipt shape.
+- `references/workspace_final_answer.md` for the final response.

@@ -133,6 +133,21 @@ Removed humanlayer.
 | rpi-review-artifact-comments | yes | fetch comments, ask before resolving, one comment at a time |
 | rpi-show-me | yes | visual artifact guidance and bb artifact links |
 
+## Deep Rewrite
+
+| Skill | Original bytes | New bytes | Sections mirrored | Rules preserved | Intentionally dropped |
+|---|---:|---:|---|---|---|
+| rpi-implement-plan | 4627 | 6007 | yes: context, phase loop, implementer, review, checks, human gate, commit, repeat, final template | 31 / 44 | none; child execution rewritten to bb thread spawn/wait/output |
+| rpi-implement-outline | 5356 | 6422 | yes: startup, discovery, precedence, progress markers, child implementer, report, human gate, commit, repeat | 34 / 51 | none; agent-tool wording replaced with bb child-thread commands |
+| rpi-iterate-implementation | 4109 | 5333 | yes: full input read, current-state review, verify feedback, clarify, fix, final template | 26 / 41 | none; cloud permalink wording replaced by artifact directives |
+| rpi-agent-implementer | 3336 | 3816 | yes: charter, startup, philosophy, mismatch report, verification, stuck handling, resume, final output | 21 / 30 | none; deliverable is final thread output |
+| rpi-agent-outline-implementer | 3368 | 3524 | yes: charter, discovery, precedence, implementation rules, progress tracking, mismatch, verification, final output | 19 / 21 | none; deliverable is final thread output |
+| rpi-agent-implementation-reviewer | 3271 | 3867 | yes: inputs, locate source artifact, extract planned work, analyze diff, categorize, guidelines, output | 13 / 23 | none; git diff default replaced with bb environment diff when available |
+| rpi-describe-pr | 3413 | 4341 | yes: template read, PR discovery, context gathering, body writing, save/publish, final report | 15 / 27 | none; provider-specific PR defaults replaced with bb environment PR facilities |
+| rpi-ci-commit | 1467 | 1906 | yes: inspect changes, plan commits, execute with explicit staging, remember exclusions | 9 / 14 | none; task receipt added for bb artifact handoff |
+| rpi-setup-worktree | 6297 | 6123 | yes: disabled branch, already-worktree branch, task info, default config, per-repo setup loop, success-only final | 31 / 43 | shell worktree creation; bb launcher owns environment creation |
+| rpi-configure-workspaces | 10416 | 10193 | yes: purpose, select repo, read project, proposal, validation, approved writes, summary, concepts | 35 / 54 | none; bb environment limits called out instead of hidden worktree assumptions |
+
 ## Open Items
 
 - Child-thread artifact tools are not selected for `/rpi-agent-*` threads because those threads carry no session row in this phase. The child skills therefore read explicit files and report structured markdown; task-scoped mutation still belongs to parent task sessions.
