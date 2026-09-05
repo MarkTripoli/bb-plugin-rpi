@@ -164,6 +164,20 @@ test("older reconciliation snapshots cannot regress a newer status", () => {
   db.close();
 });
 
+test("hl_status_at only advances when derived status actually changes", () => {
+  const db = makeDb();
+  const mirror = new Map();
+  seedSession(db);
+  applyStatusDerivation(db, mirror, thread({ status: "idle", runtime: { displayStatus: "idle" } }), [], 1);
+  db.prepare("UPDATE sessions SET hl_status_at = 12345 WHERE thread_id = 'thr_1'").run();
+  // Same derived status (ready_for_input) on a later sequence: last_reconcile_seq advances, hl_status_at must not.
+  applyStatusDerivation(db, mirror, thread({ status: "idle", runtime: { displayStatus: "idle" } }), [], 2);
+  const second = db.prepare("SELECT hl_status_at AS hlStatusAt, last_reconcile_seq AS seq FROM sessions WHERE thread_id = ?").get("thr_1") as { hlStatusAt: number; seq: number };
+  assert.equal(second.seq, 2);
+  assert.equal(second.hlStatusAt, 12345);
+  db.close();
+});
+
 test("runtime reconciliation sequence starts after persisted rows on reload", async () => {
   const db = makeDb();
   seedSession(db);

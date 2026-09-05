@@ -510,10 +510,11 @@ export function applyStatusDerivation(
       db,
       `
       UPDATE sessions
-      SET hl_status = ?, hl_status_at = ?, blocked_reason = ?, last_reconcile_seq = ?, updated_at = ?
+      SET hl_status = ?, hl_status_at = CASE WHEN ? THEN ? ELSE hl_status_at END, blocked_reason = ?, last_reconcile_seq = ?, updated_at = ?
       WHERE thread_id = ?
       `,
       derived.hlStatus,
+      changed ? 1 : 0,
       timestamp,
       derived.blockedReason,
       sequence ?? row.lastReconcileSeq,
