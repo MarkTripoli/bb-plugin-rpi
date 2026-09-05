@@ -1,19 +1,24 @@
-# Implementation Notes
+# Outline Implementation Receipt
 
-## Source Artifact
-- file:
-- version:
+## Source
+- task:
+- structure outline:
+- companion artifacts:
+- phase range:
 
 ## Child Threads
-- implementer:
+- outline implementer:
 - reviewer:
 
-## Changes
+## Completed Work
 -
 
-## Verification
-- command:
-- result:
+## Validation
+- automated:
+- manual:
 
-## Human Gate
-State whether the code is ready for commit and proceed approval.
+## Progress Markers
+List outline checkboxes or phase markers updated, with artifact save status.
+
+## Commit Handoff
+State whether this is ready for `/rpi-ci-commit`, or name the blocker.
