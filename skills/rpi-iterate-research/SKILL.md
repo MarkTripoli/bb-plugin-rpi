@@ -113,7 +113,19 @@ Important: do not read `task.md`, `ticket.md`, research-questions files, design 
    references/research_final_answer.md
    ```
 
-   Respond using that template only. Include the artifact directive. The last lines must be exactly one fenced `text` block copied from the template. For `outline_only`, use `/rpi-create-structure-outline`; for `rpi`, use `/rpi-create-design-discussion`.
+   Respond using that template only. Include the artifact directive. The last lines must be exactly one fenced `text` block copied from the template. Never repeat the current command `/rpi-iterate-research` as the next step.
+
+   For `outline_only`, the final block is:
+
+   ```text
+   /rpi-create-structure-outline
+   ```
+
+   For `rpi`, the final block is:
+
+   ```text
+   /rpi-create-design-discussion
+   ```
 
 ## Research Guidelines
 
