@@ -1,10 +1,23 @@
-# Artifact Comment Review
+---
+type: comment-review
+status: complete
+---
+
+# Artifact Comment Review: [Artifact file]
 
 ## Artifact
-- file:
 
-## Comments Read
--
+- File: `[artifact file]`
+- Version or saved directive: [artifact version, directive, or "not saved"]
 
-## Proposed Action
-Ask for direction unless the user already gave an explicit action. Resolve, delete, or reply only after that direction.
+## Comments Reviewed
+
+- `[comment id]` - [short summary of the comment and current disposition]
+
+## Actions Taken
+
+- [Artifact edits, replies, resolutions, deletions, or "None; awaiting user direction."]
+
+## Remaining Decisions
+
+- [Any comments or choices that still need user confirmation.]

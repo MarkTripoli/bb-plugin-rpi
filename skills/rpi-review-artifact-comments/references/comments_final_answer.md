@@ -4,7 +4,7 @@ Artifact saved:
 Summary:
 {summary}
 
-The next session can start with:
+Comment state was changed only where explicitly requested. Continue implementation iteration with:
 
 ```text
 /rpi-iterate-implementation

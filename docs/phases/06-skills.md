@@ -137,3 +137,35 @@ Removed humanlayer.
 
 - Child-thread artifact tools are not selected for `/rpi-agent-*` threads because those threads carry no session row in this phase. The child skills therefore read explicit files and report structured markdown; task-scoped mutation still belongs to parent task sessions.
 - The skill text is intentionally compact. If a reviewer wants closer per-template shape parity, extend the generated templates, then keep the shingle guard in place.
+
+## Deep Rewrite - Lane 1
+
+Verification after this rewrite:
+
+```text
+npm test
+tests 102
+pass 102
+fail 0
+
+bb plugin build
+dist/server.js
+dist/server.js.map
+dist/server.meta.json
+dist/app.js
+dist/app.css
+dist/app.meta.json
+```
+
+| Skill | Original bytes | New bytes | Sections mirrored | Rules preserved | Intentionally dropped |
+|---|---:|---:|---|---|---|
+| rpi-create-research-questions | 6987 | 7623 | 4/5 heading blocks; original read, light research, draft, save, final-answer order preserved with bb step 0 added | 28 original rule markers / 17 rewritten rule markers; task/@-only input, context pointers, neutral current-state questions, no intent leakage, frontend design-system coverage, final template preserved | None |
+| rpi-iterate-research-questions | 4028 | 5001 | 5/6 heading blocks; input selection, full read, feedback processing, same-path update, final-answer order preserved with bb step 0 added | 16/19; full artifact read, symlink-safe listing, no unrelated artifacts, same frontmatter/format, current-state-only questions, context pointers preserved | None |
+| rpi-create-research | 16782 | 12098 | 16/15 heading blocks; initial artifact selection, read mentioned files, decompose, spawn research agents, wait, metadata, write, one open-question pass, final answer preserved with bb step 0 added | 55/27; descriptive-only research, no ticket reads unless explicit, child-thread delegation, all children waited, metadata before write, one extra pass, visual/narrative research style, testing patterns | None |
+| rpi-iterate-research | 11260 | 8181 | 12/13 heading blocks; initial selection, full artifact read, feedback processing, optional child research, same-path update, final answer preserved with bb step 0 added | 41/29; excludes task/ticket by default, objective current-state updates, child-thread use, cohesive in-place edits, no diff blocks, testing patterns, open-question handling | None |
+| rpi-agent-codebase-locator | 4841 | 5616 | 17/20 heading blocks; role charter, responsibilities, search strategy, output format, guidelines, do-not list preserved as child-thread deliverable | 21/9; locate only, no implementation analysis, include tests/config/docs/types/examples, group by purpose, no critique or edits | None |
+| rpi-agent-codebase-analyzer | 5678 | 5129 | 18/20 heading blocks; role charter, responsibilities, analysis strategy, output format, quality bar, do-not list preserved as child-thread deliverable | 28/15; current-state explanation, trace flows, cite file:line evidence, include tests/errors/config, no recommendations or edits | None |
+| rpi-agent-codebase-pattern-finder | 6960 | 5423 | 21/18 heading blocks; role charter, pattern categories, search/read/extract flow, output format, quality bar, do-not list preserved as child-thread deliverable | 25/13; catalog existing examples, include snippets/tests/variants, no preferred-pattern judgment, no future implementation | None |
+| rpi-agent-web-search-researcher | 5804 | 4430 | 16/13 heading blocks; query analysis, search, fetch/read, synthesize, source handling, output format, quality bar preserved as child-thread deliverable | 10/10; sourced external research, official/current sources first, version/date notes, links required, uncertainty stated, no artifact writes | None |
+| rpi-show-me | 3039 | 3708 | 0/6 heading blocks; original visual modes preserved and organized with bb step 0, artifact save, and final template flow | 2/16; smallest useful visual, pseudocode/call tree/component tree/file tree/Mermaid/diff/HTML options, concise prose, no unrelated artifacts | None |
+| rpi-review-artifact-comments | 4192 | 4789 | 6/6 heading blocks; tool availability, input cases, XML format, artifact read, comment fetch/read, ask-before-action, example behavior, notes preserved with bb step 0 | 28/24; ask unless instructed, work one thread at a time, resolve/reply/delete only on confirmation, reversible state changes, comment XML counterpart added | None |
