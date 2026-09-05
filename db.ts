@@ -177,6 +177,9 @@ export const MIGRATIONS: string[] = [
     created_at INTEGER NOT NULL
   )
   `,
+  `ALTER TABLE send_receipts ADD COLUMN status TEXT NOT NULL DEFAULT 'done'`,
+  `ALTER TABLE send_receipts ADD COLUMN delivered_chunk_indexes_json TEXT NOT NULL DEFAULT '[]'`,
+  `ALTER TABLE send_receipts ADD COLUMN completed_at INTEGER`,
 ];
 
 export function openPluginDatabase(bb: BbPluginApi): Database {

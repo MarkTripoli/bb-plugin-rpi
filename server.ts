@@ -23,6 +23,7 @@ import {
   sendCommentsToSession,
   setCommentsResolved,
   softDeleteComments,
+  sweepOldSendReceipts,
 } from "./comments";
 import { markdownBlocks } from "./blocks";
 import {
@@ -658,6 +659,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.background.service("launch-attempt-sweep", {
     async start(signal) {
       while (!signal.aborted) {
+        sweepOldSendReceipts(db);
         for (const taskId of promoteStalePendingLaunchAttempts(db)) {
           bb.realtime.publish("tasks", { taskId });
           bb.realtime.publish("hl:sessions", { taskId, threadId: null });

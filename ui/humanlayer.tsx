@@ -935,7 +935,11 @@ function CommentRail({
   const [sending, setSending] = useState(false);
   const anchored = threads.filter((thread) => !thread.root.anchor?.orphaned);
   const unanchored = threads.filter((thread) => thread.root.anchor?.orphaned);
-  const sendIds = threads.filter((thread) => !thread.root.isResolved).map((thread) => thread.root.id);
+  const unresolvedIds = threads.filter((thread) => !thread.root.isResolved).map((thread) => thread.root.id);
+  const sendIds = unresolvedIds.slice(0, 100);
+  const sendLabel = unresolvedIds.length > sendIds.length
+    ? `${sending ? "Sending" : "Send"} first ${sendIds.length} of ${unresolvedIds.length}`
+    : `${sending ? "Sending" : "Send"} ${sendIds.length} comments to session`;
 
   const update = async (action: Promise<unknown>) => {
     await action;
@@ -972,7 +976,7 @@ function CommentRail({
           <option value="send">Send</option>
         </select>
         <Button type="button" className="h-8 w-full" disabled={!sendThreadId || sendIds.length === 0 || sending} onClick={() => void sendSelected()}>
-          {sending ? "Sending" : `Send ${sendIds.length} comments to session`}
+          {sendLabel}
         </Button>
       </div>
       <div className="space-y-3">

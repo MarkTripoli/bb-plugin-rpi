@@ -201,6 +201,7 @@ export const commentAnchorSchema = z
     end: z.number().int().nonnegative(),
     selectedText: z.string(),
     orphaned: z.boolean().optional(),
+    rewritten: z.boolean().optional(),
   })
   .strict();
 export type CommentAnchorRecord = z.infer<typeof commentAnchorSchema>;
@@ -488,7 +489,7 @@ export const rpcContract = defineRpcContract({
   },
   sendCommentsToSession: {
     input: sendCommentsInputSchema,
-    output: z.object({ sent: z.number().int().nonnegative() }).strict(),
+    output: z.object({ sent: z.number().int().nonnegative(), status: z.enum(["pending", "done"]).optional() }).strict(),
   },
   hydrateNow: {
     input: artifactTaskInputSchema,

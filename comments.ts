@@ -13,6 +13,7 @@ export type CommentAnchor = {
   start: number;
   end: number;
   selectedText: string;
+  rewritten?: boolean;
 };
 
 export type CommentRecord = {
@@ -32,7 +33,7 @@ export type CommentRecord = {
   createdByThreadId: string | null;
   createdAt: number;
   updatedAt: number;
-  anchor: (CommentAnchor & { orphaned: boolean }) | null;
+  anchor: (CommentAnchor & { orphaned: boolean; rewritten?: boolean }) | null;
 };
 
 export type CommentThread = {
@@ -60,6 +61,8 @@ type RawComment = {
 };
 
 const XML_LIMIT_BYTES = 40_000;
+const SEND_RECEIPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const inFlightSendRequests = new Set<string>();
 
 type CommentPage = {
   threads: CommentThread[];
@@ -67,6 +70,12 @@ type CommentPage = {
   nextOffset: number | null;
   offset: number;
   idPrefixes: Map<string, string>;
+};
+
+type SendReceipt = {
+  sentIdsJson: string;
+  status: "pending" | "done";
+  deliveredChunkIndexesJson: string;
 };
 
 export type CommentMutationResult =
@@ -337,13 +346,14 @@ export function reanchor(
 ) {
   const blocks = typeof newVersionText === "string" ? markdownBlocks(newVersionText) : newVersionText;
   const originalIndex = comment.anchorJson?.blockIndex ?? 0;
-  const makeAnchor = (block: MarkdownBlock, orphaned = false) => ({
+  const makeAnchor = (block: MarkdownBlock, orphaned = false, rewritten = false) => ({
     v: 1 as const,
     blockIndex: block.index,
     start: block.start,
     end: block.end,
     selectedText: comment.anchorJson?.selectedText ?? comment.blockText ?? "",
     orphaned,
+    ...(rewritten ? { rewritten } : {}),
   });
   const orphan = () => ({
     v: 1 as const,
@@ -360,6 +370,14 @@ export function reanchor(
     return prev === (comment.prevBlockText ?? null) && next === (comment.nextBlockText ?? null);
   });
   if (bothContext.length === 1) return makeAnchor(bothContext[0]!);
+  if (exact.length === 0 && comment.prevBlockText !== null && comment.prevBlockText !== undefined && comment.nextBlockText !== null && comment.nextBlockText !== undefined) {
+    const changedWithContext = blocks.filter((block) => {
+      const prev = blocks[block.index - 1]?.text ?? null;
+      const next = blocks[block.index + 1]?.text ?? null;
+      return prev === comment.prevBlockText && next === comment.nextBlockText;
+    });
+    if (changedWithContext.length === 1) return makeAnchor(changedWithContext[0]!, false, true);
+  }
   if (exact.length === 1) return makeAnchor(exact[0]!);
   if (exact.length > 1) {
     const hasPrev = comment.prevBlockText !== null && comment.prevBlockText !== undefined;
@@ -411,6 +429,7 @@ export function toAgentXml(
     nextOffset?: number | null;
     idPrefixes?: Map<string, string>;
     truncatedThreadIds?: Set<string>;
+    omittedReplies?: Map<string, number>;
     hint?: string;
   } = {},
 ) {
@@ -422,7 +441,9 @@ export function toAgentXml(
   const lines = [`<artifact_comments ${attrs}>`];
   for (const thread of threads) {
     const truncated = options.truncatedThreadIds?.has(thread.root.id) ? ` truncated="true"` : "";
-    lines.push(`  <thread id="${escapeXml(prefixes.get(thread.root.id) ?? thread.root.id.slice(0, 8))}"${truncated}>`);
+    const repliesOmitted = options.omittedReplies?.get(thread.root.id);
+    const omitted = repliesOmitted ? ` replies_omitted="${repliesOmitted}"` : "";
+    lines.push(`  <thread id="${escapeXml(prefixes.get(thread.root.id) ?? thread.root.id.slice(0, 8))}"${truncated}${omitted}>`);
     lines.push(commentXml(thread.root, prefixes, "    "));
     for (const reply of thread.replies) lines.push(commentXml(reply, prefixes, "    ", "reply"));
     lines.push("  </thread>");
@@ -437,8 +458,18 @@ export function toAgentXml(
 
 export function boundedAgentXml(page: ReturnType<typeof listComments>, byteLimit = XML_LIMIT_BYTES) {
   const included: CommentThread[] = [];
+  const truncation = (offset: number, thread: CommentThread) => ({
+    truncatedIds: [page.idPrefixes.get(thread.root.id) ?? thread.root.id.slice(0, 8)],
+    hint: `fetch again with offset ${offset}`,
+  });
   for (const thread of page.threads) {
-    const next = toAgentXml([...included, thread], { total: page.total, nextOffset: page.nextOffset, idPrefixes: page.idPrefixes });
+    const nextOffset = page.offset + included.length + 1;
+    const next = toAgentXml([...included, thread], {
+      total: page.total,
+      nextOffset: nextOffset < page.total ? nextOffset : null,
+      idPrefixes: page.idPrefixes,
+      ...(nextOffset < page.total ? truncation(nextOffset, page.threads[included.length + 1] ?? thread) : {}),
+    });
     if (Buffer.byteLength(next, "utf8") > byteLimit) {
       if (included.length === 0) return truncatedThreadXml(page, thread, byteLimit);
       const nextOffset = page.offset + included.length;
@@ -446,8 +477,7 @@ export function boundedAgentXml(page: ReturnType<typeof listComments>, byteLimit
         total: page.total,
         nextOffset,
         idPrefixes: page.idPrefixes,
-        truncatedIds: [page.idPrefixes.get(thread.root.id) ?? thread.root.id.slice(0, 8)],
-        hint: `fetch again with offset ${nextOffset}`,
+        ...truncation(nextOffset, thread),
       });
     }
     included.push(thread);
@@ -456,36 +486,64 @@ export function boundedAgentXml(page: ReturnType<typeof listComments>, byteLimit
 }
 
 function truncatedThreadXml(page: ReturnType<typeof listComments>, thread: CommentThread, byteLimit: number) {
-  const nextOffset = page.offset + 1;
+  const nextOffset = page.offset + 1 < page.total ? page.offset + 1 : null;
+  const truncatedIds = [page.idPrefixes.get(thread.root.id) ?? thread.root.id.slice(0, 8)];
+  const hint = nextOffset === null ? undefined : `fetch again with offset ${nextOffset}`;
   let low = 0;
   let high = Math.max(...[thread.root, ...thread.replies].flatMap((comment) => [comment.contentText.length, comment.blockText?.length ?? 0]));
   let best = truncateThread(thread, 0);
+  let bestReplyCount = 0;
   while (low <= high) {
     const mid = Math.floor((low + high) / 2);
     const candidate = truncateThread(thread, mid);
-    const xml = toAgentXml([candidate], {
+    const replyCount = maxReplyCount(page, candidate, byteLimit, nextOffset, truncatedIds, hint);
+    const xml = toAgentXml([{ root: candidate.root, replies: candidate.replies.slice(0, replyCount) }], {
       total: page.total,
       nextOffset,
       idPrefixes: page.idPrefixes,
       truncatedThreadIds: new Set([thread.root.id]),
-      truncatedIds: [page.idPrefixes.get(thread.root.id) ?? thread.root.id.slice(0, 8)],
-      hint: `fetch again with offset ${nextOffset}`,
+      omittedReplies: omittedReplies(thread, replyCount),
+      truncatedIds,
+      hint,
     });
     if (Buffer.byteLength(xml, "utf8") <= byteLimit) {
       best = candidate;
+      bestReplyCount = replyCount;
       low = mid + 1;
     } else {
       high = mid - 1;
     }
   }
-  return toAgentXml([best], {
+  return toAgentXml([{ root: best.root, replies: best.replies.slice(0, bestReplyCount) }], {
     total: page.total,
     nextOffset,
     idPrefixes: page.idPrefixes,
     truncatedThreadIds: new Set([thread.root.id]),
-    truncatedIds: [page.idPrefixes.get(thread.root.id) ?? thread.root.id.slice(0, 8)],
-    hint: `fetch again with offset ${nextOffset}`,
+    omittedReplies: omittedReplies(thread, bestReplyCount),
+    truncatedIds,
+    hint,
   });
+}
+
+function maxReplyCount(page: ReturnType<typeof listComments>, thread: CommentThread, byteLimit: number, nextOffset: number | null, truncatedIds: string[], hint: string | undefined) {
+  for (let count = thread.replies.length; count >= 0; count -= 1) {
+    const xml = toAgentXml([{ root: thread.root, replies: thread.replies.slice(0, count) }], {
+      total: page.total,
+      nextOffset,
+      idPrefixes: page.idPrefixes,
+      truncatedThreadIds: new Set([thread.root.id]),
+      omittedReplies: omittedReplies(thread, count),
+      truncatedIds,
+      hint,
+    });
+    if (Buffer.byteLength(xml, "utf8") <= byteLimit) return count;
+  }
+  return 0;
+}
+
+function omittedReplies(thread: CommentThread, includedReplyCount: number) {
+  const omitted = thread.replies.length - includedReplyCount;
+  return omitted > 0 ? new Map([[thread.root.id, omitted]]) : undefined;
 }
 
 function truncateThread(thread: CommentThread, maxChars: number): CommentThread {
@@ -612,37 +670,80 @@ export async function sendCommentsToSession(
   mode: "send" | "send-and-resolve",
   options: { requestId?: string | null; includeResolved?: boolean; byteLimit?: number } = {},
 ) {
-  if (options.requestId) {
-    const receipt = readRow<{ sentIdsJson: string }>(db, "SELECT sent_ids_json AS sentIdsJson FROM send_receipts WHERE request_id = ?", options.requestId);
-    if (receipt) return { sent: parseJson<string[]>(receipt.sentIdsJson, []).length };
-  }
   const artifact = readRow<{ taskId: string; fileName: string }>(db, "SELECT task_id AS taskId, file_name AS fileName FROM artifacts WHERE id = ?", artifactId);
   if (!artifact) throw new Error("artifact not found");
   const session = readRow<{ taskId: string }>(db, "SELECT task_id AS taskId FROM sessions WHERE thread_id = ?", threadId);
   if (!session || session.taskId !== artifact.taskId) throw new Error("not a HumanLayer task session");
   const page = selectedThreadsByRootIds(db, artifactId, commentIds, options.includeResolved ?? false);
   const chunks = sendXmlChunks(page, options.byteLimit ?? XML_LIMIT_BYTES);
-  const delivered: string[] = [];
-  for (const chunk of chunks) {
-    const xml = toAgentXml(chunk, { total: chunk.length, nextOffset: null, idPrefixes: page.idPrefixes });
-    const text = `Please review the following comments on ${artifact.fileName} and address them:\n\n${xml}`;
-    await bb.sdk.threads.send({ threadId, mode: "auto", input: [{ type: "text", text }] } as never);
-    const ids = chunk.map((thread) => thread.root.id);
-    delivered.push(...ids);
-    if (mode === "send-and-resolve") setCommentsResolved(db, ids, true, artifactId);
+  let delivered: string[] = [];
+  const deliveredChunkIndexes = new Set<number>();
+  const requestId = options.requestId ?? null;
+
+  if (requestId) {
+    const receipt = claimSendReceipt(db, requestId, artifactId, threadId, commentIds, mode);
+    delivered = parseJson<string[]>(receipt.sentIdsJson, []);
+    for (const index of parseJson<number[]>(receipt.deliveredChunkIndexesJson, [])) deliveredChunkIndexes.add(index);
+    if (receipt.status === "done" || inFlightSendRequests.has(requestId)) {
+      return { sent: delivered.length, status: receipt.status };
+    }
+    inFlightSendRequests.add(requestId);
   }
-  if (options.requestId) {
-    writeRow(
+  try {
+    for (const [index, chunk] of chunks.entries()) {
+      if (deliveredChunkIndexes.has(index)) continue;
+      const xml = toAgentXml(chunk, { total: chunk.length, nextOffset: null, idPrefixes: page.idPrefixes });
+      const text = `Please review the following comments on ${artifact.fileName} and address them:\n\n${xml}`;
+      await bb.sdk.threads.send({ threadId, mode: "auto", input: [{ type: "text", text }] } as never);
+      const ids = chunk.map((thread) => thread.root.id);
+      if (mode === "send-and-resolve") setCommentsResolved(db, ids, true, artifactId);
+      delivered.push(...ids);
+      deliveredChunkIndexes.add(index);
+      if (requestId) updateSendReceipt(db, requestId, delivered, deliveredChunkIndexes, "pending");
+    }
+    if (requestId) updateSendReceipt(db, requestId, delivered, deliveredChunkIndexes, "done");
+  } finally {
+    if (requestId) inFlightSendRequests.delete(requestId);
+  }
+  return { sent: delivered.length, status: "done" as const };
+}
+
+function claimSendReceipt(db: Database, requestId: string, artifactId: string, threadId: string, commentIds: string[], mode: "send" | "send-and-resolve") {
+  return transaction(db, () => {
+    try {
+      writeRow(
+        db,
+        "INSERT INTO send_receipts (request_id, artifact_id, thread_id, comment_ids_json, mode, sent_ids_json, status, delivered_chunk_indexes_json, created_at) VALUES (?, ?, ?, ?, ?, '[]', 'pending', '[]', ?)",
+        requestId,
+        artifactId,
+        threadId,
+        stringifyJson(commentIds),
+        mode,
+        nowMs(),
+      );
+    } catch (error) {
+      if (!String(error).includes("UNIQUE")) throw error;
+    }
+    return readRow<SendReceipt>(
       db,
-      "INSERT INTO send_receipts (request_id, artifact_id, thread_id, comment_ids_json, mode, sent_ids_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      options.requestId,
-      artifactId,
-      threadId,
-      stringifyJson(commentIds),
-      mode,
-      stringifyJson(delivered),
-      nowMs(),
-    );
-  }
-  return { sent: delivered.length };
+      "SELECT sent_ids_json AS sentIdsJson, status, delivered_chunk_indexes_json AS deliveredChunkIndexesJson FROM send_receipts WHERE request_id = ?",
+      requestId,
+    )!;
+  })();
+}
+
+function updateSendReceipt(db: Database, requestId: string, delivered: string[], deliveredChunkIndexes: Set<number>, status: "pending" | "done") {
+  writeRow(
+    db,
+    "UPDATE send_receipts SET sent_ids_json = ?, delivered_chunk_indexes_json = ?, status = ?, completed_at = ? WHERE request_id = ?",
+    stringifyJson(delivered),
+    stringifyJson([...deliveredChunkIndexes].sort((left, right) => left - right)),
+    status,
+    status === "done" ? nowMs() : null,
+    requestId,
+  );
+}
+
+export function sweepOldSendReceipts(db: Database, beforeMs = nowMs() - SEND_RECEIPT_RETENTION_MS) {
+  return writeRow(db, "DELETE FROM send_receipts WHERE created_at < ?", beforeMs).changes;
 }

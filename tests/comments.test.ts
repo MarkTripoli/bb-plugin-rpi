@@ -57,6 +57,28 @@ function comment(input: Partial<CommentRecord> = {}) {
   };
 }
 
+function commentRecord(id: string, contentText: string, blockText: string, replyToId: string | null = null) {
+  return {
+    id,
+    artifactId: "artifact",
+    versionId: "version",
+    replyToId,
+    contentText,
+    blockText,
+    prevBlockText: null,
+    nextBlockText: null,
+    anchorJson: anchor(0, blockText),
+    kind: "comment",
+    isResolved: false,
+    isDeleted: false,
+    createdByAgent: false,
+    createdByThreadId: null,
+    createdAt: 1,
+    updatedAt: 1,
+    anchor: { ...anchor(0, blockText), orphaned: false },
+  } satisfies CommentRecord;
+}
+
 test("reanchor uses exact, context, fuzzy, then orphan", () => {
   assert.deepEqual(reanchor(comment(), "Inserted\n\nAlpha\n\nBeta\n\nGamma").blockIndex, 2);
   assert.deepEqual(reanchor(comment({ blockText: "Beta old" }), "Alpha\n\nBeta new\n\nGamma").blockIndex, 1);
@@ -71,6 +93,13 @@ test("reanchor uses exact, context, fuzzy, then orphan", () => {
   );
   assert.equal(fuzzy.orphaned, false);
   assert.equal(reanchor(comment(), "Delta\n\nEpsilon").orphaned, true);
+});
+
+test("reanchor keeps Astra's changed block attached by unique prev and next context", () => {
+  const moved = reanchor(comment({ blockText: "Beta old", anchorJson: anchor(1, "Beta old") }), "Alpha\n\nBeta new\n\nGamma");
+  assert.equal(moved.blockIndex, 1);
+  assert.equal(moved.orphaned, false);
+  assert.equal((moved as { rewritten?: boolean }).rewritten, true);
 });
 
 test("reanchor orphans ambiguous similar blocks and disambiguates repeated items by context", () => {
@@ -244,6 +273,46 @@ test("boundedAgentXml stops at first omitted root and truncates a single oversiz
   assert.match(omitted, /<thread id="cccc">/);
   assert.doesNotMatch(omitted, /<thread id="bbbb">/);
   assert.match(omitted, /next_offset="1"/);
+});
+
+test("boundedAgentXml never exceeds 40000 bytes for a huge single thread", () => {
+  const root = commentRecord("huge-root", "A".repeat(120_000), "B".repeat(120_000));
+  const replies = Array.from({ length: 20 }, (_, index) => commentRecord(`huge-reply-${index}`, "R".repeat(5_000), "B", root.id));
+  const xml = boundedAgentXml({
+    threads: [{ root, replies }],
+    total: 1,
+    nextOffset: null,
+    offset: 0,
+    idPrefixes: new Map([[root.id, "huge-root"], ...replies.map((reply) => [reply.id, reply.id] as const)]),
+  }, 40_000);
+  assert.ok(Buffer.byteLength(xml, "utf8") <= 40_000);
+  assert.match(xml, /truncated="true"/);
+  assert.match(xml, /replies_omitted="/);
+  assert.doesNotMatch(xml, /next_offset=/);
+});
+
+test("boundedAgentXml never exceeds 40000 bytes for many small roots and emits no empty trailing fetch", () => {
+  const threads = Array.from({ length: 260 }, (_, index) => ({ root: commentRecord(`root-${index}`, `comment-${index}-${"x".repeat(700)}`, `block-${index}`), replies: [] }));
+  const idPrefixes = new Map(threads.map((thread) => [thread.root.id, thread.root.id]));
+  let offset = 0;
+  const seen = new Set<number>();
+  while (true) {
+    assert.equal(seen.has(offset), false);
+    seen.add(offset);
+    const pageThreads = threads.slice(offset, offset + 100);
+    const xml = boundedAgentXml({
+      threads: pageThreads,
+      total: threads.length,
+      nextOffset: offset + pageThreads.length < threads.length ? offset + pageThreads.length : null,
+      offset,
+      idPrefixes,
+    }, 40_000);
+    assert.ok(Buffer.byteLength(xml, "utf8") <= 40_000);
+    const nextOffset = /next_offset="(\d+)"/.exec(xml)?.[1];
+    if (!nextOffset) break;
+    offset = Number(nextOffset);
+    assert.ok(offset > 0 && offset < threads.length);
+  }
 });
 
 test("resolveTruncatedId reports ambiguity and not found", () => {
@@ -452,5 +521,73 @@ test("sendCommentsToSession splits selected roots without dropping requested ids
   });
   assert.equal(duplicate.sent, 3);
   assert.equal(sent.length, sentCount);
+  db.close();
+});
+
+test("sendCommentsToSession claims request ids and resumes undelivered chunks", async () => {
+  let releaseFirstSend!: () => void;
+  const firstSendGate = new Promise<void>((resolve) => { releaseFirstSend = resolve; });
+  let waitOnFirstSend = true;
+  let failSecondSend = false;
+  const sent: string[] = [];
+  const bb = {
+    sdk: {
+      threads: {
+        send: async (input: { input: Array<{ text: string }> }) => {
+          sent.push(input.input[0]!.text);
+          if (sent.length === 1 && waitOnFirstSend) {
+            waitOnFirstSend = false;
+            await firstSendGate;
+          }
+          if (failSecondSend && sent.length === 2) throw new Error("second send failed");
+        },
+      },
+    },
+  } as unknown as Parameters<typeof sendCommentsToSession>[0];
+  const db = makeDb();
+  const taskId = seedTask(db);
+  const saved = upsertArtifact(db, taskId, "notes.md", "A\n\nB\n\nC", { createdBy: "test", operation: "test" });
+  db.prepare(`
+    INSERT INTO sessions (
+      thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
+      hl_status, hl_status_at, had_turn, interrupted, blocked_reason,
+      created_at, updated_at
+    ) VALUES ('thr_1', ?, NULL, NULL, 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, 1, 1)
+  `).run(taskId);
+  const version = db.prepare("SELECT id FROM artifact_versions WHERE artifact_id = ?").get(saved.artifact.id) as { id: string };
+  const comments = ["A", "B", "C"].map((blockText, index) => createComment(db, saved.artifact.id, version.id, {
+    contentText: `${blockText}${"x".repeat(120)}`,
+    blockText,
+    anchorJson: anchor(index, blockText),
+  }));
+
+  const first = sendCommentsToSession(bb, db, "thr_1", saved.artifact.id, comments.map((item) => item.id), "send", {
+    requestId: "request-pending",
+    byteLimit: 520,
+  });
+  const pending = await sendCommentsToSession(bb, db, "thr_1", saved.artifact.id, comments.map((item) => item.id), "send", {
+    requestId: "request-pending",
+    byteLimit: 520,
+  });
+  assert.deepEqual(pending, { sent: 0, status: "pending" });
+  releaseFirstSend();
+  assert.equal((await first).sent, 3);
+
+  sent.length = 0;
+  failSecondSend = true;
+  await assert.rejects(sendCommentsToSession(bb, db, "thr_1", saved.artifact.id, comments.map((item) => item.id), "send", {
+    requestId: "request-resume",
+    byteLimit: 520,
+  }), /second send failed/);
+  assert.deepEqual(JSON.parse((db.prepare("SELECT delivered_chunk_indexes_json FROM send_receipts WHERE request_id = 'request-resume'").get() as { delivered_chunk_indexes_json: string }).delivered_chunk_indexes_json), [0]);
+
+  failSecondSend = false;
+  sent.length = 0;
+  const resumed = await sendCommentsToSession(bb, db, "thr_1", saved.artifact.id, comments.map((item) => item.id), "send", {
+    requestId: "request-resume",
+    byteLimit: 520,
+  });
+  assert.equal(resumed.sent, 3);
+  assert.equal(sent.length, 2);
   db.close();
 });

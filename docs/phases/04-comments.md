@@ -182,3 +182,39 @@ bb thread stop thr_ht5xfu65ny
 bb thread archive thr_ht5xfu65ny
 bb plugin remove humanlayer
 ```
+
+## Review fixes round 2
+
+Astra item status:
+
+1. Fixed: exact block re-anchor still prefers full context, then unique exact block.
+2. Fixed in round 2: `Alpha / Beta old / Gamma` now reattaches to `Beta new` by unique previous and next context and sets `anchor.rewritten=true`.
+3. Fixed: east/west ambiguous similar text remains orphaned when context is absent or non-unique.
+4. Fixed: truncated id resolution rejects ambiguous prefixes and accepts the shortest unique prefix.
+5. Fixed: agent XML escapes comment content, block text, and invalid XML code points.
+6. Fixed in round 2: bounded XML now stays within the 40,000 byte cap for huge single threads and many small roots, truncates single oversized roots, caps replies with `replies_omitted`, and avoids empty trailing fetches.
+7. Fixed: send-to-session uses exactly the selected root ids and does not drop requested roots while splitting messages.
+8. Fixed in round 2: request id is the receipt primary key, inserted as pending before send; concurrent repeats return pending, delivered chunk indexes are recorded, retries resume from the first undelivered chunk, and receipts are swept after 30 days by the existing 60s background service.
+9. Fixed: `send-and-resolve` resolves only roots that were delivered by a successful `threads.send`.
+10. Fixed: RPC/server validation covers artifact version ownership, reply roots, root-only resolve, deleted restore behavior, agent edit ownership, and typed realtime comment event kinds.
+11. Fixed in round 2: the rail sends at most the first 100 loaded unresolved roots, labels `Send first 100 of N` or `Sending first 100 of N`, and the RPC schema keeps the 100-comment cap.
+
+Verification:
+
+```text
+npm test
+tests 64
+pass 64
+fail 0
+
+npx tsc --noEmit
+TypeScript: No errors found
+
+bb plugin build
+dist/server.js
+dist/server.js.map
+dist/server.meta.json
+dist/app.js
+dist/app.css
+dist/app.meta.json
+```
