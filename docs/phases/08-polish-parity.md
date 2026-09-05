@@ -254,13 +254,16 @@ round.
       session (`thr_bhiwvuxfjt`) finished `ready_for_input` with
       `nextStepJson.extraction = {"type":"no_next_step","reason":"no
       command block"}`, confirming a mini-class model dropped the template
-      live, per item 9's guidance.
+      live, per item 9's guidance. This drop was deliberately induced by the
+      commandLine's own instruction to reply without a fenced command
+      block, not a spontaneous mini-class-model failure caught in the wild.
     - `computeSuggestedNext("design", "rpi", {type:"no_next_step"})` (run via
       `npx tsx -e '...'` against the actual `transitions.ts`) returned
       `{"visible":true,"skillId":"create-plan","buttonText":"write
       plan",...}` - confirming the Suggested-next affordance would render
       "Suggested next: write plan" for this exact live session state.
-    - Clicking it was reproduced via the same RPC the button calls:
+    - Clicking it was reproduced via the same RPC the button calls, not by
+      clicking the rendered Suggested-next button in a browser:
       `launchSkill` with `skillId: "create-plan"` returned a new thread
       (`thr_ajzk4ufw3s`); `getTask` afterward showed that session with
       `label: "plan"`, confirming the launch actually happened.
@@ -268,3 +271,103 @@ round.
       `thr_bhiwvuxfjt`, `thr_ajzk4ufw3s`) and the task, then
       `bb plugin remove humanlayer` (confirmed absent from `bb plugin
       list`).
+
+## Review fixes round 2
+
+Astra + Fable's final confirmation pass on the round-2 fixes above, fixed in
+small commits (`git log --oneline` on this branch shows one commit per item
+below, in the same order). `npm test`, `npx tsc --noEmit`, `bb plugin build`,
+`npm run check:pack`, and `npm run check:parity` all pass after every commit
+and again at the end of this round.
+
+1. **Scratch pad stale-debounce overwrite (`scratch-pad-sync.ts`,
+   `ui/humanlayer.tsx` `ScratchPadPanel`).** A debounce timer queued during an
+   outstanding save (typed after the request went out, before its response
+   came back) could fire after that request's conflict reload, submitting
+   its stale captured text with the reloaded revision and silently
+   overwriting the winner. Fixed by moving the revision/generation
+   bookkeeping into a pure `ScratchPadSync` class: every local edit is
+   stamped with a generation; a conflict bumps the generation and cancels
+   the pending timer; a queued flush (debounce firing, or an unmount flush)
+   checks its stamped generation against the current one before calling the
+   save RPC at all, and a save response is only applied if its generation is
+   still current. Test: `tests/scratch-pad-sync.test.ts` "type -> save in
+   flight -> conflict reload -> queued debounce -> no stale submit", plus
+   three narrower generation/reload/apply tests.
+2. **Typed `no_source_host` launch error (`launch.ts`, `advance.ts`,
+   `ui/humanlayer.tsx`).** `selectEnvironment`'s final "no source host"
+   branch now throws the same typed domain error class other launch
+   failures already used for a rejection reason (`advance.ts`'s
+   `AdvanceRejectedError`), relocated to `launch.ts` as `LaunchRejectedError`
+   (advance.ts's own launch-attempt dependency already flows the other way,
+   so the class now lives at the layer both callers can import from without
+   a cycle) and extended with a `no_source_host` code and a message that
+   names the actual fix ("set a project source or pick a host"). The five UI
+   call sites that can trigger a launch (`createAndLaunch`, the task-detail
+   Launch button, the Proceed button, the Suggested-next button, and
+   Recover-launch's retry) previously had no error handling at all - a
+   failure surfaced as an unhandled promise rejection, nothing shown to the
+   user - and now share one `reportLaunchError` toast helper. Test:
+   `tests/launch.test.ts` "launchPhase rejects with a typed no_source_host
+   error when the project has no default source and the task has no host".
+3. **Hotkey scoping and cleanup (`ui/humanlayer.tsx`).** `⌘E`'s previous
+   `document.documentElement` root was not actually narrower than a plain
+   `document` listener for bubbling purposes (`documentElement` is an
+   ancestor of virtually every focusable element on the page), despite the
+   comment's claim that it scoped the hotkey to the panel; it now listens on
+   `HumanLayerThreadHeaderAction`'s own rendered root div (`actionRootRef`)
+   through the same `usePanelHotkeys` owner pattern `T`/`g t` use, so it only
+   fires while focus is inside that action row, like every other
+   panel-scoped hotkey. The `g`-then-`t` chord's pending `setTimeout` had no
+   unmount cleanup; a panel unmount mid-chord left the timer scheduled
+   (harmless in practice, since its closure only touched refs, but the same
+   class of leak the scratch-pad debounce fix above addresses) - now
+   disposed via a `useEffect` cleanup. `PARITY.md`'s `⌘⇧J`/`⌘⇧U` row gained a
+   note stating plainly that this is two different, intentional mechanisms:
+   `T`/`g t`/`⌘E` are panel-scoped (`usePanelHotkeys`, fires only while focus
+   is inside the panel or action root), while `⌘⇧U` is intentionally global
+   on `document` (capture, owner-queue) for as long as
+   `HumanLayerNotificationBridge` is mounted, because jumping to a notified
+   session must work regardless of what has focus when the notification
+   arrives.
+4. **Suggested-next decision logic moved out of `server.ts`
+   (`transitions.ts`, `server.ts`, `ui/humanlayer.tsx`).** `server.ts`'s
+   `suggestedNextHintFor` did its own `nextStepJson` parsing and precondition
+   gating inline, duplicating (with a subtly different precondition set)
+   the UI's own `parsedExtraction`/`suggestedNextFor`. Consolidated both
+   into `transitions.ts`: `parseNextStepExtraction`, `suggestedNextForSession`,
+   and `suggestedNextHint`, one set of preconditions and one JSON-parsing
+   path for both the UI button and the server's toast hint. `server.ts`'s
+   `suggestedNextHintFor` is now a one-line call into the pure function;
+   `ui/humanlayer.tsx`'s `suggestedNextFor` likewise. Tests:
+   `tests/transitions.test.ts` "parseNextStepExtraction reads the persisted
+   nextStepJson shape...", "...share one precondition gate...", "...compute
+   the same result once preconditions hold".
+5. **`PARITY.md` recount, mechanically enforced (`scripts/parity-count.ts`,
+   `scripts/check-parity.ts`, `tests/parity.test.ts`, `PARITY.md`).** The
+   prior recount's "89 status-bearing rows" summary was itself a manual
+   count, not mechanically verified, and two tables had rows whose actual
+   column count did not match their header (the auto-advance table's last
+   two rows, and one Settings-table row blending an `N/A` group and a
+   `partial` group under one "mostly N/A / partial" cell), which would make
+   any mechanical column-by-header-name count land on the wrong cell for
+   those rows. Split both into their own properly-shaped rows (a new
+   "Executor & recovery notes" table; the Settings table's diff-viewer/theme
+   row split from its diff-style/default-editor row), then added
+   `scripts/parity-count.ts` (walks every table, finds its `status`/`bb
+   status` column by header name, tallies the named status word per row,
+   counting a mixed cell like "N/A (bb owns X) / full (Y)" once per status
+   it names) and `npm run check:parity` to print the result. The recount
+   sentence in `PARITY.md` now states the script's exact output - **90
+   status-bearing rows, 1 of them mixed: 60 full, 12 partial, 7 omitted, 12
+   N/A** - and `tests/parity.test.ts` asserts the sentence's numbers equal
+   `countParityStatuses(PARITY.md)`'s output, so a future row edit that
+   changes the count fails the test until the sentence is updated to match.
+6. **Precision fix in this doc's own live-verification section (item 11
+   above).** Added one explicit sentence to each of two claims that were
+   accurate but not stated plainly enough: the Suggested-next button click
+   was verified by calling the same `launchSkill` RPC the button calls, not
+   by clicking the rendered button in a browser; and the mini-class
+   template drop was deliberately induced by the test's own
+   no-command-block instruction, not a spontaneous failure caught in the
+   wild. No other wording in that section changed.
