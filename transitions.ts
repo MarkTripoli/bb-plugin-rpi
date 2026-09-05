@@ -216,3 +216,55 @@ export function computeSuggestedNext(label: PhaseLabel | null, workflowType: str
   const mismatch = extraction.nextStepType !== transition.next;
   return { visible: mismatch, skillId: transition.next, buttonText, mismatch, extractedSkillId: extraction.nextStepType };
 }
+
+// Parses a session's stored `nextStepJson` (extraction.ts's NextStepSuggestions, persisted as
+// text) into the shape computeSuggestedNext expects. Shared by the UI's suggested-next button and
+// the server's ready_for_input toast hint so they can never read the same field two different
+// ways.
+export function parseNextStepExtraction(nextStepJson: string | null): SuggestedNextExtraction {
+  if (!nextStepJson) return null;
+  try {
+    const parsed = JSON.parse(nextStepJson) as { extraction?: { type?: string; nextStepType?: string } };
+    if (parsed.extraction?.type === "next_step_found" && parsed.extraction.nextStepType) {
+      return { type: "next_step_found", nextStepType: parsed.extraction.nextStepType };
+    }
+    if (parsed.extraction?.type === "no_next_step") return { type: "no_next_step" };
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export type SuggestedNextSessionFields = {
+  hlStatus: string;
+  blockedReason: string | null;
+  completedTurnKey: string | null;
+  lastSummarizedTurnKey: string | null;
+  label: string | null;
+  workflowType: string;
+  nextStepJson: string | null;
+};
+
+// Suggested-next precondition (plan §2.9): the session must be at rest, ready for input, nothing
+// blocking it, and its completed turn already fully processed (summarized), before
+// computeSuggestedNext's extraction-vs-workflow comparison means anything. A mid-processing or
+// blocked session has no meaningful "suggested next" yet. Shared by the UI's button
+// (ui/humanlayer.tsx) and the server's ready_for_input toast hint (server.ts notifySnapshot).
+export function suggestedNextForSession(session: SuggestedNextSessionFields): SuggestedNext | null {
+  if (session.hlStatus !== "ready_for_input") return null;
+  if (session.blockedReason) return null;
+  if (!session.completedTurnKey || session.completedTurnKey !== session.lastSummarizedTurnKey) return null;
+  const label = normalizePhaseLabel(session.label) as PhaseLabel | null;
+  const result = computeSuggestedNext(label, session.workflowType, parseNextStepExtraction(session.nextStepJson));
+  return result.visible ? result : null;
+}
+
+// Same precondition and computation as suggestedNextForSession, formatted as the one-line hint
+// used in the ready_for_input notification toast body (server.ts).
+export function suggestedNextHint(session: SuggestedNextSessionFields): string | null {
+  const result = suggestedNextForSession(session);
+  if (!result) return null;
+  return result.mismatch
+    ? `Agent suggested ${result.extractedSkillId}; workflow expects ${result.buttonText}`
+    : `Suggested next: ${result.buttonText}`;
+}

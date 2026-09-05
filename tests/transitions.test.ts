@@ -1,6 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ALIASES, AUTO_ADVANCE, HELPERS, SKILLS, WORKFLOW_GRAPHS, autoAdvanceTransition, computeSuggestedNext, deriveBoardColumn } from "../transitions";
+import {
+  ALIASES,
+  AUTO_ADVANCE,
+  HELPERS,
+  SKILLS,
+  WORKFLOW_GRAPHS,
+  autoAdvanceTransition,
+  computeSuggestedNext,
+  deriveBoardColumn,
+  parseNextStepExtraction,
+  suggestedNextForSession,
+  suggestedNextHint,
+  type SuggestedNextSessionFields,
+} from "../transitions";
 
 test("skills table keeps labels and button text", () => {
   assert.equal(SKILLS.length, 22);
@@ -82,4 +95,57 @@ test("computeSuggestedNext visibility matrix: found+match, found+mismatch, none,
   // never shows the affordance.
   assert.equal(computeSuggestedNext(null, "rpi", { type: "no_next_step" }).visible, false);
   assert.equal(computeSuggestedNext("describe-pr", "rpi", { type: "no_next_step" }).visible, false);
+});
+
+test("parseNextStepExtraction reads the persisted nextStepJson shape, tolerating null and garbage", () => {
+  assert.equal(parseNextStepExtraction(null), null);
+  assert.equal(parseNextStepExtraction("not json"), null);
+  assert.deepEqual(parseNextStepExtraction(JSON.stringify({ extraction: { type: "no_next_step" } })), { type: "no_next_step" });
+  assert.deepEqual(
+    parseNextStepExtraction(JSON.stringify({ extraction: { type: "next_step_found", nextStepType: "create-research" } })),
+    { type: "next_step_found", nextStepType: "create-research" },
+  );
+  // A "next_step_found" extraction missing its own nextStepType is treated the same as no
+  // extraction at all, never a crash.
+  assert.equal(parseNextStepExtraction(JSON.stringify({ extraction: { type: "next_step_found" } })), null);
+});
+
+function baseSuggestedNextSession(overrides: Partial<SuggestedNextSessionFields> = {}): SuggestedNextSessionFields {
+  return {
+    hlStatus: "ready_for_input",
+    blockedReason: null,
+    completedTurnKey: "turn_1",
+    lastSummarizedTurnKey: "turn_1",
+    label: "research-questions",
+    workflowType: "rpi",
+    nextStepJson: JSON.stringify({ extraction: { type: "no_next_step" } }),
+    ...overrides,
+  };
+}
+
+test("suggestedNextForSession/suggestedNextHint share one precondition gate: not ready, blocked, or unsummarized -> null", () => {
+  assert.equal(suggestedNextForSession(baseSuggestedNextSession({ hlStatus: "running" })), null);
+  assert.equal(suggestedNextForSession(baseSuggestedNextSession({ blockedReason: "question" })), null);
+  assert.equal(suggestedNextForSession(baseSuggestedNextSession({ completedTurnKey: null })), null);
+  assert.equal(suggestedNextForSession(baseSuggestedNextSession({ completedTurnKey: "turn_2", lastSummarizedTurnKey: "turn_1" })), null);
+  assert.equal(suggestedNextHint(baseSuggestedNextSession({ hlStatus: "running" })), null);
+});
+
+test("suggestedNextForSession/suggestedNextHint compute the same result once preconditions hold", () => {
+  const result = suggestedNextForSession(baseSuggestedNextSession());
+  assert.ok(result);
+  assert.equal(result.visible, true);
+  assert.equal(result.skillId, "create-research");
+  assert.equal(suggestedNextHint(baseSuggestedNextSession()), "Suggested next: proceed to research");
+
+  const mismatchJson = JSON.stringify({ extraction: { type: "next_step_found", nextStepType: "create-design-discussion" } });
+  assert.equal(
+    suggestedNextHint(baseSuggestedNextSession({ nextStepJson: mismatchJson })),
+    "Agent suggested create-design-discussion; workflow expects proceed to research",
+  );
+
+  // Extraction agreeing with the workflow's canonical next skill: not visible, no hint.
+  const matchJson = JSON.stringify({ extraction: { type: "next_step_found", nextStepType: "create-research" } });
+  assert.equal(suggestedNextForSession(baseSuggestedNextSession({ nextStepJson: matchJson })), null);
+  assert.equal(suggestedNextHint(baseSuggestedNextSession({ nextStepJson: matchJson })), null);
 });
