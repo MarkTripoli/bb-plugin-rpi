@@ -27,6 +27,10 @@ export type LaunchAttemptRow = {
   taskId: string;
   fromThreadId: string | null;
   skillId: string | null;
+  commandLine: string | null;
+  label: string | null;
+  environmentRole: "base" | "worktree";
+  launchedBy: string;
   status: LaunchAttemptStatus;
   threadId: string | null;
   createdAt: number;
@@ -47,6 +51,10 @@ export function activeLaunchAttempt(db: Database, taskId: string) {
       task_id AS taskId,
       from_thread_id AS fromThreadId,
       skill_id AS skillId,
+      command_line AS commandLine,
+      label,
+      environment_role AS environmentRole,
+      launched_by AS launchedBy,
       status,
       thread_id AS threadId,
       created_at AS createdAt
@@ -59,18 +67,36 @@ export function activeLaunchAttempt(db: Database, taskId: string) {
   );
 }
 
-function insertAttempt(db: Database, task: TaskRecord, fromThreadId: string | null, skillId: string | null) {
+export function environmentRoleForAttempt(task: TaskRecord, skillId: string | null): "base" | "worktree" {
+  if (task.worktreeTiming === "never") return "base";
+  if (task.worktreeEnvironmentId) return "worktree";
+  if (task.worktreeTiming === "now") return "worktree";
+  const label = labelTitle(skillId);
+  return label === "worktree-setup" || label === "implementation" ? "worktree" : "base";
+}
+
+export function insertAttempt(
+  db: Database,
+  task: TaskRecord,
+  input: { fromThreadId: string | null; skillId: string | null; commandLine: string | null; label: string | null; environmentRole: "base" | "worktree"; launchedBy: string },
+) {
   const id = randomUUID();
   writeRow(
     db,
     `
-    INSERT INTO launch_attempts (id, task_id, from_thread_id, skill_id, status, thread_id, created_at)
-    VALUES (?, ?, ?, ?, 'pending', NULL, ?)
+    INSERT INTO launch_attempts (
+      id, task_id, from_thread_id, skill_id, command_line, label,
+      environment_role, launched_by, status, thread_id, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?)
     `,
     id,
     task.id,
-    fromThreadId,
-    skillId,
+    input.fromThreadId,
+    input.skillId,
+    input.commandLine,
+    input.label,
+    input.environmentRole,
+    input.launchedBy,
     nowMs(),
   );
   return id;
@@ -139,10 +165,11 @@ function shouldCreateWorktree(task: TaskRecord, skillId: string | null, disabled
   return task.worktreeEnvironmentId === null && (label === "worktree-setup" || label === "implementation");
 }
 
-async function selectEnvironment(bb: BbPluginApi, task: TaskRecord, skillId: string | null) {
+async function selectEnvironment(bb: BbPluginApi, task: TaskRecord, skillId: string | null, role: "base" | "worktree") {
   const disabled = await workspaceDisabled(bb, task);
+  if (role === "worktree" && disabled) throw new Error("Workspace config disables worktree launch.");
   if (task.worktreeEnvironmentId && !disabled && task.worktreeTiming !== "never") {
-    return { environment: { type: "reuse" as const, environmentId: task.worktreeEnvironmentId }, stores: "none" as const };
+    return { environment: { type: "reuse" as const, environmentId: task.worktreeEnvironmentId }, stores: "none" as const, role: "worktree" as const };
   }
   if (shouldCreateWorktree(task, skillId, disabled)) {
     const hostId = task.hostId ?? await hostIdFromBaseEnvironment(bb, task);
@@ -154,16 +181,18 @@ async function selectEnvironment(bb: BbPluginApi, task: TaskRecord, skillId: str
         workspace: { type: "managed-worktree" as const, baseBranch: await workspaceBaseBranch(bb, task) },
       },
       stores: "worktree" as const,
+      role: "worktree" as const,
     };
   }
-  if (task.baseEnvironmentId) return { environment: { type: "reuse" as const, environmentId: task.baseEnvironmentId }, stores: "none" as const };
+  if (task.baseEnvironmentId) return { environment: { type: "reuse" as const, environmentId: task.baseEnvironmentId }, stores: "none" as const, role: "base" as const };
   if (task.hostId && task.defaultDirectory) {
     return {
       environment: { type: "host" as const, hostId: task.hostId, workspace: { type: "unmanaged" as const, path: task.defaultDirectory } },
       stores: "base" as const,
+      role: "base" as const,
     };
   }
-  return { environment: { type: "project-default" as const }, stores: "base" as const };
+  return { environment: { type: "project-default" as const }, stores: "base" as const, role: "base" as const };
 }
 
 async function hostIdFromBaseEnvironment(bb: BbPluginApi, task: TaskRecord) {
@@ -191,6 +220,10 @@ export function listLaunchAttempts(db: Database, taskId: string) {
       task_id AS taskId,
       from_thread_id AS fromThreadId,
       skill_id AS skillId,
+      command_line AS commandLine,
+      label,
+      environment_role AS environmentRole,
+      launched_by AS launchedBy,
       status,
       thread_id AS threadId,
       created_at AS createdAt
@@ -208,14 +241,26 @@ export async function launchPhase(
   mirror: Map<string, SessionMirrorRow>,
   bindings: LaunchBindingMirror,
   task: TaskRecord,
-  input: { skillId: string | null; prompt?: string; commandLine?: string | null; launchedBy: string; fromThreadId: string | null },
+  input: { skillId: string | null; prompt?: string; commandLine?: string | null; launchedBy: string; fromThreadId: string | null; attemptId?: string },
 ) {
   canonicalSkill(input.skillId);
-  const existing = activeLaunchAttempt(db, task.id);
-  if (existing) throw new Error(`Resolve launch attempt ${existing.id} before launching again.`);
+  if (task.archived) throw new Error("Task is archived.");
+  const commandLine = commandFor(input.skillId, input.commandLine);
+  const label = labelTitle(input.skillId);
+  const environmentRole = environmentRoleForAttempt(task, input.skillId);
+  const attemptId = input.attemptId ?? (() => {
+    const existing = activeLaunchAttempt(db, task.id);
+    if (existing) throw new Error(`Resolve launch attempt ${existing.id} before launching again.`);
+    return insertAttempt(db, task, {
+      fromThreadId: input.fromThreadId,
+      skillId: input.skillId,
+      commandLine,
+      label,
+      environmentRole,
+      launchedBy: input.launchedBy,
+    });
+  })();
 
-  const selected = await selectEnvironment(bb, task, input.skillId);
-  const attemptId = insertAttempt(db, task, input.fromThreadId, input.skillId);
   registerPendingLaunch(bindings, {
     token: attemptId,
     taskId: task.id,
@@ -224,6 +269,15 @@ export async function launchPhase(
     launchedBy: input.launchedBy,
     threadId: null,
   });
+  let selected: Awaited<ReturnType<typeof selectEnvironment>>;
+  try {
+    selected = await selectEnvironment(bb, task, input.skillId, environmentRole);
+  } catch (error) {
+    failPreSpawnAttempt(db, attemptId, input.fromThreadId);
+    clearPendingLaunch(bindings, attemptId);
+    bb.realtime.publish("hl:sessions", { taskId: task.id, threadId: null });
+    throw error;
+  }
   try {
     const thread = await bb.sdk.threads.spawn({
       projectId: task.projectId,
@@ -231,7 +285,6 @@ export async function launchPhase(
       prompt: `${launchMarker(attemptId)}\n${TASK_CONTEXT_FIRST_ACTION}\n${promptFor(task, input)}`,
       title: `${labelTitle(input.skillId)}: ${task.name}`,
       visibility: "visible",
-      ...(input.fromThreadId ? { parentThreadId: input.fromThreadId } : {}),
       executionInputSources: {
         providerId: task.providerId ? "explicit" : undefined,
         model: task.model ? "explicit" : undefined,
@@ -279,6 +332,13 @@ export async function launchDraft(bb: BbPluginApi, db: Database, mirror: Map<str
   writeRow(db, "UPDATE tasks SET is_draft = 0, updated_at = ? WHERE id = ?", nowMs(), taskId);
   bb.realtime.publish("tasks", { taskId });
   return result;
+}
+
+function failPreSpawnAttempt(db: Database, attemptId: string, fromThreadId: string | null) {
+  db.transaction(() => {
+    claimAttempt(db, attemptId, "failed", null);
+    if (fromThreadId) writeRow(db, "UPDATE sessions SET advanced_at = NULL, updated_at = ? WHERE thread_id = ?", nowMs(), fromThreadId);
+  })();
 }
 
 export async function forkSession(
@@ -347,6 +407,10 @@ export async function resolveLaunchAttempt(
       task_id AS taskId,
       from_thread_id AS fromThreadId,
       skill_id AS skillId,
+      command_line AS commandLine,
+      label,
+      environment_role AS environmentRole,
+      launched_by AS launchedBy,
       status,
       thread_id AS threadId,
       created_at AS createdAt
@@ -365,7 +429,6 @@ export async function resolveLaunchAttempt(
   if (action.type === "adopt") {
     const candidates = await bb.sdk.threads.list({
       originPluginId: bb.pluginId,
-      ...(attempt.fromThreadId ? { parentThreadId: attempt.fromThreadId } : {}),
       limit: 100,
     });
     const found = candidates.find((thread) => thread.id === action.threadId && thread.createdAt >= attempt.createdAt);
@@ -388,12 +451,13 @@ export async function resolveLaunchAttempt(
           thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
           hl_status, hl_status_at, had_turn, interrupted, blocked_reason,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, 'user', ?, 'launching', ?, 0, 0, NULL, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, 'launching', ?, 0, 0, NULL, ?, ?)
         `,
         action.threadId,
         task.id,
-        attempt.skillId ? labelTitle(attempt.skillId) : null,
+        attempt.label,
         attempt.skillId,
+        attempt.launchedBy,
         attempt.fromThreadId,
         timestamp,
         timestamp,
@@ -403,18 +467,27 @@ export async function resolveLaunchAttempt(
     })();
     clearPendingLaunch(bindings, id);
     if (!result.claimed) return { threadId: result.threadId };
-    if (!task.baseEnvironmentId && environmentId) {
+    if (attempt.environmentRole === "worktree" && environmentId) {
+      writeRow(db, "UPDATE tasks SET worktree_environment_id = ?, updated_at = ? WHERE id = ?", environmentId, timestamp, task.id);
+    } else if (attempt.environmentRole === "base" && !task.baseEnvironmentId && environmentId) {
       writeRow(db, "UPDATE tasks SET base_environment_id = ?, updated_at = ? WHERE id = ?", environmentId, timestamp, task.id);
     }
     mirrorSession(db, mirror, action.threadId);
     await reconcileSession(bb, db, mirror, action.threadId);
     return { threadId: action.threadId };
   }
-  if (!claimAttempt(db, id, "failed", attempt.threadId)) {
+  if (!writeRow(db, "UPDATE launch_attempts SET status = 'pending', thread_id = NULL WHERE id = ? AND status IN ('pending', 'uncertain')", id).changes) {
     const current = readRow<{ threadId: string | null }>(db, "SELECT thread_id AS threadId FROM launch_attempts WHERE id = ?", id);
     clearPendingLaunch(bindings, id);
     return { threadId: current?.threadId ?? null };
   }
   clearPendingLaunch(bindings, id);
-  return launchDraft(bb, db, mirror, bindings, attempt.taskId);
+  const task = readTaskOrThrow(db, attempt.taskId);
+  return launchPhase(bb, db, mirror, bindings, task, {
+    skillId: attempt.skillId,
+    commandLine: attempt.commandLine,
+    launchedBy: attempt.launchedBy,
+    fromThreadId: attempt.fromThreadId,
+    attemptId: id,
+  });
 }

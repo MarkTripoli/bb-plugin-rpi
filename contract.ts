@@ -98,6 +98,7 @@ export const sessionRowSchema = z
     lastReconcileSeq: z.number().int(),
     lastSummarizedTurnKey: z.string().nullable(),
     completedTurnKey: z.string().nullable(),
+    nextStepTurnKey: z.string().nullable(),
     createdAt: z.number().int(),
     updatedAt: z.number().int(),
   })
@@ -110,6 +111,10 @@ export const launchAttemptRowSchema = z
     taskId: z.string(),
     fromThreadId: z.string().nullable(),
     skillId: z.string().nullable(),
+    commandLine: z.string().nullable(),
+    label: z.string().nullable(),
+    environmentRole: z.enum(["base", "worktree"]),
+    launchedBy: z.string(),
     status: z.enum(["pending", "spawned", "uncertain", "failed"]),
     threadId: z.string().nullable(),
     createdAt: z.number().int(),
@@ -194,6 +199,7 @@ export const workspaceViewSchema = z.object({
   copyGlobs: z.array(z.string()),
   disabled: z.boolean(),
   warnings: z.array(z.string()),
+  error: z.string().nullable(),
   provisioningEvents: z.array(z.object({
     seq: z.number().int(),
     createdAt: z.number().int(),

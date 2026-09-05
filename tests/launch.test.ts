@@ -94,6 +94,31 @@ test("launchPhase prompts start with marker then task context first-action line"
   db.close();
 });
 
+test("phase successor spawn is a sibling with plugin metadata only", async () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  const task = db.prepare("SELECT id, project_id AS projectId, name, slug, draft_prompt AS draftPrompt, workflow_type AS workflowType, worktree_timing AS worktreeTiming, is_draft AS isDraft, archived, host_id AS hostId, base_environment_id AS baseEnvironmentId, worktree_environment_id AS worktreeEnvironmentId, default_directory AS defaultDirectory, provider_id AS providerId, model, reasoning_level AS reasoningLevel, service_tier AS serviceTier, permission_mode AS permissionMode, auto_advance AS autoAdvance, aa_questions_to_research, aa_research_to_design, aa_plan_to_worktree, aa_worktree_to_implementation, aa_implementation_to_pr, created_at AS createdAt, updated_at AS updatedAt FROM tasks WHERE id = ?").get(taskId) as never;
+  let spawnInput: Record<string, unknown> = {};
+  const bb = {
+    realtime: { publish: () => undefined },
+    sdk: {
+      threads: {
+        spawn: async (input: Record<string, unknown>) => {
+          spawnInput = input;
+          return makeThreadResponse({ id: "thr_new", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" });
+        },
+        get: async () => makeThreadResponse({ id: "thr_new", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }),
+      },
+    },
+    log: { warn: () => undefined },
+  };
+  await launchPhase(bb as never, db, new Map(), createLaunchBindingMirror(), task, { skillId: "create-research", launchedBy: "proceed", fromThreadId: "thr_parent" });
+  assert.equal("parentThreadId" in spawnInput, false);
+  const session = db.prepare("SELECT forked_from_thread_id AS fromThreadId FROM sessions WHERE thread_id = 'thr_new'").get() as { fromThreadId: string | null };
+  assert.equal(session.fromThreadId, "thr_parent");
+  db.close();
+});
+
 test("adopt rejects a thread already bound to a session without resolving the attempt", async () => {
   const db = makeDb();
   const taskId = seedTask(db);
@@ -122,6 +147,56 @@ test("adopt rejects a thread already bound to a session without resolving the at
   const attempt = db.prepare("SELECT status, thread_id FROM launch_attempts WHERE id = ?").get("attempt_1") as { status: string; thread_id: string | null };
   assert.equal(attempt.status, "uncertain");
   assert.equal(attempt.thread_id, null);
+  db.close();
+});
+
+test("adopt stores worktree environment when the attempt role is worktree", async () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  db.prepare("INSERT INTO launch_attempts (id, task_id, from_thread_id, skill_id, command_line, label, environment_role, launched_by, status, thread_id, created_at) VALUES (?, ?, NULL, 'setup-worktree', '/rpi-setup-worktree', 'worktree-setup', 'worktree', 'auto_advance', 'uncertain', NULL, ?)")
+    .run("attempt_1", taskId, 1);
+  const thread = makeThreadResponse({ id: "thr_adopt", projectId: "proj_1", createdAt: 2, originPluginId: "humanlayer" });
+  const bb = {
+    pluginId: "humanlayer",
+    sdk: {
+      threads: {
+        list: async () => [thread],
+        get: async () => ({ ...thread, environmentId: "env_worktree", environment: { id: "env_worktree", path: "/tmp/repo", status: "ready" } }),
+        interactions: { list: async () => [] },
+      },
+    },
+  };
+  await resolveLaunchAttempt(bb as never, db, new Map(), createLaunchBindingMirror(), "attempt_1", { type: "adopt", threadId: "thr_adopt" });
+  const task = db.prepare("SELECT worktree_environment_id AS worktreeEnvironmentId, base_environment_id AS baseEnvironmentId FROM tasks WHERE id = ?").get(taskId) as { worktreeEnvironmentId: string | null; baseEnvironmentId: string | null };
+  assert.equal(task.worktreeEnvironmentId, "env_worktree");
+  assert.equal(task.baseEnvironmentId, null);
+  db.close();
+});
+
+test("retry reuses the same attempt command and role", async () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  db.prepare("INSERT INTO launch_attempts (id, task_id, from_thread_id, skill_id, command_line, label, environment_role, launched_by, status, thread_id, created_at) VALUES (?, ?, 'thr_source', 'create-research', '/rpi-create-research @x.md', 'research', 'base', 'proceed', 'uncertain', NULL, ?)")
+    .run("attempt_1", taskId, 1);
+  let prompt = "";
+  const bb = {
+    realtime: { publish: () => undefined },
+    sdk: {
+      threads: {
+        spawn: async (input: { prompt: string }) => {
+          prompt = input.prompt;
+          return makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" });
+        },
+        get: async () => makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }),
+      },
+    },
+    log: { warn: () => undefined },
+  };
+  await resolveLaunchAttempt(bb as never, db, new Map(), createLaunchBindingMirror(), "attempt_1", { type: "retry" });
+  assert.match(prompt, /^<!-- hl:launch:attempt_1 -->/);
+  assert.match(prompt, /\/rpi-create-research @x\.md/);
+  const attempts = db.prepare("SELECT COUNT(*) AS count FROM launch_attempts").get() as { count: number };
+  assert.equal(attempts.count, 1);
   db.close();
 });
 

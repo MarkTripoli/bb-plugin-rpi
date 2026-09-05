@@ -250,6 +250,35 @@ test("idle completion stores next step and relevant RPI documents", async () => 
   db.close();
 });
 
+test("system-injected initiating messages append summary without overwriting an existing next step", async () => {
+  const db = makeDb();
+  const mirror = new Map();
+  seedSession(db);
+  const priorNext = JSON.stringify({ parsedAt: 1, extraction: { type: "next_step_found", nextStepPrompt: "/rpi-create-research", nextStepSummary: "next", nextStepType: "create-research", taskReference: null, suggestedDirectory: null } });
+  db.prepare("UPDATE sessions SET next_step_json = ?, next_step_turn_key = 'turn_old', completed_turn_key = 'turn_old', last_summarized_turn_key = 'turn_old' WHERE thread_id = 'thr_1'").run(priorNext);
+  mirrorSession(db, mirror, "thr_1");
+  const bb = {
+    sdk: {
+      threads: {
+        interactions: { list: async () => [] },
+        timeline: async () => ({
+          rows: [
+            { kind: "conversation", role: "user", text: "child finished", turnId: "turn_new", sourceSeqStart: 10, senderThreadId: "thr_child", systemMessageKind: "child-completed" },
+            { kind: "conversation", role: "assistant", text: "noted", turnId: "turn_new", sourceSeqStart: 11 },
+          ],
+        }),
+      },
+    },
+  };
+  await recordIdleCompletion(bb as never, db, mirror, thread({ updatedAt: 2 }), "noted");
+  const stored = db.prepare("SELECT completed_turn_key, next_step_turn_key, next_step_json, summary_json FROM sessions WHERE thread_id = ?").get("thr_1") as { completed_turn_key: string | null; next_step_turn_key: string | null; next_step_json: string | null; summary_json: string | null };
+  assert.equal(stored.completed_turn_key, "events:2");
+  assert.equal(stored.next_step_turn_key, "turn_old");
+  assert.equal(stored.next_step_json, priorNext);
+  assert.deepEqual(parseJson<{ summaryHistory?: string[] }>(stored.summary_json, {}).summaryHistory, ["noted"]);
+  db.close();
+});
+
 test("buffered idle replay preserves completion order", async () => {
   const db = makeDb();
   const mirror = new Map();

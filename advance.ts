@@ -3,13 +3,32 @@ import type * as BetterSqlite3 from "better-sqlite3";
 import { parseJson, readRow, writeRow } from "./db";
 import type { SessionRow, TaskRecord } from "./contract";
 import type { NextStepSuggestions } from "./extraction";
-import { activeLaunchAttempt, launchPhase } from "./launch";
+import { activeLaunchAttempt, environmentRoleForAttempt, insertAttempt, launchPhase } from "./launch";
 import { getTask } from "./tasks";
 import { AUTO_ADVANCE, ITERATE_SKILL_BY_LABEL, normalizePhaseLabel, skillInfo, type PhaseLabel } from "./transitions";
 import type { LaunchBindingMirror, SessionMirrorRow } from "./sessions";
 
 type Database = BetterSqlite3.Database;
 type AdvanceMode = "auto_advance" | "proceed";
+const taskLocks = new Map<string, Promise<unknown>>();
+
+export class AdvanceRejectedError extends Error {
+  constructor(
+    public readonly code:
+      | "session_running"
+      | "pending_interaction"
+      | "task_archived"
+      | "missing_completed_turn"
+      | "stale_extraction"
+      | "invalid_next_step"
+      | "human_gate"
+      | "launch_blocked",
+    message: string,
+  ) {
+    super(message);
+    this.name = "AdvanceRejectedError";
+  }
+}
 
 export async function onCompletedTurn(
   bb: BbPluginApi,
@@ -36,7 +55,8 @@ export async function proceed(
       had_turn AS hadTurn, interrupted, blocked_reason AS blockedReason, next_step_json AS nextStepJson,
       summary_json AS summaryJson, advanced_at AS advancedAt, hydrated_at AS hydratedAt,
       last_reconcile_seq AS lastReconcileSeq, last_summarized_turn_key AS lastSummarizedTurnKey,
-      completed_turn_key AS completedTurnKey, created_at AS createdAt, updated_at AS updatedAt
+      completed_turn_key AS completedTurnKey, next_step_turn_key AS nextStepTurnKey,
+      created_at AS createdAt, updated_at AS updatedAt
     FROM sessions WHERE thread_id = ?
     `,
     threadId,
@@ -84,7 +104,8 @@ export async function iterateInFreshSession(
       sessions.interrupted, sessions.blocked_reason AS blockedReason, sessions.next_step_json AS nextStepJson,
       sessions.summary_json AS summaryJson, sessions.advanced_at AS advancedAt, sessions.hydrated_at AS hydratedAt,
       sessions.last_reconcile_seq AS lastReconcileSeq, sessions.last_summarized_turn_key AS lastSummarizedTurnKey,
-      sessions.completed_turn_key AS completedTurnKey, sessions.created_at AS createdAt, sessions.updated_at AS updatedAt,
+      sessions.completed_turn_key AS completedTurnKey, sessions.next_step_turn_key AS nextStepTurnKey,
+      sessions.created_at AS createdAt, sessions.updated_at AS updatedAt,
       tasks.slug AS taskSlug, tasks.name AS taskName, tasks.workflow_type AS workflowType
     FROM sessions JOIN tasks ON tasks.id = sessions.task_id WHERE sessions.thread_id = ?
     `,
@@ -111,44 +132,150 @@ function advanceSession(
   session: SessionRow,
   mode: AdvanceMode,
 ) {
-  const existing = successorFor(db, session.threadId);
-  if (session.advancedAt !== null && existing) return Promise.resolve({ threadId: existing });
-  if (session.blockedReason) return Promise.resolve({ threadId: existing });
-  const nextStep = parseJson<NextStepSuggestions | null>(session.nextStepJson, null);
-  if (nextStep?.extraction.type !== "next_step_found") return Promise.resolve({ threadId: existing });
-  const label = normalizePhaseLabel(session.label) as PhaseLabel | null;
-  const transition = label ? AUTO_ADVANCE[label as keyof typeof AUTO_ADVANCE] : undefined;
-  if (!transition && mode === "auto_advance") return Promise.resolve({ threadId: existing });
-  const task = taskRecord(db, session.taskId);
-  if (activeLaunchAttempt(db, task.id)) return Promise.resolve({ threadId: existing });
-  if (mode === "auto_advance") {
-    if (!transition || transition.flag === null) return Promise.resolve({ threadId: existing });
-    if (transition.next !== nextStep.extraction.nextStepType) return Promise.resolve({ threadId: existing });
-    if (!task.autoAdvance || !task[transition.flag as keyof TaskRecord]) return Promise.resolve({ threadId: existing });
-  }
-  if (claimAdvanced(db, session.threadId) !== 1) return Promise.resolve({ threadId: successorFor(db, session.threadId) });
-  return launchPhase(bb, db, mirror, bindings, task, {
-    skillId: nextStep.extraction.nextStepType,
-    commandLine: nextStep.extraction.nextStepPrompt,
-    launchedBy: mode,
-    fromThreadId: session.threadId,
-  }).then((result) => {
-    if (mode === "auto_advance") suppressReadyToast(db, session.threadId);
-    return result;
+  return withTaskLock(session.taskId, async () => {
+    const fresh = readSessionForAdvance(db, session.threadId) ?? session;
+    const task = taskRecord(db, fresh.taskId);
+    const existing = successorFor(db, fresh.threadId);
+    if (fresh.advancedAt !== null && existing) return { threadId: existing };
+    const validation = await validateAdvance(bb, db, task, fresh, mode);
+    if (!validation.ok) {
+      if (mode === "proceed") throw validation.error;
+      return { threadId: existing };
+    }
+    const transition = validation.transition;
+    const nextStep = validation.nextStep;
+    if (mode === "auto_advance") {
+      if (!transition || transition.flag === null) return { threadId: existing };
+      if (transition.next !== nextStep.extraction.nextStepType) return { threadId: existing };
+      if (!task.autoAdvance || !task[transition.flag as keyof TaskRecord]) return { threadId: existing };
+    }
+    const attempted = claimAdvanceAndAttempt(db, task, fresh, nextStep, mode);
+    if (!attempted) return { threadId: successorFor(db, fresh.threadId) };
+    return launchPhase(bb, db, mirror, bindings, task, {
+      skillId: nextStep.extraction.nextStepType,
+      commandLine: nextStep.extraction.nextStepPrompt,
+      launchedBy: mode,
+      fromThreadId: fresh.threadId,
+      attemptId: attempted.attemptId,
+    });
   });
 }
 
-export function suppressReadyToast(db: Database, threadId: string) {
-  writeRow(
-    db,
-    "INSERT OR IGNORE INTO notification_suppressions (thread_id, reason, created_at) VALUES (?, 'auto_advance', ?)",
-    threadId,
-    Date.now(),
+async function validateAdvance(
+  bb: BbPluginApi,
+  db: Database,
+  task: TaskRecord,
+  session: SessionRow,
+  mode: AdvanceMode,
+): Promise<
+  | { ok: true; nextStep: NextStepSuggestions & { extraction: { type: "next_step_found"; nextStepType: string; nextStepPrompt: string } }; transition: (typeof AUTO_ADVANCE)[keyof typeof AUTO_ADVANCE] | undefined }
+  | { ok: false; error: AdvanceRejectedError }
+> {
+  const existing = successorFor(db, session.threadId);
+  if (session.advancedAt !== null && existing) return { ok: false, error: new AdvanceRejectedError("launch_blocked", "Session already advanced.") };
+  if (session.hlStatus !== "ready_for_input") return { ok: false, error: new AdvanceRejectedError("session_running", "session running") };
+  if (task.archived) return { ok: false, error: new AdvanceRejectedError("task_archived", "Task is archived.") };
+  if (session.blockedReason) return { ok: false, error: new AdvanceRejectedError("pending_interaction", "Session has pending interactions.") };
+  if (await hasPendingInteractions(bb, session.threadId)) return { ok: false, error: new AdvanceRejectedError("pending_interaction", "Session has pending interactions.") };
+  if (!session.completedTurnKey) return { ok: false, error: new AdvanceRejectedError("missing_completed_turn", "No completed turn is available.") };
+  if (session.nextStepTurnKey !== session.completedTurnKey) return { ok: false, error: new AdvanceRejectedError("stale_extraction", "stale extraction") };
+  const nextStep = parseJson<NextStepSuggestions | null>(session.nextStepJson, null);
+  if (nextStep?.extraction.type !== "next_step_found") return { ok: false, error: new AdvanceRejectedError("invalid_next_step", "No next step is available.") };
+  const label = normalizePhaseLabel(session.label) as PhaseLabel | null;
+  const transition = label ? AUTO_ADVANCE[label as keyof typeof AUTO_ADVANCE] : undefined;
+  if (mode === "proceed" && transition?.flag === null) return { ok: false, error: new AdvanceRejectedError("human_gate", "Session is at a human gate.") };
+  if (activeLaunchAttempt(db, task.id)) return { ok: false, error: new AdvanceRejectedError("launch_blocked", "A launch attempt is already pending.") };
+  return { ok: true, nextStep: nextStep as NextStepSuggestions & { extraction: { type: "next_step_found"; nextStepType: string; nextStepPrompt: string } }, transition };
+}
+
+async function hasPendingInteractions(bb: BbPluginApi, threadId: string) {
+  const interactions = await bb.sdk.threads.interactions.list({ threadId });
+  return (interactions as Array<{ status?: string; resolution?: unknown }>).some((interaction) =>
+    interaction.status === "pending" || (interaction.status === undefined && interaction.resolution == null)
   );
 }
 
-function claimAdvanced(db: Database, threadId: string) {
-  return writeRow(db, "UPDATE sessions SET advanced_at = ?, updated_at = ? WHERE thread_id = ? AND advanced_at IS NULL", Date.now(), Date.now(), threadId).changes;
+function claimAdvanceAndAttempt(
+  db: Database,
+  task: TaskRecord,
+  session: SessionRow,
+  nextStep: NextStepSuggestions & { extraction: { type: "next_step_found"; nextStepType: string; nextStepPrompt: string } },
+  mode: AdvanceMode,
+) {
+  const timestamp = Date.now();
+  return db.transaction(() => {
+    const claim = writeRow(
+      db,
+      "UPDATE sessions SET advanced_at = ?, updated_at = ? WHERE thread_id = ? AND advanced_at IS NULL",
+      timestamp,
+      timestamp,
+      session.threadId,
+    );
+    if (claim.changes !== 1) return null;
+    const attemptId = insertAttempt(db, task, {
+      fromThreadId: session.threadId,
+      skillId: nextStep.extraction.nextStepType,
+      commandLine: nextStep.extraction.nextStepPrompt,
+      label: skillInfo(nextStep.extraction.nextStepType)?.label ?? null,
+      environmentRole: environmentRoleForAttempt(task, nextStep.extraction.nextStepType),
+      launchedBy: mode,
+    });
+    if (mode === "auto_advance" && session.completedTurnKey) {
+      writeRow(
+        db,
+        `
+        INSERT OR IGNORE INTO notification_suppressions (thread_id, completed_turn_key, reason, created_at, consumed_at)
+        VALUES (?, ?, 'auto_advance', ?, NULL)
+        `,
+        session.threadId,
+        session.completedTurnKey,
+        timestamp,
+      );
+    }
+    return { attemptId };
+  })();
+}
+
+function withTaskLock<T>(taskId: string, fn: () => Promise<T>) {
+  const previous = taskLocks.get(taskId) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(fn);
+  const cleanup = next.then(() => undefined, () => undefined).then(() => {
+    if (taskLocks.get(taskId) === cleanup) taskLocks.delete(taskId);
+  });
+  taskLocks.set(taskId, cleanup);
+  return next;
+}
+
+function readSessionForAdvance(db: Database, threadId: string) {
+  const row = readRow<SessionRow & { hadTurn: number | boolean; interrupted: number | boolean }>(
+    db,
+    `
+    SELECT thread_id AS threadId, task_id AS taskId, label, skill_id AS skillId, launched_by AS launchedBy,
+      forked_from_thread_id AS forkedFromThreadId, hl_status AS hlStatus, hl_status_at AS hlStatusAt,
+      had_turn AS hadTurn, interrupted, blocked_reason AS blockedReason, next_step_json AS nextStepJson,
+      summary_json AS summaryJson, advanced_at AS advancedAt, hydrated_at AS hydratedAt,
+      last_reconcile_seq AS lastReconcileSeq, last_summarized_turn_key AS lastSummarizedTurnKey,
+      completed_turn_key AS completedTurnKey, next_step_turn_key AS nextStepTurnKey,
+      created_at AS createdAt, updated_at AS updatedAt
+    FROM sessions WHERE thread_id = ?
+    `,
+    threadId,
+  );
+  if (!row) return null;
+  return { ...row, hadTurn: Boolean(row.hadTurn), interrupted: Boolean(row.interrupted) };
+}
+
+export function suppressReadyToast(db: Database, threadId: string, completedTurnKey = "") {
+  writeRow(
+    db,
+    `
+    INSERT OR IGNORE INTO notification_suppressions (thread_id, completed_turn_key, reason, created_at, consumed_at)
+    VALUES (?, ?, 'auto_advance', ?, NULL)
+    `,
+    threadId,
+    completedTurnKey,
+    Date.now(),
+  );
 }
 
 function successorFor(db: Database, threadId: string) {

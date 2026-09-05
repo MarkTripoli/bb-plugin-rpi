@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
-import { MIGRATIONS } from "../db";
+import { consumeSuppression, MIGRATIONS } from "../db";
 
 test("migrations are idempotent", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "humanlayer" });
@@ -30,5 +30,17 @@ test("migrations are idempotent", async () => {
     .all()
     .map((row) => row as { name: string; notnull: number });
   assert.equal(launchAttemptColumns.find((row) => row.name === "from_thread_id")?.notnull, 0);
+  assert.ok(launchAttemptColumns.some((row) => row.name === "command_line"));
+  assert.ok(launchAttemptColumns.some((row) => row.name === "environment_role"));
+  await harness.lifecycle.dispose();
+});
+
+test("notification suppression is consumed once per completed turn", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "humanlayer" });
+  const db = bb.storage.database();
+  bb.storage.migrate(db, MIGRATIONS);
+  db.prepare("INSERT INTO notification_suppressions (thread_id, completed_turn_key, reason, created_at) VALUES ('thr_1', 'turn_1', 'auto_advance', 1)").run();
+  assert.equal(consumeSuppression(db, "thr_1", "turn_1"), true);
+  assert.equal(consumeSuppression(db, "thr_1", "turn_1"), false);
   await harness.lifecycle.dispose();
 });

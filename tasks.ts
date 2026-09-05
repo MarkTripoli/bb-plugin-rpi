@@ -255,6 +255,7 @@ export function getTask(db: Database, taskId: string) {
     lastReconcileSeq: number;
     lastSummarizedTurnKey: string | null;
     completedTurnKey: string | null;
+    nextStepTurnKey: string | null;
     createdAt: number;
     updatedAt: number;
   }>(
@@ -279,6 +280,7 @@ export function getTask(db: Database, taskId: string) {
       last_reconcile_seq AS lastReconcileSeq,
       last_summarized_turn_key AS lastSummarizedTurnKey,
       completed_turn_key AS completedTurnKey,
+      next_step_turn_key AS nextStepTurnKey,
       created_at AS createdAt,
       updated_at AS updatedAt
     FROM sessions
@@ -298,6 +300,10 @@ export function getTask(db: Database, taskId: string) {
     taskId: string;
     fromThreadId: string | null;
     skillId: string | null;
+    commandLine: string | null;
+    label: string | null;
+    environmentRole: "base" | "worktree";
+    launchedBy: string;
     status: "pending" | "spawned" | "uncertain" | "failed";
     threadId: string | null;
     createdAt: number;
@@ -309,6 +315,10 @@ export function getTask(db: Database, taskId: string) {
       task_id AS taskId,
       from_thread_id AS fromThreadId,
       skill_id AS skillId,
+      command_line AS commandLine,
+      label,
+      environment_role AS environmentRole,
+      launched_by AS launchedBy,
       status,
       thread_id AS threadId,
       created_at AS createdAt

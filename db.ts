@@ -187,6 +187,28 @@ export const MIGRATIONS: string[] = [
     created_at INTEGER NOT NULL
   )
   `,
+  `ALTER TABLE sessions ADD COLUMN next_step_turn_key TEXT`,
+  `ALTER TABLE launch_attempts ADD COLUMN command_line TEXT`,
+  `ALTER TABLE launch_attempts ADD COLUMN label TEXT`,
+  `ALTER TABLE launch_attempts ADD COLUMN environment_role TEXT NOT NULL DEFAULT 'base' CHECK(environment_role IN ('base', 'worktree'))`,
+  `ALTER TABLE launch_attempts ADD COLUMN launched_by TEXT NOT NULL DEFAULT 'user'`,
+  `
+  CREATE TABLE notification_suppressions_v2 (
+    thread_id TEXT NOT NULL,
+    completed_turn_key TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    consumed_at INTEGER,
+    PRIMARY KEY (thread_id, completed_turn_key)
+  )
+  `,
+  `
+  INSERT OR IGNORE INTO notification_suppressions_v2 (thread_id, completed_turn_key, reason, created_at, consumed_at)
+  SELECT thread_id, '', reason, created_at, NULL
+  FROM notification_suppressions
+  `,
+  `DROP TABLE notification_suppressions`,
+  `ALTER TABLE notification_suppressions_v2 RENAME TO notification_suppressions`,
 ];
 
 export function openPluginDatabase(bb: BbPluginApi): Database {
@@ -230,4 +252,20 @@ export function transaction<TArgs extends unknown[], TResult>(
   fn: (...args: TArgs) => TResult,
 ) {
   return db.transaction(fn);
+}
+
+export function consumeSuppression(db: Database, threadId: string, turnKey: string) {
+  const timestamp = nowMs();
+  const result = writeRow(
+    db,
+    `
+    UPDATE notification_suppressions
+    SET consumed_at = ?
+    WHERE thread_id = ? AND completed_turn_key = ? AND consumed_at IS NULL
+    `,
+    timestamp,
+    threadId,
+    turnKey,
+  );
+  return result.changes === 1;
 }

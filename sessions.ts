@@ -232,6 +232,7 @@ export function normalizeSessionRow(row: {
 	  lastReconcileSeq: number;
 	  lastSummarizedTurnKey: string | null;
 	  completedTurnKey: string | null;
+	  nextStepTurnKey: string | null;
 	  createdAt: number;
 	  updatedAt: number;
 	}): SessionRow {
@@ -266,6 +267,7 @@ export function readSession(db: Database, threadId: string) {
 	      last_reconcile_seq AS lastReconcileSeq,
 	      last_summarized_turn_key AS lastSummarizedTurnKey,
 	      completed_turn_key AS completedTurnKey,
+	      next_step_turn_key AS nextStepTurnKey,
 	      created_at AS createdAt,
 	      updated_at AS updatedAt
     FROM sessions
@@ -306,6 +308,7 @@ export function listSessions(db: Database, taskId?: string | null, page?: { limi
 	      last_reconcile_seq AS lastReconcileSeq,
 	      last_summarized_turn_key AS lastSummarizedTurnKey,
 	      completed_turn_key AS completedTurnKey,
+	      next_step_turn_key AS nextStepTurnKey,
 	      created_at AS createdAt,
 	      updated_at AS updatedAt
 	    FROM sessions
@@ -351,6 +354,7 @@ export function refreshSessionMirror(db: Database, mirror: Map<string, SessionMi
 	      sessions.last_reconcile_seq AS lastReconcileSeq,
 	      sessions.last_summarized_turn_key AS lastSummarizedTurnKey,
 	      sessions.completed_turn_key AS completedTurnKey,
+	      sessions.next_step_turn_key AS nextStepTurnKey,
 	      sessions.created_at AS createdAt,
 	      sessions.updated_at AS updatedAt,
       tasks.name AS taskName,
@@ -393,6 +397,7 @@ export function mirrorSession(db: Database, mirror: Map<string, SessionMirrorRow
 	      sessions.last_reconcile_seq AS lastReconcileSeq,
 	      sessions.last_summarized_turn_key AS lastSummarizedTurnKey,
 	      sessions.completed_turn_key AS completedTurnKey,
+	      sessions.next_step_turn_key AS nextStepTurnKey,
 	      sessions.created_at AS createdAt,
 	      sessions.updated_at AS updatedAt,
       tasks.name AS taskName,
@@ -457,11 +462,11 @@ export function appendSessionSummary(
   thread: ThreadLike,
   lastAssistantText: string | null,
 ) {
-  if (!lastAssistantText) return;
+  if (!lastAssistantText?.trim()) return false;
   const row = mirror.get(thread.id) ?? mirrorSession(db, mirror, thread.id) ?? readSession(db, thread.id);
-  if (!row) return;
+  if (!row) return false;
   const key = turnKey(thread);
-  if (row.lastSummarizedTurnKey === key) return;
+  if (row.lastSummarizedTurnKey === key) return false;
   const summary = parseJson<{ summaryHistory?: string[] }>(row.summaryJson, {});
   const summaryHistory = Array.isArray(summary.summaryHistory) ? summary.summaryHistory : [];
   summaryHistory.push(lastAssistantText.slice(0, 600));
@@ -471,15 +476,54 @@ export function appendSessionSummary(
   const relevantRPIDocuments = relevantDocuments(lastAssistantText, row.taskId, taskSlug, liveArtifactNames);
   writeRow(
     db,
-    "UPDATE sessions SET summary_json = ?, next_step_json = ?, last_summarized_turn_key = ?, completed_turn_key = ?, updated_at = ? WHERE thread_id = ?",
+    "UPDATE sessions SET summary_json = ?, next_step_json = ?, last_summarized_turn_key = ?, completed_turn_key = ?, next_step_turn_key = ?, updated_at = ? WHERE thread_id = ?",
     stringifyJson({ ...summary, summaryHistory, ...(relevantRPIDocuments.length > 0 ? { relevantRPIDocuments } : {}) }),
     stringifyJson(nextStep),
+    key,
     key,
     key,
     nowMs(),
     thread.id,
   );
   mirrorSession(db, mirror, thread.id);
+  return true;
+}
+
+async function initiatingMessageIsSystemInjected(bb: BbPluginApi, threadId: string, lastAssistantText: string) {
+  const timeline = await bb.sdk.threads.timeline({ threadId, segmentLimit: "40", summaryOnly: "false" });
+  const rows = (timeline.rows ?? []) as Array<{
+    kind?: string;
+    role?: string;
+    text?: string;
+    turnId?: string | null;
+    sourceSeqStart?: number;
+    senderThreadId?: string | null;
+    systemMessageKind?: string | null;
+  }>;
+  let matchingAssistantIndex = -1;
+  let lastAssistantIndex = -1;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index];
+    if (row?.kind !== "conversation" || row.role !== "assistant") continue;
+    if (lastAssistantIndex === -1) lastAssistantIndex = index;
+    if (row.text === lastAssistantText) {
+      matchingAssistantIndex = index;
+      break;
+    }
+  }
+  const assistant = rows[matchingAssistantIndex >= 0 ? matchingAssistantIndex : lastAssistantIndex];
+  if (!assistant) return false;
+  const before = rows.filter((row) => row.kind === "conversation" && row.role === "user" && (assistant.sourceSeqStart === undefined || (row.sourceSeqStart ?? 0) <= assistant.sourceSeqStart));
+  let user = before.at(-1);
+  if (assistant.turnId) {
+    for (let index = before.length - 1; index >= 0; index -= 1) {
+      if (before[index]?.turnId === assistant.turnId) {
+        user = before[index];
+        break;
+      }
+    }
+  }
+  return Boolean(user?.systemMessageKind || user?.senderThreadId);
 }
 
 function liveArtifacts(db: Database, taskId: string) {
@@ -521,9 +565,34 @@ export async function recordIdleCompletion(
   if (blockedReason !== null) {
     writeRow(db, "UPDATE sessions SET blocked_reason = ?, updated_at = ? WHERE thread_id = ?", blockedReason, nowMs(), thread.id);
     mirrorSession(db, mirror, thread.id);
-    return;
+    return false;
   }
-  appendSessionSummary(db, mirror, thread, lastAssistantText);
+  if (!lastAssistantText?.trim()) return false;
+  if (await initiatingMessageIsSystemInjected(bb, thread.id, lastAssistantText).catch(() => false)) {
+    const row = mirror.get(thread.id) ?? mirrorSession(db, mirror, thread.id) ?? readSession(db, thread.id);
+    if (!row) return false;
+    const key = turnKey(thread);
+    if (row.lastSummarizedTurnKey === key) return false;
+    const summary = parseJson<{ summaryHistory?: string[] }>(row.summaryJson, {});
+    const summaryHistory = Array.isArray(summary.summaryHistory) ? summary.summaryHistory : [];
+    summaryHistory.push(lastAssistantText.slice(0, 600));
+    writeRow(
+      db,
+      "UPDATE sessions SET summary_json = ?, last_summarized_turn_key = ?, completed_turn_key = ?, updated_at = ? WHERE thread_id = ?",
+      stringifyJson({ ...summary, summaryHistory }),
+      key,
+      key,
+      nowMs(),
+      thread.id,
+    );
+    mirrorSession(db, mirror, thread.id);
+    return true;
+  }
+  const row = mirror.get(thread.id) ?? mirrorSession(db, mirror, thread.id);
+  if (row) {
+    await ingest(bb, db, row.taskId, thread.id, { threadId: thread.id }).catch((error) => bb.log?.warn(`Failed to ingest HumanLayer artifacts for ${thread.id}: ${String(error)}`));
+  }
+  return appendSessionSummary(db, mirror, thread, lastAssistantText);
 }
 
 export async function hydrateSession(bb: BbPluginApi, db: Database, mirror: Map<string, SessionMirrorRow>, threadId: string) {
@@ -657,6 +726,7 @@ export function registerSessionRuntime(
 
   const handleIdle = (thread: ThreadLike, lastAssistantText: string | null) => {
     return enqueueThreadWork(thread.id, async () => {
+      let completedNewTurn = false;
       let interrupted = false;
       try {
         interrupted = await idleWasInterrupted(bb, thread.id);
@@ -675,11 +745,7 @@ export function registerSessionRuntime(
           writeRow(db, "UPDATE sessions SET blocked_reason = ?, updated_at = ? WHERE thread_id = ?", blockedReason, nowMs(), thread.id);
           mirrorSession(db, mirror, thread.id);
         } else {
-          appendSessionSummary(db, mirror, thread, lastAssistantText);
-          const row = mirror.get(thread.id);
-          if (row) {
-            await ingest(bb, db, row.taskId, thread.id, { threadId: thread.id }).catch((error) => bb.log.warn(`Failed to ingest HumanLayer artifacts for ${thread.id}: ${String(error)}`));
-          }
+          completedNewTurn = await recordIdleCompletion(bb, db, mirror, thread, lastAssistantText);
         }
       }
       if (!mirror.has(thread.id) || retiredThreads.has(thread.id)) return;
@@ -690,7 +756,7 @@ export function registerSessionRuntime(
       const result = applyStatusDerivation(db, mirror, thread, interactions as InteractionLike[], sequence);
       publish(thread.id);
       const completed = mirror.get(thread.id);
-      if (completed?.hlStatus === "ready_for_input" && !completed.blockedReason) {
+      if (completedNewTurn && completed?.hlStatus === "ready_for_input" && !completed.blockedReason) {
         await onCompletedTurn?.(completed);
       }
     });
