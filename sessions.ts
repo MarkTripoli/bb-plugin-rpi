@@ -675,6 +675,49 @@ export async function recordIdleCompletion(
   return appendSessionSummary(db, mirror, thread, lastAssistantText);
 }
 
+function turnKeyEventCount(key: string | null) {
+  if (!key) return null;
+  const parsed = Number(key.split(":")[0]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+// Fetches the most recent assistant message from the thread's conversation history. Used by
+// reconstructMissingCompletedTurnKey to recover a completed_turn_key when the thread.idle event
+// that would normally have recorded it was dropped (e.g. a restart between idle and reconcile).
+async function lastAssistantMessageText(bb: BbPluginApi, threadId: string) {
+  const timeline = await bb.sdk.threads.timeline({ threadId, segmentLimit: "40", summaryOnly: "false" });
+  const rows = (timeline.rows ?? []) as Array<{ kind?: string; role?: string; text?: string }>;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const candidate = rows[index];
+    if (candidate?.kind === "conversation" && candidate.role === "assistant" && candidate.text?.trim()) return candidate.text;
+  }
+  return null;
+}
+
+/**
+ * Reconciliation (thread:changed, or the startup replay) never receives thread.idle's
+ * lastAssistantText, so a dropped/lost idle event would otherwise leave completed_turn_key null
+ * or stale forever, silently losing the ready_for_input notification. When the derived status is
+ * ready_for_input and the persisted completed_turn_key is missing or older than the thread's
+ * current event count, this reconstructs it the same way the idle handler does: by finding the
+ * last assistant message and calling appendSessionSummary (recordIdleCompletion's own final step).
+ */
+export async function reconstructMissingCompletedTurnKey(
+  bb: BbPluginApi,
+  db: Database,
+  mirror: Map<string, SessionMirrorRow>,
+  thread: ThreadLike,
+  row: Pick<SessionRow, "completedTurnKey">,
+) {
+  const currentEventCount = thread.numEvents ?? null;
+  if (currentEventCount === null) return false;
+  const existingEventCount = turnKeyEventCount(row.completedTurnKey);
+  if (existingEventCount !== null && existingEventCount >= currentEventCount) return false;
+  const lastAssistantText = await lastAssistantMessageText(bb, thread.id).catch(() => null);
+  if (!lastAssistantText) return false;
+  return appendSessionSummary(db, mirror, thread, lastAssistantText);
+}
+
 export async function hydrateSession(bb: BbPluginApi, db: Database, mirror: Map<string, SessionMirrorRow>, threadId: string) {
   const row = mirror.get(threadId) ?? mirrorSession(db, mirror, threadId);
   if (!row) return;
@@ -761,6 +804,11 @@ export function registerSessionRuntime(
       const interactions = await bb.sdk.threads.interactions.list({ threadId });
       if (!mirror.has(threadId) || retiredThreads.has(threadId)) return;
       const result = applyStatusDerivation(db, mirror, thread as ThreadLike, interactions as InteractionLike[], sequence);
+      if (result?.row?.hlStatus === "ready_for_input" && !result.row.blockedReason) {
+        await reconstructMissingCompletedTurnKey(bb, db, mirror, thread as ThreadLike, result.row).catch((error) =>
+          bb.log.warn(`Failed to reconstruct completed turn key for ${threadId}: ${String(error)}`),
+        );
+      }
       await onSnapshot?.(threadId, interactions);
       if (result?.changed) publish(threadId);
     });
@@ -860,6 +908,8 @@ export function registerSessionRuntime(
     });
   };
 
+  // Stamped once so the retention sweep can identify individually-archived-or-deleted sessions
+  // even while their owning task stays open (the sessions row itself is never deleted).
   const forgetThread = (threadId: string) => {
     retiredThreads.add(threadId);
     mirror.delete(threadId);
@@ -869,6 +919,7 @@ export function registerSessionRuntime(
       if (binding.threadId === threadId) bindings.pendingByToken.delete(token);
     }
     bindings.pendingByThread.delete(threadId);
+    writeRow(db, "UPDATE sessions SET thread_archived_at = COALESCE(thread_archived_at, ?) WHERE thread_id = ?", nowMs(), threadId);
   };
 
   const unsubscribe = bb.sdk.subscribe({

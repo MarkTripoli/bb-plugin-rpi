@@ -23,7 +23,7 @@ import {
 import { TASK_CONTEXT_FIRST_ACTION } from "../instructions";
 import {
   DEFAULT_NOTIFICATION_PREFS,
-  approvalFromInteractions,
+  approvalsFromInteractions,
   decideAndPublishNotification,
   notificationSummaryFromSession,
   recoverReadyAfterFailedAdvance,
@@ -38,8 +38,7 @@ function makeSnapshotHandler(db: Database.Database, mirror: Map<string, SessionM
     const row = mirror.get(threadId);
     if (!row) return;
     const context = { prefs: DEFAULT_NOTIFICATION_PREFS, owner: "unknown" as const, viewing: false };
-    const approval = approvalFromInteractions(interactions);
-    if (approval) {
+    for (const approval of approvalsFromInteractions(interactions)) {
       await decideAndPublishNotification(bb as never, db, {
         type: "status_transition",
         threadId,
@@ -462,6 +461,73 @@ test("idle publishes ready signal after auto-advance suppression exists", async 
   db.close();
 });
 
+test("a failed auto-advance launch and the following ready snapshot deliver exactly one notification; a racing reconcile does not duplicate it", async () => {
+  const db = makeDb();
+  const mirror = new Map();
+  seedSession(db);
+  const taskId = (db.prepare("SELECT task_id AS taskId FROM sessions WHERE thread_id = 'thr_1'").get() as { taskId: string }).taskId;
+  // Astra's exact forced-failure case: worktree_timing 'now' with no host makes launchPhase throw
+  // synchronously inside onCompletedTurn, after the notification_suppressions row has already been
+  // claimed for this turn.
+  db.prepare("UPDATE tasks SET workflow_type = 'rpi', auto_advance = 1, aa_plan_to_worktree = 1, worktree_timing = 'now', host_id = NULL WHERE id = ?").run(taskId);
+  db.prepare("UPDATE sessions SET label = 'plan' WHERE thread_id = 'thr_1'").run();
+  const text = "done\n```text\n/rpi-setup-worktree\n```";
+  const published: unknown[] = [];
+  const { bb, handlers } = makeRuntimeBb({
+    get: async ({ threadId }) => ({ ...makeThreadResponse({ id: threadId, status: "idle", updatedAt: 2, environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }), numEvents: 2 }),
+    events: async () => [],
+  });
+  // Only hl:notify publishes are counted here; handleIdle also emits hl:sessions on every
+  // completion, which is irrelevant to this test's double-delivery assertion.
+  Object.assign(bb.realtime, { publish: (topic: string, payload: unknown) => { if (topic === "hl:notify") published.push(payload); } });
+  Object.assign(bb.sdk.threads, {
+    ...bb.sdk.threads,
+    interactions: { list: async () => [] },
+    timeline: async () => ({
+      rows: [
+        { kind: "conversation", role: "user", text: "start", turnId: "turn_1", sourceSeqStart: 1, senderThreadId: null, systemMessageKind: "unlabeled" },
+        { kind: "conversation", role: "assistant", text, turnId: "turn_1", sourceSeqStart: 2 },
+      ],
+    }),
+  });
+  Object.assign(bb.sdk, { files: { listPaths: async () => [] } });
+  const onSnapshot = makeSnapshotHandler(db, mirror, bb);
+  const onAdvanceFailed = async (session: SessionMirrorRow) => {
+    if (!session.completedTurnKey) return;
+    await recoverReadyAfterFailedAdvance(bb as never, db, DEFAULT_NOTIFICATION_PREFS, {
+      threadId: session.threadId,
+      completedTurnKey: session.completedTurnKey,
+      failedSkillLabel: latestLaunchAttemptLabel(db, session.threadId),
+    });
+  };
+  registerSessionRuntime(
+    bb as never,
+    db,
+    mirror,
+    createLaunchBindingMirror(),
+    (row) => onCompletedTurn(bb as never, db, mirror, createLaunchBindingMirror(), row),
+    undefined,
+    onSnapshot,
+    onAdvanceFailed,
+  );
+  mirrorSession(db, mirror, "thr_1");
+  handlers.get("thread.idle")?.({ thread: thread({ numEvents: 2, updatedAt: 2 }), lastAssistantText: text } as never);
+  for (let i = 0; i < 20 && published.length === 0; i += 1) await delay();
+  // Without the fix, the recovery path (ready-recover:...) and the normal ready snapshot check
+  // that runs right after it (ready:...) would both publish for the same turn.
+  assert.equal(published.length, 1, "recovery and the following ready snapshot must deliver exactly one notification");
+  const rows = db.prepare("SELECT dedupe_key AS dedupeKey FROM notifications").all() as Array<{ dedupeKey: string }>;
+  assert.equal(rows.length, 1);
+  assert.match(rows[0].dedupeKey, /^ready-recover:thr_1:/);
+
+  // A racing reconcile re-observing the same, already-recovered turn key must not duplicate it.
+  await onSnapshot("thr_1", []);
+  assert.equal(published.length, 1);
+  const rowsAfter = db.prepare("SELECT dedupe_key AS dedupeKey FROM notifications").all() as Array<{ dedupeKey: string }>;
+  assert.equal(rowsAfter.length, 1);
+  db.close();
+});
+
 test("ready notification always uses the persisted final completed turn key, never a stale one observed by a racing reconcile", async () => {
   const db = makeDb();
   const mirror = new Map();
@@ -500,6 +566,55 @@ test("ready notification always uses the persisted final completed turn key, nev
   db.close();
 });
 
+test("reconcile reconstructs a lost idle completion's completed_turn_key and delivers exactly one ready notification", async () => {
+  const db = makeDb();
+  const mirror = new Map();
+  seedSession(db);
+  mirrorSession(db, mirror, "thr_1");
+  const published: unknown[] = [];
+  const text = "second answer, no next step";
+  const captured: { subscribeCallback: ((event: { id: string; changes: string[] }) => void) | null } = { subscribeCallback: null };
+  const bb = {
+    pluginId: "humanlayer",
+    log: { warn: () => undefined, info: () => undefined },
+    realtime: { publish: (topic: string, payload: unknown) => { if (topic === "hl:notify") published.push(payload); } },
+    onDispose: () => undefined,
+    experimental_hooks: { on: () => undefined },
+    events: { on: () => undefined },
+    sdk: {
+      subscribe: (opts: { callback: (event: { id: string; changes: string[] }) => void }) => {
+        captured.subscribeCallback = opts.callback;
+        return () => undefined;
+      },
+      threads: {
+        get: async ({ threadId }: { threadId: string }) => ({
+          ...makeThreadResponse({ id: threadId, status: "idle", updatedAt: 5, environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }),
+          numEvents: 5,
+        }),
+        interactions: { list: async () => [] },
+        timeline: async () => ({
+          rows: [
+            { kind: "conversation", role: "user", text: "go", turnId: "t1", sourceSeqStart: 1 },
+            { kind: "conversation", role: "assistant", text, turnId: "t1", sourceSeqStart: 2 },
+          ],
+        }),
+      },
+    },
+  };
+  const onSnapshot = makeSnapshotHandler(db, mirror, bb);
+  registerSessionRuntime(bb as never, db, mirror, createLaunchBindingMirror(), undefined, undefined, onSnapshot);
+  // The thread.idle event that would normally have recorded completed_turn_key was dropped (e.g. a
+  // restart between idle and reconcile): the session is still 'running' with no completed turn.
+  captured.subscribeCallback?.({ id: "thr_1", changes: ["status-changed"] });
+  for (let i = 0; i < 20 && published.length === 0; i += 1) await delay();
+  assert.equal(published.length, 1, "reconcile must reconstruct the completed turn key and notify exactly once");
+  const stored = db.prepare("SELECT completed_turn_key AS completedTurnKey FROM sessions WHERE thread_id = 'thr_1'").get() as { completedTurnKey: string | null };
+  assert.equal(stored.completedTurnKey, "5:5");
+  const rows = db.prepare("SELECT dedupe_key AS dedupeKey FROM notifications").all() as Array<{ dedupeKey: string }>;
+  assert.deepEqual(rows.map((row) => row.dedupeKey), ["ready:thr_1:5:5"]);
+  db.close();
+});
+
 test("needs_approval notifies again for a second pending approval id while status stays needs_approval", async () => {
   const db = makeDb();
   const mirror = new Map();
@@ -520,6 +635,29 @@ test("needs_approval notifies again for a second pending approval id while statu
   assert.deepEqual(rows.map((row) => row.dedupeKey), ["approval:thr_1:pint_1", "approval:thr_1:pint_2"]);
   // Redelivering the same approval id must not duplicate.
   await onSnapshot("thr_1", approvalTwo);
+  assert.equal(published.length, 2);
+  db.close();
+});
+
+test("two simultaneously pending approvals in one snapshot both notify; a second reconcile of the same pair notifies neither", async () => {
+  const db = makeDb();
+  const mirror = new Map();
+  seedSession(db);
+  db.prepare("UPDATE sessions SET hl_status = 'needs_approval' WHERE thread_id = 'thr_1'").run();
+  mirrorSession(db, mirror, "thr_1");
+  const published: unknown[] = [];
+  const bb = { realtime: { publish: (_topic: string, payload: unknown) => published.push(payload) } };
+  const onSnapshot = makeSnapshotHandler(db, mirror, bb);
+  const bothPending = [
+    { id: "pint_1", status: "pending", payload: { kind: "approval", toolName: "mcp__a__b", toolInput: "x" } },
+    { id: "pint_2", status: "pending", payload: { kind: "approval", toolName: "mcp__a__b", toolInput: "y" } },
+  ];
+  await onSnapshot("thr_1", bothPending);
+  assert.equal(published.length, 2, "both simultaneously pending approval ids must notify, not just the first");
+  const rows = db.prepare("SELECT dedupe_key AS dedupeKey FROM notifications ORDER BY created_at").all() as Array<{ dedupeKey: string }>;
+  assert.deepEqual(rows.map((row) => row.dedupeKey), ["approval:thr_1:pint_1", "approval:thr_1:pint_2"]);
+  // A second reconcile observing the same still-pending pair must not duplicate either.
+  await onSnapshot("thr_1", bothPending);
   assert.equal(published.length, 2);
   db.close();
 });
