@@ -1,20 +1,68 @@
 ---
+date: [Current date and time with timezone in ISO format]
+git_commit: [Current commit hash]
+branch: [Current branch name]
+repository: [Repository name]
+topic: "[Research topic]"
 type: research
-status: draft
+tags: [research, codebase]
+status: complete
 ---
 
-# Research
+# Research: [Research topic]
 
-## Inputs Read
-- task.md or ticket.md:
-- explicit @ files:
-- comments, if requested:
+**Date**: [Current date and time with timezone]
+**Git Commit**: [Current commit hash]
+**Branch**: [Current branch name]
+**Repository**: [Repository name]
 
-## Findings Or Content
--
+## Research Question
+
+[Copy the research question or questions that drove this pass. Use a numbered list when there is more than one.]
+
+## Research Methodology
+
+This document records current behavior only. It does not recommend implementation work, refactors, optimizations, or future changes.
+
+The findings were gathered from repository inspection, child research-thread outputs, existing tests, and external documentation only where needed for dependency behavior.
+
+## Summary
+
+[Two to four concise paragraphs that synthesize the answer. Explain the major architecture, data flow, boundaries, and relationships without compressing the whole document into bullets.]
+
+## Detailed Findings
+
+[Organize by concept or behavior, not by source file and not by original question. Each section heading should state a concrete finding.]
+
+### 1. [Takeaway heading that states what is true]
+
+[Explain the current behavior. Cite code, tests, docs, or external sources inline. Use tables, Mermaid diagrams, call trees, file trees, component trees, endpoint or type shapes, and pseudocode when they make the current system easier to understand.]
+
+#### Testing patterns
+
+[List the test files, test type, fixtures, mocks, or harnesses that cover this area. If none were found, say so directly.]
+
+### 2. [Next takeaway heading]
+
+[Continue the same pattern.]
+
+#### Testing patterns
+
+[Testing evidence for this section.]
+
+## Code References
+
+[Group the important files and directories by subsystem. Mark whether a group is exhaustive for the researched area or a representative set.]
+
+### [Group name]
+
+- `path/to/file.ts:10-40` - [What evidence lives here.]
+- `path/to/directory/` - [What this directory owns; note whether additional files exist.]
+
+## Architecture Documentation
+
+[Narrative explanation of the current architectural shape: ownership boundaries, conventions, dependencies, state flow, data contracts, and how the pieces compose.]
 
 ## Open Questions
--
 
-## Next Step
-Name the command from the final-answer template.
+[List remaining factual unknowns after the optional second pass. Use "None." when the research answered the relevant questions.]

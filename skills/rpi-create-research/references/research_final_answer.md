@@ -4,7 +4,9 @@ Artifact saved:
 Summary:
 {summary}
 
-The next session can start with:
+If you want to review it first, open the research artifact from the task sidebar.
+
+When you are ready for the design phase, start:
 
 ```text
 /rpi-create-design-discussion
