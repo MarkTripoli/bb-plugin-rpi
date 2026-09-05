@@ -646,6 +646,20 @@ export default async function plugin(bb: BbPluginApi) {
           const body = { ...result, ...(launched ?? {}) };
           return { exitCode: 0, stdout: json ? `${JSON.stringify({ ...body, ...(note ? { note } : {}) })}\n` : `${body.taskId}${launched ? ` ${launched.threadId}` : ""}${note ? ` ${note}` : ""}\n` };
         }
+        if (argv[0] === "tasks" && argv[1] === "update") {
+          const opts = parseArgs(argv.slice(2));
+          if (!opts.task) return { exitCode: 2, stderr: "usage: bb humanlayer tasks update --task <taskId> [--auto true|false] [--aa-research-to-design true|false]\n" };
+          const task = updateTask(db, opts.task, {
+            autoAdvance: optionalBool(opts.auto ?? opts.autoAdvance),
+            aa_questions_to_research: optionalBool(opts.aaQuestionsToResearch ?? opts["aa-questions-to-research"]),
+            aa_research_to_design: optionalBool(opts.aaResearchToDesign ?? opts["aa-research-to-design"]),
+            aa_plan_to_worktree: optionalBool(opts.aaPlanToWorktree ?? opts["aa-plan-to-worktree"]),
+            aa_worktree_to_implementation: optionalBool(opts.aaWorktreeToImplementation ?? opts["aa-worktree-to-implementation"]),
+            aa_implementation_to_pr: optionalBool(opts.aaImplementationToPr ?? opts["aa-implementation-to-pr"]),
+          });
+          bb.realtime.publish("tasks", { taskId: opts.task });
+          return { exitCode: 0, stdout: json ? `${JSON.stringify({ task })}\n` : "updated\n" };
+        }
         if (argv[0] === "launch-skill") {
           const opts = parseArgs(argv.slice(1));
           if (!opts.task || !opts.skill) return { exitCode: 2, stderr: "usage: bb humanlayer launch-skill --task <taskId> --skill <skillId> [--command-line <text>] [--provider <id>] [--model <id>]\n" };
@@ -913,6 +927,11 @@ function parseBoundedInt(input: string | undefined, fallback: number, min: numbe
   const value = input === undefined ? fallback : Number.parseInt(input, 10);
   if (!Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, value));
+}
+
+function optionalBool(input: string | undefined) {
+  if (input === undefined) return undefined;
+  return input === "true" || input === "1" || input === "yes";
 }
 
 function workflowTypeOption(input: string | undefined) {
