@@ -208,3 +208,121 @@ Verification for this rewrite pass:
 npm test: 102 pass, 0 fail
 bb plugin build: dist/server.js, dist/app.js, and metadata/css artifacts emitted
 ```
+
+## Review fixes
+
+### Commit map
+
+| Review item | Commit(s) |
+|---|---|
+| R1 child thread classification and reload-safe agent skill selection | 4b331da |
+| R2 task instructions include current command, label, artifact dir, and research-model hint | 4b331da |
+| R3 remove RPI availability gating and CLI internal bypass | 4b331da |
+| R4 parse CLI task update/proceed through RPC zod schemas | 4b331da |
+| R5 remove show-me as a phase; helper extraction disables Proceed | 4b331da, e4270bd |
+| R6 parse persisted task_ui_state through taskUiStateSchema.safeParse | 4b331da |
+| R7 resolve artifact/comment tools for recorded agent child threads | 4b331da, e4270bd |
+| S1 rewrite copied skill/reference text and expand shingle/final-answer tests | e4270bd |
+| S2 add Step 0 task context to agent skills and require implementer artifact saves | e4270bd |
+| S3 replace old comment reply tool names with hl_reply_to_artifact_comment and test tool references | e4270bd |
+| S4 make rpi-setup-worktree operate in the bb-created worktree and keep legacy setup branch complete | e4270bd |
+| S5 align skill routing, README, extraction, and workflow-aware auto-advance with ground truth graphs | e4270bd, 821de36, 38f074b, 2cc93b3 |
+| S6 restore full iterate-research frontmatter and Key Context Pointers | e4270bd |
+| S7 restore mandatory research/design/agent fidelity rules and output headings | e4270bd |
+| S8 use ::hl-artifact embeds for visual references | e4270bd |
+| S9 document describe-pr artifact save plus gh/glab publication path | e4270bd |
+| S10 fix nested fences, iterate-plan spawn guidance, workspace remote question, TDD resolution gate, and implementation handoff | e4270bd |
+
+### Shingle triage
+
+The 10-word NFKC shingle scan now covers every file under `skills/` against every file under `docs/hl-reference/`.
+
+Allowed normalized shingles are limited to syntax-only overlap:
+
+- Frontmatter keys and placeholder metadata such as date, commit, branch, repository, task, type, and status.
+- Workspace JSON schema field sequences needed to show the config shape.
+- HTML document boilerplate for doctype, charset, and viewport metadata.
+- `/rpi-*` command names and registered `hl_*` tool names.
+
+All other hits were rewritten in our text: copied PR template wording, show-me file-tree examples, structure-outline prose, workspace-config instructions, plan/PRD/TDD placeholders, and copied artifact-template CSS.
+
+### Verification after fixes
+
+```text
+rtk npm test
+tests 109
+pass 109
+fail 0
+
+rtk npx tsc --noEmit
+TypeScript: No errors found
+
+rtk bb plugin build
+dist/server.js
+dist/server.js.map
+dist/server.meta.json
+dist/app.js
+dist/app.css
+dist/app.meta.json
+```
+
+Focused checks covered:
+
+```text
+every final-answer template parses to the expected next skill
+all shipped final-answer templates are covered
+every hl tool referenced by skills is registered
+rewritten skills and references do not contain HumanLayer reference shingles
+outline-only research auto-advance expects structure
+auto advance resolves workflow-specific targets
+```
+
+### Live outline_only check
+
+Installed and reloaded the plugin from this worktree:
+
+```text
+rtk bb plugin install . --yes
+rtk bb plugin reload humanlayer
+humanlayer@0.1.0 running
+```
+
+Successful pinned task:
+
+```text
+taskId: e73e99f7-49f4-468b-b253-124b5801e36a
+workflowType: outline_only
+worktreeTiming: never
+environment: env_quymdd2qrf
+path: /Users/marktripoli/.bb/worktrees/env_quymdd2qrf/bb-plugin-humanlayer
+```
+
+Observed sessions:
+
+```text
+thr_na69z6f6x2 research-questions user ready_for_input next=/rpi-create-research advanced=true
+thr_uxf7n254b3 research auto_advance ready_for_input next=/rpi-create-structure-outline advanced=true
+thr_h4nfz3dyca structure auto_advance ready_for_input next=/rpi-implement-outline advanced=true after Proceed
+thr_ghv3r9bi2s implementation proceed ready_for_input next=/rpi-describe-pr advanced=false
+```
+
+Observed launch attempts:
+
+```text
+f8a581b3-86df-4321-94ab-fa891859ed88 create-research-questions user spawned thr_na69z6f6x2
+d3813da3-8f39-481e-88b4-2fe7ed3b0a2f create-research auto_advance spawned thr_uxf7n254b3
+31ad54a0-d251-4d5e-97d1-8adb76d7e1e0 create-structure-outline auto_advance spawned thr_h4nfz3dyca
+476d569e-cd9b-4cb6-a25a-5cd18fb9174f implement-outline proceed spawned thr_ghv3r9bi2s
+```
+
+Observed artifacts:
+
+```text
+task.md
+01-research-questions-outline-routing.md
+02-research-outline-routing.md
+03-structure-outline-outline-only-routing.md
+04-implementation-noop-verification.md
+```
+
+The live run first exposed stale static auto-advance routing from `research` to design for `outline_only`; 2cc93b3 fixed that with a workflow-aware transition resolver and regression test.
