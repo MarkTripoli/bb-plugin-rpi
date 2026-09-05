@@ -110,15 +110,17 @@ function SessionStatus({ status }: { status: string }) {
   );
 }
 
-type NotifySignal = {
-  id: string;
-  kind: "ready_for_input" | "needs_approval" | "comment" | "ready_after_failed_advance";
-  threadId: string;
-  sound: boolean;
-  toast: { title: string; body: string; threadId: string } | null;
-  volume?: number;
-  synthetic?: boolean;
-};
+type NotifySignal =
+  | {
+      id: string;
+      kind: "ready_for_input" | "needs_approval" | "comment" | "ready_after_failed_advance";
+      threadId: string;
+      sound: boolean;
+      toast: { title: string; body: string; threadId: string } | null;
+      volume?: number;
+      synthetic?: boolean;
+    }
+  | { kind: "dismiss"; notificationId: string };
 
 const DEFAULT_NOTIFICATION_PREFS: Prefs["notifications"] = {
   enabled: true,
@@ -220,6 +222,9 @@ async function playNotificationSound(volume: number, force = false) {
   try {
     await audio.play();
     audioUnlocked = true;
+    // A successful Test sound (force=true) proves playback works, so clear the settings hint
+    // even if the earlier gesture-based unlock probe had failed.
+    if (force) setAudioUnlockBlocked(false);
   } catch {
     if (!warnedAudioBlocked) {
       warnedAudioBlocked = true;
@@ -234,10 +239,11 @@ function shouldHandleHotkey(event: KeyboardEvent, hotkey: string) {
   if (target?.isContentEditable || tagName === "INPUT" || tagName === "TEXTAREA" || tagName === "SELECT") return false;
   const parts = new Set(hotkey.toLowerCase().split("+").map((part) => part.trim()).filter(Boolean));
   const isMac = /mac|iphone|ipad/i.test(navigator.platform);
-  // "mod" maps to the platform-native primary modifier; every modifier is checked exactly
-  // (present or absent) against the configured combo, not just the ones it happens to mention.
-  const wantsMeta = parts.has("mod") ? isMac : parts.has("meta");
-  const wantsCtrl = parts.has("mod") ? !isMac : parts.has("ctrl");
+  // "mod" maps to the platform-native primary modifier (meta on macOS, ctrl elsewhere) without
+  // overriding an explicitly configured ctrl or meta in the same combo, so "mod+ctrl+u" requires
+  // both on macOS instead of "mod" suppressing the explicit ctrl.
+  const wantsMeta = parts.has("meta") || (parts.has("mod") && isMac);
+  const wantsCtrl = parts.has("ctrl") || (parts.has("mod") && !isMac);
   const wantsShift = parts.has("shift");
   const wantsAlt = parts.has("alt");
   if (event.metaKey !== wantsMeta) return false;
@@ -320,8 +326,12 @@ export function HumanLayerNotificationBridge() {
       if (hotkeyOwnerOrder[0] !== token) return;
       if (!shouldHandleHotkey(event, prefs.jumpHotkey)) return;
       event.preventDefault();
-      const pending = pendingToastQueue.shift();
+      // Peek, don't remove: dequeuing happens in exactly one place (the toast's onDismiss/
+      // onAutoClose below), so navigating here does not desync the queue from what is still
+      // visually displayed before the dismiss fires.
+      const pending = pendingToastQueue[0];
       if (pending) {
+        toast.dismiss(pending.id);
         navigate.toThread(pending.threadId);
         return;
       }
@@ -342,6 +352,13 @@ export function HumanLayerNotificationBridge() {
 
   useRealtime("hl:notify", (payload) => {
     const signal = payload as NotifySignal;
+    // A later action (e.g. adopting an orphaned thread) superseded an earlier recovery toast;
+    // dismiss it instead of leaving stale "Retry it from Launch Attempts" instructions visible.
+    if (signal?.kind === "dismiss") {
+      toast.dismiss(signal.notificationId);
+      dequeuePendingToast(signal.notificationId);
+      return;
+    }
     if (!signal?.id || markNotificationSeen(signal.id)) return;
     if (signal.sound) void playNotificationSound(signal.volume ?? prefs.volume);
     if (!signal.toast) return;
@@ -925,6 +942,7 @@ function RecoverLaunchRow({ attempt, onResolved }: { attempt: LaunchAttemptRecor
   const [threadId, setThreadId] = useState("");
   const [busy, setBusy] = useState(false);
   const isPending = attempt.status === "pending";
+  const isFailed = attempt.status === "failed";
 
   const resolve = async (action: { type: "adopt"; threadId: string } | { type: "retry" } | { type: "dismiss" }) => {
     if (busy) return;
@@ -941,12 +959,18 @@ function RecoverLaunchRow({ attempt, onResolved }: { attempt: LaunchAttemptRecor
     <div className="rounded-lg border border-border bg-card/70 p-3">
       <div className="mb-3 flex items-center justify-between gap-3">
         <div className="space-y-1">
-          <div className="text-sm font-medium text-foreground">{isPending ? "Launching..." : "Recover launch"}</div>
+          <div className="text-sm font-medium text-foreground">{isPending ? "Launching..." : isFailed ? "Launch failed" : "Recover launch"}</div>
           <div className="text-xs text-muted-foreground">{attempt.id}</div>
         </div>
-        <span className={pillClassName("ghost")}>{isPending ? "launching..." : "uncertain"}</span>
+        <span className={pillClassName(isFailed ? "draft" : "ghost")}>{isPending ? "launching..." : attempt.status}</span>
       </div>
-      {isPending ? null : (
+      {isPending ? null : isFailed ? (
+        // Only Retry is actionable for a failed attempt; adopt/dismiss are server-rejected no-ops
+        // once an attempt is terminal, and there is no live pending thread left to adopt or dismiss.
+        <Button type="button" disabled={busy} onClick={() => resolve({ type: "retry" })}>
+          Retry
+        </Button>
+      ) : (
         <div className="space-y-2">
           {attempt.adoptionCandidates?.length ? (
             <div className="space-y-1">
@@ -1763,7 +1787,13 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
     return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
   }
 
-  const visibleAttempts = workspace.launchAttempts.filter((attempt) => attempt.status === "pending" || attempt.status === "uncertain" || attempt.status === "retrying");
+  // A failed attempt not yet retried stays visible (with Retry) so a failed-advance recovery
+  // toast's "Retry it from Launch Attempts" instruction is actionable. Once retried, retryMarker
+  // is set and the old row is superseded by its retry attempt, so it drops out of the list.
+  const visibleAttempts = workspace.launchAttempts.filter((attempt) =>
+    attempt.status === "pending" || attempt.status === "uncertain" || attempt.status === "retrying" ||
+    (attempt.status === "failed" && attempt.retryMarker === null),
+  );
 
   return (
     <div className="space-y-4">
