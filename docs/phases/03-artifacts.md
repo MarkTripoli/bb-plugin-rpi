@@ -100,14 +100,104 @@ archivedAt: 1788606816837
 Removed humanlayer.
 ```
 
+## Review fixes
+
+Implemented in:
+
+- `f37dd91 fix artifacts mirror safety`
+- `dea5bf4 fix artifact prompt and preview handling`
+- `3c0fcc6 fix task mirror root bootstrap`
+
+Finding mapping:
+
+1. Blocking hydrate preservation: `f37dd91` added `mirror_state`, stable two-read ingest, last-written SHA checks, and CAS retry logic so disk edits are ingested before hydrate writes. Covered by `hydrate ingests untracked disk edits instead of clobbering them`.
+2. Blocking rootPath and entry confinement: `f37dd91` confines artifact reads, writes, moves, and scans to `.humanlayer/tasks/<slug>` and validates slugs; `3c0fcc6` adds the required parent-root bootstrap because the SDK lstat-checks `rootPath` before creating it. The installed SDK exposes `listPaths` entries as `kind: "file" | "directory"`, `name`, `path`, `positions`, and `score`; no symlink field is declared, so the code honors `isSymbolicLink` if present and otherwise only accepts direct `kind: "file"` entries. Covered by `hydrate writes task artifacts through .humanlayer rootPath with CAS` and `ingest only accepts direct child files under the task root`.
+3. Blocking file-name validation: `f37dd91` rejects empty, absolute, backslash, NUL/control, dot-segment, unpaired-surrogate, `.trash*`, over-255-byte names, and live case collisions before ingesting direct children. Covered by `artifact size cap and path confinement reject unsafe writes` and `file validation rejects case-insensitive live collisions`.
+4. Blocking tombstones: `f37dd91` prevents ingest from resurrecting soft-deleted artifacts, moves exact tombstone matches to collision-safe `.trash/<name>.<version>.<ts>`, leaves edited tombstones in place, and adds restore/delete mirror outcomes. Covered by `tombstoned artifacts are not resurrected by ingest`.
+5. Blocking launch first action: `dea5bf4` adds the required `hl_task_context` first-action line after the launch marker and at the start of contributed instructions. Covered by `launchPhase prompts start with marker then task context first-action line` and `contributed task instructions start with task context first-action line`.
+6. Blocking artifact route safety: `dea5bf4` forces unsafe text, HTML, SVG, XHTML, and unknown route responses to attachment unless explicitly safe inline types are requested, adds `nosniff`, `no-store`, and sandbox CSP headers, and switches HTML/SVG previews to sandboxed `srcDoc`. Covered by `artifact route forces attachment for html and sets security headers`.
+7. Should-fix MIME and size: `f37dd91` uses SDK `sizeBytes` when available before reads, keeps decoded-byte enforcement, and routes task seed, ingest, RPC, CLI, and HTTP through `mimeFor(fileName)`.
+8. Should-fix linked worktrees: `f37dd91` resolves `.git` file `gitdir:`, honors `commondir`, verifies the metadata root is under the host home and has `HEAD`, then CAS-writes `info/exclude` under that metadata root.
+9. Should-fix frontmatter/type: `f37dd91` accepts EOF closing fences, preserves quoted scalar strings, and matches known artifact type prefixes longest-first. Covered by `frontmatter and type inference handle eof fences, quoted scalars, and longest prefixes`.
+10. Should-fix UI refresh/deleted group: `dea5bf4` resets selected versions on artifact changes, refetches previews on `hl:artifacts`, renders deleted artifacts under `DELETED`, and uses Restore there.
+11. Should-fix manifest/version content: `dea5bf4` caps `hl_task_context` artifacts at 200 `name/type/version` entries with a truncation marker; version-list RPC remains metadata-only and content stays on `getArtifact`.
+
+Verification after review fixes:
+
+`npm test`
+
+```text
+tests 45
+pass 45
+fail 0
+```
+
+`npx tsc --noEmit`
+
+```text
+passed
+```
+
+`bb plugin build`
+
+```text
+dist/server.js
+dist/server.js.map
+dist/server.meta.json
+dist/app.js
+dist/app.css
+dist/app.meta.json
+```
+
+Live check:
+
+```text
+bb plugin install . --yes
+Installed humanlayer@0.1.0 ... running
+
+bb plugin reload humanlayer
+humanlayer@0.1.0 running
+
+bb humanlayer tasks create --project proj_v36xq75qse --host host_bsbj4cminc --directory /Users/marktripoli/.bb/worktrees/env_339kec2ijw/bb-plugin-humanlayer --name "Phase 3 review fix live check 2" --prompt "Call hl_task_context first, then reply with exactly: first turn complete" --launch --provider codex --model gpt-5.4-mini --json
+{"taskId":"7bfe0493-13ba-46ea-a09d-fa9f278cbdd3","threadId":"thr_wqwmwptb97"}
+
+bb thread wait thr_wqwmwptb97 --status idle --timeout 180000
+Thread thr_wqwmwptb97 reached status idle.
+
+ls -la .humanlayer/tasks/phase-3-review-fix-live-check-2
+task.md
+
+bb humanlayer artifacts versions --task 7bfe0493-13ba-46ea-a09d-fa9f278cbdd3 --file task.md --json
+version 1, createdBy task:create, operation create
+
+Edited .humanlayer/tasks/phase-3-review-fix-live-check-2/task.md on disk between turns.
+
+bb thread tell thr_wqwmwptb97 "Reply with exactly: second turn complete. Do not edit files."
+Thread thr_wqwmwptb97 steered
+
+bb thread wait thr_wqwmwptb97 --status idle --timeout 180000
+Thread thr_wqwmwptb97 reached status idle.
+
+bb humanlayer artifacts versions --task 7bfe0493-13ba-46ea-a09d-fa9f278cbdd3 --file task.md --json
+version 1, createdBy task:create, operation create
+version 2, createdBy thr_wqwmwptb97, operation ingest
+
+bb humanlayer artifacts get --task 7bfe0493-13ba-46ea-a09d-fa9f278cbdd3 --file task.md --json
+currentVersion 2 includes "Live between-turn edit for Phase 3 review fix verification."
+
+bb thread output thr_wqwmwptb97
+second turn complete
+```
+
+The live-check threads `thr_wqwmwptb97` and `thr_qnsbsvcp9k` were archived after verification, and the path-installed `humanlayer` plugin was removed.
+
 ## Deviations
 
-- No migration was added because the Phase 1 schema already included the artifact columns Phase 3 needed, including `content_type`.
+- The original Phase 3 implementation did not add a migration because Phase 1 already included the artifact columns it needed. Review fixes added `mirror_state` to track hydrate writes and observed disk SHAs.
 - `bb.sdk.files.write` accepted string content, not `Buffer`; hydrate writes text as UTF-8 strings and binary as base64 strings with `contentEncoding: "base64"`.
-- In bb managed worktrees `.git` is a file, so appending `.humanlayer/` to `.git/info/exclude` logs and continues with `ENOTDIR`. The source handles this as a skipped best effort because the plan explicitly said to ignore non-git cases, but resolving the common git dir would make this work for linked worktrees too.
+- In bb managed worktrees `.git` is a file. Review fixes now resolve `gitdir:` and `commondir` before updating `info/exclude`, after checking the metadata root is under the host home and has `HEAD`.
 - Project-default managed-worktree launches can still have a null environment at the first dispatch. The requested wait branch is enabled and verified when the thread has an environment; `thread.active` and `hl_task_context` cover the null-environment first-dispatch case without blocking forever.
 
 ## Reviewer Open Items
 
 - Exercise the Artifacts panel manually in bb after the next plugin install to validate visual fit beyond typecheck/build coverage.
-- Decide whether worktree `.git` file support should resolve the common git dir for `.git/info/exclude`, or whether a logged skip is sufficient for Phase 3.
