@@ -394,7 +394,7 @@ export const rpcContract = defineRpcContract({
   },
   restoreArtifact: {
     input: artifactFileInputSchema,
-    output: z.object({ artifact: artifactRowSchema.nullable(), mirror: mirrorOutcomeSchema }).strict(),
+    output: z.object({ artifact: artifactRowSchema.nullable(), mirror: mirrorOutcomeSchema, outcome: z.enum(["restored", "conflict"]) }).strict(),
   },
   hydrateNow: {
     input: artifactTaskInputSchema,

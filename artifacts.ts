@@ -168,6 +168,16 @@ function sha256(content: Buffer) {
   return createHash("sha256").update(content).digest("hex");
 }
 
+function activeNameCollision(db: Database, taskId: string, fileName: string) {
+  return readRow<{ fileName: string }>(
+    db,
+    "SELECT file_name AS fileName FROM artifacts WHERE task_id = ? AND is_deleted = 0 AND lower(file_name) = lower(?) AND file_name <> ? LIMIT 1",
+    taskId,
+    fileName,
+    fileName,
+  );
+}
+
 function normalizeArtifactRow(row: {
   id: string;
   taskId: string;
@@ -342,13 +352,7 @@ export function upsertArtifact(
   const digest = sha256(buffer);
   const save = transaction(db, () => {
     const timestamp = nowMs();
-    const collision = readRow<{ fileName: string }>(
-      db,
-      "SELECT file_name AS fileName FROM artifacts WHERE task_id = ? AND is_deleted = 0 AND lower(file_name) = lower(?) AND file_name <> ? LIMIT 1",
-      taskId,
-      fileName,
-      fileName,
-    );
+    const collision = activeNameCollision(db, taskId, fileName);
     if (collision) throw new Error(`artifact file name collides with existing artifact ${collision.fileName}`);
     let artifact = getArtifact(db, taskId, fileName);
     if (!artifact) {
@@ -417,8 +421,13 @@ export function deleteArtifact(db: Database, taskId: string, fileName: string) {
 
 export function restoreArtifact(db: Database, taskId: string, fileName: string) {
   assertSafeArtifactFileName(fileName);
-  writeRow(db, "UPDATE artifacts SET is_deleted = 0, updated_at = ? WHERE task_id = ? AND file_name = ?", nowMs(), taskId, fileName);
-  return getArtifact(db, taskId, fileName);
+  return transaction(db, () => {
+    if (activeNameCollision(db, taskId, fileName)) {
+      return { outcome: "conflict" as const, artifact: getArtifact(db, taskId, fileName) };
+    }
+    writeRow(db, "UPDATE artifacts SET is_deleted = 0, updated_at = ? WHERE task_id = ? AND file_name = ?", nowMs(), taskId, fileName);
+    return { outcome: "restored" as const, artifact: getArtifact(db, taskId, fileName) };
+  })();
 }
 
 export function nextArtifactNumber(db: Database, taskId: string) {

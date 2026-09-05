@@ -7,11 +7,14 @@ import {
   ARTIFACT_SIZE_LIMIT_BYTES,
   artifactType,
   assertSafeArtifactFileName,
+  deleteArtifact,
+  getArtifact,
   getArtifactVersion,
   groupByType,
   listArtifactVersions,
   nextArtifactNumber,
   parseFrontmatter,
+  restoreArtifact,
   upsertArtifact,
 } from "../artifacts";
 
@@ -109,6 +112,17 @@ test("file validation rejects case-insensitive live collisions", () => {
   assert.throws(() => upsertArtifact(db, taskId, "notes.md", "b", { createdBy: "t", operation: "test" }), /collides/);
   db.prepare("UPDATE artifacts SET is_deleted = 1 WHERE file_name = ?").run("Notes.md");
   assert.doesNotThrow(() => upsertArtifact(db, taskId, "notes.md", "b", { createdBy: "t", operation: "test" }));
+  db.close();
+});
+
+test("restore rejects case-insensitive live collisions", () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  upsertArtifact(db, taskId, "Notes.md", "a", { createdBy: "t", operation: "test" });
+  deleteArtifact(db, taskId, "Notes.md");
+  upsertArtifact(db, taskId, "notes.md", "b", { createdBy: "t", operation: "test" });
+  assert.equal(restoreArtifact(db, taskId, "Notes.md").outcome, "conflict");
+  assert.equal(getArtifact(db, taskId, "Notes.md")?.isDeleted, true);
   db.close();
 });
 

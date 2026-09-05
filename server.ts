@@ -238,15 +238,19 @@ export default async function plugin(bb: BbPluginApi) {
       return { artifact, mirror };
     },
     restoreArtifact: async ({ taskId, fileName }) => {
+      const restored = restoreArtifact(db, taskId, fileName);
+      if (restored.outcome === "conflict") {
+        publishArtifacts(bb, taskId);
+        return { artifact: restored.artifact, mirror: "conflict" as const, outcome: restored.outcome };
+      }
       const threadId = latestTaskThread(db, taskId);
       let mirror: MirrorFileOutcome = "skipped";
       if (threadId) mirror = await mirrorRestoredArtifact(bb, db, taskId, threadId, fileName).catch((error) => {
         bb.log.warn(`Failed to restore HumanLayer artifact: ${String(error)}`);
         return "conflict" as const;
       });
-      const artifact = restoreArtifact(db, taskId, fileName);
       publishArtifacts(bb, taskId);
-      return { artifact, mirror };
+      return { artifact: restored.artifact, mirror, outcome: restored.outcome };
     },
     hydrateNow: async ({ taskId }) => {
       const threadId = latestTaskThread(db, taskId);

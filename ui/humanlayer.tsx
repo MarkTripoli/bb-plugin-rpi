@@ -699,19 +699,21 @@ function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileN
   const [artifact, setArtifact] = useState<ArtifactRecord | null>(null);
   const [versions, setVersions] = useState<ArtifactVersionRecord[]>([]);
   const [version, setVersion] = useState<number | null>(null);
+  const [pinnedVersion, setPinnedVersion] = useState<number | null>(null);
   const [content, setContent] = useState<string | null>(null);
   const [isBinary, setIsBinary] = useState(false);
   const [url, setUrl] = useState<string | null>(null);
 
   useEffect(() => {
     setVersion(null);
+    setPinnedVersion(null);
   }, [taskId, fileName]);
 
   useEffect(() => {
     let cancelled = false;
     Promise.all([
       rpc.call("listArtifactVersions", { taskId, fileName }),
-      rpc.call("getArtifact", { taskId, fileName, version }),
+      rpc.call("getArtifact", { taskId, fileName, version: pinnedVersion }),
     ]).then(([versionResult, artifactResult]) => {
       if (cancelled) return;
       setVersions(versionResult.versions);
@@ -724,12 +726,12 @@ function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileN
     return () => {
       cancelled = true;
     };
-  }, [fileName, taskId, version, rpc]);
+  }, [fileName, taskId, pinnedVersion, rpc]);
   useRealtime("hl:artifacts", (payload) => {
     if (!payload || typeof payload !== "object" || (payload as { taskId?: unknown }).taskId !== taskId) return;
     void Promise.all([
       rpc.call("listArtifactVersions", { taskId, fileName }),
-      rpc.call("getArtifact", { taskId, fileName, version }),
+      rpc.call("getArtifact", { taskId, fileName, version: pinnedVersion }),
     ]).then(([versionResult, artifactResult]) => {
       setVersions(versionResult.versions);
       setArtifact(artifactResult.artifact);
@@ -754,7 +756,7 @@ function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileN
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <select value={version ?? artifact.currentVersion} onChange={(event) => setVersion(Number.parseInt(event.target.value, 10))} className="h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground">
+          <select value={version ?? artifact.currentVersion} onChange={(event) => setPinnedVersion(Number.parseInt(event.target.value, 10))} className="h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground">
             {versions.map((item) => (
               <option key={item.id} value={item.version}>v{item.version} {item.createdBy}</option>
             ))}

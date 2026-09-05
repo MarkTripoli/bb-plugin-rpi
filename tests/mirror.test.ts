@@ -5,7 +5,7 @@ import Database from "better-sqlite3";
 import { MIGRATIONS } from "../db";
 import { createDraftTask } from "../tasks";
 import { deleteArtifact, getArtifact, getArtifactVersion, listArtifactVersions, upsertArtifact } from "../artifacts";
-import { hydrate, ingest } from "../mirror";
+import { hydrate, ingest, mirrorRestoredArtifact } from "../mirror";
 
 function makeDb() {
   const db = new Database(":memory:");
@@ -119,6 +119,72 @@ test("hydrate ingests untracked disk edits instead of clobbering them", async ()
   db.close();
 });
 
+test("hydrate skips unstable local edits instead of writing db content over them", async () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  seedSession(db, taskId);
+  upsertArtifact(db, taskId, "01-notes-live-check.md", "db", { createdBy: "test", operation: "test" });
+  const diskReads = ["A", "B", "A", "B", "A", "B", "A"];
+  const writes: string[] = [];
+  const warnings: string[] = [];
+  const bb = {
+    log: { info: () => undefined, warn: (message: string) => warnings.push(message) },
+    realtime: { publish: () => undefined },
+    sdk: {
+      threads: { get: async () => ({ environment: { path: "/repo", hostId: "host_1" } }) },
+      files: {
+        mkdir: async () => ({ ok: true }),
+        read: async ({ path }: { path: string }) => {
+          if (path.endsWith("/.git")) throw new Error("not found");
+          if (path.endsWith("/01-notes-live-check.md")) {
+            const content = diskReads.shift() ?? "A";
+            return { content, contentEncoding: "utf8", sha256: sha(content), sizeBytes: Buffer.byteLength(content) };
+          }
+          throw new Error("not found");
+        },
+        write: async ({ path }: { path: string }) => {
+          writes.push(path);
+          return { outcome: "written", sha256: "written", sizeBytes: 1 };
+        },
+      },
+    },
+  };
+  await hydrate(bb as never, db, taskId, "thr_1");
+  assert.equal(getArtifactVersion(db, taskId, "01-notes-live-check.md")?.version.content.toString("utf8"), "db");
+  assert.ok(!writes.some((path) => path.endsWith("/01-notes-live-check.md")));
+  assert.ok(warnings.some((message) => message.includes("unstable")));
+  db.close();
+});
+
+test("restore picks newest trash copy by numeric version before timestamp", async () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  seedSession(db, taskId);
+  const moves: Array<{ sourcePath: string; destinationPath: string }> = [];
+  const bb = {
+    log: { info: () => undefined, warn: () => undefined },
+    sdk: {
+      threads: { get: async () => ({ environment: { path: "/repo", hostId: "host_1" } }) },
+      files: {
+        read: async () => {
+          throw new Error("not found");
+        },
+        listPaths: async () => ({ paths: [
+          { kind: "file", path: ".trash/notes.md.9.9999999999999" },
+          { kind: "file", path: ".trash/notes.md.10.1" },
+        ] }),
+        move: async (input: { sourcePath: string; destinationPath: string }) => {
+          moves.push(input);
+          return { ok: true };
+        },
+      },
+    },
+  };
+  assert.equal(await mirrorRestoredArtifact(bb as never, db, taskId, "thr_1", "notes.md"), "moved");
+  assert.equal(moves[0]!.sourcePath, "/repo/.humanlayer/tasks/task/.trash/notes.md.10.1");
+  db.close();
+});
+
 test("ingest only accepts direct child files under the task root", async () => {
   const db = makeDb();
   const taskId = seedTask(db);
@@ -170,7 +236,7 @@ test("ingest skips files changing between two reads", async () => {
       files: {
         read: async () => {
           reads += 1;
-          const content = reads === 1 ? "partial" : "complete";
+          const content = reads % 2 === 1 ? "partial" : "complete";
           return { content, contentEncoding: "utf8", sha256: sha(content), sizeBytes: Buffer.byteLength(content) };
         },
       },

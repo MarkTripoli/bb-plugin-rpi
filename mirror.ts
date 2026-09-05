@@ -33,6 +33,8 @@ type MirrorLocation = {
 };
 
 export type MirrorFileOutcome = "moved" | "skipped" | "conflict";
+const STABILITY_ATTEMPTS = 3;
+const FILE_CONCURRENCY = 8;
 
 function readBuffer(file: FileRead) {
   const content = file.content ?? "";
@@ -218,7 +220,7 @@ async function writeOne(bb: BbPluginApi, db: Database, location: MirrorLocation,
     return "skipped";
   }
   if (existing?.sha256 && existing.sha256 !== state.lastWrittenSha) {
-    await ingestStableFile(bb, db, location, fileName, threadId, "hydrate-ingest");
+    if (!await ingestStableFile(bb, db, location, fileName, threadId, "hydrate-ingest")) return "skipped";
     const latest = getArtifactVersion(db, location.taskId, fileName);
     if (!latest || latest.version.version > current.version.version) return "skipped";
   }
@@ -239,7 +241,7 @@ async function writeOne(bb: BbPluginApi, db: Database, location: MirrorLocation,
     const nextExisting = await readFile(bb, location, target);
     writeMirrorState(db, location.taskId, fileName, { lastSeenSha: nextExisting?.sha256 ?? null });
     if (nextExisting?.sha256 && nextExisting.sha256 !== mirrorState(db, location.taskId, fileName).lastWrittenSha) {
-      await ingestStableFile(bb, db, location, fileName, threadId, "hydrate-ingest");
+      if (!await ingestStableFile(bb, db, location, fileName, threadId, "hydrate-ingest")) return "skipped";
       const afterIngest = getArtifactVersion(db, location.taskId, fileName);
       if (!afterIngest || afterIngest.version.version > latest.version.version) return "skipped";
     }
@@ -308,9 +310,12 @@ export async function mirrorRestoredArtifact(bb: BbPluginApi, db: Database, task
   const entries = listedEntries(trash)
     .map(normalizeListedPath)
     .filter((entry): entry is NonNullable<ReturnType<typeof normalizeListedPath>> => Boolean(entry))
-    .filter((entry) => entry.kind === "file" && path.basename(relativeListedPath(entry.path, location)).startsWith(`${fileName}.`))
-    .sort((left, right) => path.basename(relativeListedPath(right.path, location)).localeCompare(path.basename(relativeListedPath(left.path, location))));
-  const newest = entries[0];
+    .map((entry) => ({ entry, parsed: parseTrashCopy(fileName, path.basename(relativeListedPath(entry.path, location))) }))
+    .filter((item): item is { entry: NonNullable<ReturnType<typeof normalizeListedPath>>; parsed: { version: number; timestamp: number } } => (
+      item.entry.kind === "file" && item.parsed !== null
+    ))
+    .sort((left, right) => right.parsed.version - left.parsed.version || right.parsed.timestamp - left.parsed.timestamp);
+  const newest = entries[0]?.entry;
   if (!newest) return "skipped";
   const sourceRelative = relativeListedPath(newest.path, location);
   await bb.sdk.files.move({
@@ -331,23 +336,22 @@ export async function hydrate(bb: BbPluginApi, db: Database, taskId: string, thr
   await mkdir(bb, location, path.dirname(location.taskDir), location.workspacePath);
   await mkdir(bb, location, location.taskDir, path.dirname(location.taskDir));
   await ensureGitExclude(bb, location).catch((error) => bb.log.warn(`HumanLayer could not update .git/info/exclude: ${String(error)}`));
-  let written = 0;
-  let skipped = 0;
-  let trashed = 0;
-  for (const artifact of listArtifacts(db, taskId, { includeDeleted: true })) {
+  const results = await mapConcurrent(listArtifacts(db, taskId, { includeDeleted: true }), FILE_CONCURRENCY, async (artifact) => {
     if (artifact.isDeleted) {
       const existing = await readFile(bb, location, artifactPath(location, artifact.fileName));
       if (existing && existing.sha256 === artifact.currentSha256) {
-        if ((await moveDeleted(bb, location, artifact.fileName, artifact.currentVersion)) === "moved") trashed += 1;
+        return (await moveDeleted(bb, location, artifact.fileName, artifact.currentVersion)) === "moved" ? "trashed" : "skipped";
       } else if (existing) {
         bb.log.warn(`HumanLayer left tombstoned artifact on disk with local edits: ${artifact.fileName}`);
       }
-      continue;
+      return "skipped";
     }
     const result = await writeOne(bb, db, location, threadId, artifact.fileName);
-    if (result === "written") written += 1;
-    else skipped += 1;
-  }
+    return result;
+  });
+  const written = results.filter((result) => result === "written").length;
+  const skipped = results.filter((result) => result === "skipped").length;
+  const trashed = results.filter((result) => result === "trashed").length;
   const timestamp = nowMs();
   writeRow(db, "UPDATE sessions SET hydrated_at = ?, updated_at = ? WHERE thread_id = ?", timestamp, timestamp, threadId);
   bb.realtime.publish("artifacts", { taskId });
@@ -384,16 +388,17 @@ function relativeListedPath(input: string, location: MirrorLocation) {
 
 async function stableRead(bb: BbPluginApi, location: MirrorLocation, fileName: string, loggedBy: string) {
   const target = artifactPath(location, fileName);
-  const first = await readFile(bb, location, target);
-  if (!first) return null;
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  const second = await readFile(bb, location, target);
-  if (!second) return null;
-  if (first.sha256 !== second.sha256 || first.sizeBytes !== second.sizeBytes) {
-    bb.log.warn(`HumanLayer skipped unstable artifact write from ${loggedBy}: ${fileName}`);
-    return null;
+  for (let attempt = 1; attempt <= STABILITY_ATTEMPTS; attempt += 1) {
+    const first = await readFile(bb, location, target);
+    if (!first) return null;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const second = await readFile(bb, location, target);
+    if (!second) return null;
+    if (first.sha256 === second.sha256 && first.sizeBytes === second.sizeBytes) return second;
+    if (attempt < STABILITY_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, 200));
   }
-  return second;
+  bb.log.warn(`HumanLayer skipped unstable artifact write from ${loggedBy}: ${fileName}`);
+  return null;
 }
 
 async function ingestStableFile(bb: BbPluginApi, db: Database, location: MirrorLocation, fileName: string, createdBy: string, operation: string) {
@@ -482,17 +487,38 @@ export async function ingest(
         })
         .map((entry) => entry.path);
 
-  let ingested = 0;
-  let skipped = listedSkipped;
-  for (const fileName of names) {
-    if (await ingestStableFile(bb, db, location, fileName, createdBy, options.operation ?? "ingest")) ingested += 1;
-    else skipped += 1;
-  }
+  const results = await mapConcurrent(names, FILE_CONCURRENCY, async (fileName) => (
+    await ingestStableFile(bb, db, location, fileName, createdBy, options.operation ?? "ingest") ? "ingested" : "skipped"
+  ));
+  const ingested = results.filter((result) => result === "ingested").length;
+  const skipped = listedSkipped + results.filter((result) => result === "skipped").length;
   if (ingested > 0) {
     bb.realtime.publish("artifacts", { taskId });
     bb.realtime.publish("hl:artifacts", { taskId });
   }
   return { ingested, skipped };
+}
+
+function parseTrashCopy(fileName: string, basename: string) {
+  const prefix = `${fileName}.`;
+  if (!basename.startsWith(prefix)) return null;
+  const match = /^(\d+)\.(\d+)$/.exec(basename.slice(prefix.length));
+  if (!match) return null;
+  return { version: Number.parseInt(match[1]!, 10), timestamp: Number.parseInt(match[2]!, 10) };
+}
+
+async function mapConcurrent<T, U>(items: T[], limit: number, fn: (item: T) => Promise<U>) {
+  const results = new Array<U>(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const index = next;
+      next += 1;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index]!);
+    }
+  }));
+  return results;
 }
 
 export function latestTaskThread(db: Database, taskId: string) {

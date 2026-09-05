@@ -201,3 +201,41 @@ The live-check threads `thr_wqwmwptb97` and `thr_qnsbsvcp9k` were archived after
 ## Reviewer Open Items
 
 - Exercise the Artifacts panel manually in bb after the next plugin install to validate visual fit beyond typecheck/build coverage.
+
+## Review fixes round 2
+
+Shipped:
+
+- Hydration now retries unstable two-read checks up to two more times, skips without writing if still unstable, and logs the skip.
+- Hydrate and ingest per-file checks now run with a concurrency cap of 8.
+- Trash restore sorts `.trash/<name>.<version>.<ts>` numerically by version then timestamp.
+- Restore now applies the same case-insensitive live-name collision check as save and returns `conflict` without untombstoning.
+- Artifact viewer realtime follows latest unless the user explicitly selects a version.
+- Concurrent `hl_task_context` calls for a task share the same in-flight hydration promise.
+
+Verification:
+
+`npm test`
+
+```text
+tests 48
+pass 48
+fail 0
+```
+
+`npx tsc --noEmit`
+
+```text
+passed
+```
+
+`bb plugin build`
+
+```text
+dist/server.js
+dist/server.js.map
+dist/server.meta.json
+dist/app.js
+dist/app.css
+dist/app.meta.json
+```

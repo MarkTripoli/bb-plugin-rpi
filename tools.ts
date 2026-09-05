@@ -27,6 +27,8 @@ function trimToolContent(value: string) {
 }
 
 export function registerArtifactTools(bb: BbPluginApi, db: Database, mirror: Map<string, SessionMirrorRow>) {
+  const hydrationByTask = new Map<string, Promise<void>>();
+
   bb.agents.registerTool({
     name: "hl_task_context",
     description: "Return the current HumanLayer task context and artifact manifest.",
@@ -38,7 +40,18 @@ export function registerArtifactTools(bb: BbPluginApi, db: Database, mirror: Map
     async execute(_input, { threadId }) {
       const row = taskSession(mirror, threadId);
       if (row.hydratedAt === null) {
-        await hydrate(bb, db, row.taskId, threadId);
+        let hydration = hydrationByTask.get(row.taskId);
+        if (!hydration) {
+          hydration = hydrate(bb, db, row.taskId, threadId)
+            .then(() => {
+              mirrorSession(db, mirror, threadId);
+            })
+            .finally(() => {
+              hydrationByTask.delete(row.taskId);
+            });
+          hydrationByTask.set(row.taskId, hydration);
+        }
+        await hydration;
         mirrorSession(db, mirror, threadId);
       }
       const allArtifacts = listArtifacts(db, row.taskId);
