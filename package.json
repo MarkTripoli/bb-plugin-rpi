@@ -25,6 +25,8 @@
   },
   "scripts": {
     "build": "bb plugin build",
+    "pretest": "npm run typecheck",
+    "typecheck": "tsc --noEmit",
     "test": "node --test --import tsx"
   },
   "devDependencies": {

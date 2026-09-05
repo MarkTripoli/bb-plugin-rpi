@@ -133,8 +133,21 @@ export default async function plugin(bb: BbPluginApi) {
       bb.realtime.publish("tasks", { taskId });
       return { task };
     },
-    listProjects: async ({ includePersonal }) => bb.sdk.projects.list({ includePersonal: includePersonal ?? true }),
-    listHosts: async () => bb.sdk.hosts.list(),
+    listProjects: async ({ includePersonal }) =>
+      bb.sdk.projects.list({ includePersonal: includePersonal ?? true }).then((projects) =>
+        projects.map((project) => ({
+          id: project.id,
+          name: project.name ?? project.id,
+        })),
+      ),
+    listHosts: async () =>
+      bb.sdk.hosts.list().then((hosts) =>
+        hosts.map((host) => ({
+          id: host.id,
+          name: host.name ?? host.id,
+          status: host.status ?? "unknown",
+        })),
+      ),
     getPrefs: async () => {
       const storedPrefs = await bb.storage.kv.get<unknown>(PREFS_KEY);
       return prefsSchema.parse(storedPrefs ?? defaultTaskPrefs({}));

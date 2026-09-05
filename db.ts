@@ -1,7 +1,9 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import type Database from "better-sqlite3";
+import type * as BetterSqlite3 from "better-sqlite3";
 
-export const MIGRATIONS = [
+type Database = BetterSqlite3.Database;
+
+export const MIGRATIONS: string[] = [
   `
   CREATE TABLE tasks (
     id TEXT PRIMARY KEY,
@@ -125,7 +127,32 @@ export const MIGRATIONS = [
     created_at INTEGER NOT NULL
   )
   `,
-] as const;
+  `ALTER TABLE tasks ADD COLUMN base_environment_id TEXT`,
+  `ALTER TABLE tasks ADD COLUMN worktree_environment_id TEXT`,
+  `ALTER TABLE tasks ADD COLUMN aa_questions_to_research INTEGER NOT NULL DEFAULT 1`,
+  `ALTER TABLE tasks ADD COLUMN aa_research_to_design INTEGER NOT NULL DEFAULT 1`,
+  `ALTER TABLE tasks ADD COLUMN aa_plan_to_worktree INTEGER NOT NULL DEFAULT 1`,
+  `ALTER TABLE tasks ADD COLUMN aa_worktree_to_implementation INTEGER NOT NULL DEFAULT 1`,
+  `ALTER TABLE tasks ADD COLUMN aa_implementation_to_pr INTEGER NOT NULL DEFAULT 0`,
+  `
+  CREATE TABLE launch_attempts_v2 (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    from_thread_id TEXT,
+    skill_id TEXT,
+    status TEXT NOT NULL CHECK(status IN ('pending', 'spawned', 'uncertain', 'failed')),
+    thread_id TEXT,
+    created_at INTEGER NOT NULL
+  )
+  `,
+  `
+  INSERT INTO launch_attempts_v2 (id, task_id, from_thread_id, skill_id, status, thread_id, created_at)
+  SELECT id, task_id, from_thread_id, skill_id, status, thread_id, created_at
+  FROM launch_attempts
+  `,
+  `DROP TABLE launch_attempts`,
+  `ALTER TABLE launch_attempts_v2 RENAME TO launch_attempts`,
+];
 
 export function openPluginDatabase(bb: BbPluginApi): Database {
   const db = bb.storage.database();

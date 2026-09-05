@@ -21,6 +21,8 @@ export const taskRowSchema = z
     isDraft: z.boolean(),
     archived: z.boolean(),
     hostId: z.string().nullable(),
+    baseEnvironmentId: z.string().nullable(),
+    worktreeEnvironmentId: z.string().nullable(),
     defaultDirectory: z.string().nullable(),
     providerId: z.string().nullable(),
     model: z.string().nullable(),
@@ -28,6 +30,11 @@ export const taskRowSchema = z
     serviceTier: z.string().nullable(),
     permissionMode: permissionModeSchema.nullable(),
     autoAdvance: z.boolean(),
+    aa_questions_to_research: z.boolean(),
+    aa_research_to_design: z.boolean(),
+    aa_plan_to_worktree: z.boolean(),
+    aa_worktree_to_implementation: z.boolean(),
+    aa_implementation_to_pr: z.boolean(),
     currentLabel: z.string().nullable(),
     stepLabel: z.string(),
     boardColumn: z.enum(["todo_draft", "research_design", "planning", "implementation"]),
@@ -50,6 +57,8 @@ export const taskRecordSchema = z
     isDraft: z.boolean(),
     archived: z.boolean(),
     hostId: z.string().nullable(),
+    baseEnvironmentId: z.string().nullable(),
+    worktreeEnvironmentId: z.string().nullable(),
     defaultDirectory: z.string().nullable(),
     providerId: z.string().nullable(),
     model: z.string().nullable(),
@@ -57,6 +66,11 @@ export const taskRecordSchema = z
     serviceTier: z.string().nullable(),
     permissionMode: permissionModeSchema.nullable(),
     autoAdvance: z.boolean(),
+    aa_questions_to_research: z.boolean(),
+    aa_research_to_design: z.boolean(),
+    aa_plan_to_worktree: z.boolean(),
+    aa_worktree_to_implementation: z.boolean(),
+    aa_implementation_to_pr: z.boolean(),
     createdAt: z.number().int(),
     updatedAt: z.number().int(),
   })
@@ -90,6 +104,8 @@ export const workspaceStateSchema = z
     taskId: z.string(),
     projectId: z.string(),
     hostId: z.string().nullable(),
+    baseEnvironmentId: z.string().nullable(),
+    worktreeEnvironmentId: z.string().nullable(),
     defaultDirectory: z.string().nullable(),
     workflowType: workflowTypeSchema,
     worktreeTiming: worktreeTimingSchema,
@@ -98,17 +114,18 @@ export const workspaceStateSchema = z
     hydratedAt: z.number().int().nullable(),
     setupStatus: z.enum(["pending", "in_progress", "completed", "failed"]),
     setupDetails: z.record(z.string(), z.any()),
-    worktreeEnvironmentId: z.string().nullable(),
     launchAttempts: z.array(
-      z.object({
-        id: z.string(),
-        taskId: z.string(),
-        fromThreadId: z.string(),
-        skillId: z.string().nullable(),
-        status: z.enum(["pending", "spawned", "uncertain", "failed"]),
-        threadId: z.string().nullable(),
-        createdAt: z.number().int(),
-      }),
+      z
+        .object({
+          id: z.string(),
+          taskId: z.string(),
+          fromThreadId: z.string().nullable(),
+          skillId: z.string().nullable(),
+          status: z.enum(["pending", "spawned", "uncertain", "failed"]),
+          threadId: z.string().nullable(),
+          createdAt: z.number().int(),
+        })
+        .strict(),
     ),
     currentLabel: z.string().nullable(),
   })
@@ -147,15 +164,19 @@ export const taskUpdateInputSchema = z
         permissionMode: permissionModeSchema.nullable().optional(),
         autoAdvance: z.boolean().optional(),
         archived: z.boolean().optional(),
-        hostId: z.string().nullable().optional(),
-        defaultDirectory: z.string().nullable().optional(),
+        hostId: z.string().min(1).nullable().optional(),
+        defaultDirectory: z.string().trim().min(1).nullable().optional(),
         providerId: z.string().nullable().optional(),
         model: z.string().nullable().optional(),
         reasoningLevel: z.string().nullable().optional(),
         serviceTier: z.string().nullable().optional(),
-        draftPrompt: z.string().optional(),
-        projectId: z.string().optional(),
-        isDraft: z.boolean().optional(),
+        draftPrompt: z.string().trim().max(10000).optional(),
+        projectId: z.string().min(1).optional(),
+        aa_questions_to_research: z.boolean().optional(),
+        aa_research_to_design: z.boolean().optional(),
+        aa_plan_to_worktree: z.boolean().optional(),
+        aa_worktree_to_implementation: z.boolean().optional(),
+        aa_implementation_to_pr: z.boolean().optional(),
       })
       .strict(),
   })
@@ -186,19 +207,17 @@ export const prefsUpdateSchema = z
 export const projectRowSchema = z
   .object({
     id: z.string(),
-    name: z.string().nullable().optional(),
-    path: z.string().nullable().optional(),
+    name: z.string(),
   })
-  .passthrough();
+  .strict();
 
 export const hostRowSchema = z
   .object({
     id: z.string(),
-    name: z.string().nullable().optional(),
-    status: z.string().nullable().optional(),
-    directory: z.string().nullable().optional(),
+    name: z.string(),
+    status: z.string(),
   })
-  .passthrough();
+  .strict();
 
 export const listTasksInputSchema = z
   .object({

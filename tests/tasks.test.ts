@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { MIGRATIONS } from "../db";
-import { createDraftTask, generateTaskSlug, listTasks } from "../tasks";
+import { createDraftTask, generateTaskSlug, listTasks, updateTask } from "../tasks";
 import { deriveBoardColumn } from "../transitions";
 
 function makeDb() {
@@ -53,4 +53,31 @@ test("creating a draft persists a row and surfaces in listTasks", () => {
   assert.equal(tasks.length, 1);
   assert.equal(tasks[0]?.name, "Build a task system");
   assert.equal(tasks[0]?.boardColumn, "todo_draft");
+});
+
+test("renaming a task keeps its slug stable", () => {
+  const db = makeDb();
+  for (const statement of MIGRATIONS) {
+    if (statement.trim().length > 0) {
+      db.exec(statement);
+    }
+  }
+  const { taskId } = createDraftTask(db, {
+    projectId: "proj_1",
+    prompt: "Build a task system",
+    name: "Build a task system",
+    workflowType: "rpi",
+    worktreeTiming: "later",
+    permissionMode: "default",
+    autoAdvance: false,
+    providerId: null,
+    model: null,
+    reasoningLevel: null,
+    serviceTier: null,
+  });
+  const before = listTasks(db, { archived: false })[0];
+  assert.ok(before);
+  const updated = updateTask(db, taskId, { name: "Renamed task" });
+  assert.equal(updated?.slug, before.slug);
+  assert.equal(updated?.name, "Renamed task");
 });

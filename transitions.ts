@@ -72,6 +72,7 @@ const RESEARCH_AND_DESIGN = new Set([
 ]);
 
 const PLANNING = new Set(["structure", "plan", "worktree-setup"]);
+// Ground truth does not specify rpi:review, so keep it in Implementation for now.
 const IMPLEMENTATION = new Set(["implementation", "implement-plan", "implement-outline", "describe-pr", "review"]);
 
 function normalizeLabel(currentLabel: string) {

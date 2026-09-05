@@ -41,8 +41,8 @@ function SectionTitle({
 function pillClassName(kind: "draft" | "step" | "ghost") {
   return cn(
     "inline-flex items-center rounded-md border px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.18em]",
-    kind === "draft" && "border-border bg-card text-muted-foreground",
-    kind === "step" && "border-emerald-600/50 bg-emerald-600/10 text-emerald-300",
+    kind === "draft" && "border-border bg-muted text-muted-foreground",
+    kind === "step" && "border-border bg-card text-foreground",
     kind === "ghost" && "border-dashed border-border text-muted-foreground",
   );
 }
@@ -227,12 +227,12 @@ function NewTaskPage({
   const { values: settings, isLoading: settingsLoading } = useSettings();
   const [text, setText] = useState("");
   const [name, setName] = useState("");
-  const [projectOptions, setProjectOptions] = useState<Array<{ id: string; name?: string | null; path?: string | null }>>([]);
-  const [hostOptions, setHostOptions] = useState<Array<{ id: string; name?: string | null; directory?: string | null }>>([]);
+  const [projectOptions, setProjectOptions] = useState<Array<{ id: string; name: string }>>([]);
+  const [hostOptions, setHostOptions] = useState<Array<{ id: string; name: string; status: string }>>([]);
   const [projectId, setProjectId] = useState(currentProjectId ?? "");
   const [hostId, setHostId] = useState("");
   const [defaultDirectory, setDefaultDirectory] = useState("");
-  const [permissionMode, setPermissionMode] = useState("default");
+  const [permissionMode, setPermissionMode] = useState<"default" | "accept_edits" | "auto" | "bypass">("default");
   const [workflowType, setWorkflowType] = useState<"rpi" | "prd_tdd" | "freeform">("rpi");
   const [worktreeTiming, setWorktreeTiming] = useState<"now" | "later" | "never">("later");
   const [autoAdvance, setAutoAdvance] = useState(false);
@@ -245,8 +245,8 @@ function NewTaskPage({
       rpc.call("listHosts", {}),
     ]).then(([projects, hosts]) => {
       if (cancelled) return;
-      setProjectOptions(projects as Array<{ id: string; name?: string | null; path?: string | null }>);
-      setHostOptions(hosts as Array<{ id: string; name?: string | null; directory?: string | null }>);
+      setProjectOptions(projects as Array<{ id: string; name: string }>);
+      setHostOptions(hosts as Array<{ id: string; name: string; status: string }>);
       if (!projectId) {
         setProjectId((projects[0] as { id: string } | undefined)?.id ?? "");
       }
@@ -261,10 +261,30 @@ function NewTaskPage({
 
   useEffect(() => {
     if (settingsLoading) return;
-    setPermissionMode(settings.defaultPermissionMode ?? "default");
-    setWorkflowType((settings.defaultWorkflowType as "rpi" | "prd_tdd" | "freeform" | undefined) ?? "rpi");
-    setWorktreeTiming((settings.defaultWorktreeTiming as "now" | "later" | "never" | undefined) ?? "later");
-    setAutoAdvance(Boolean(settings.autoAdvanceDefault ?? false));
+    const permissionModeSetting = settings?.defaultPermissionMode;
+    if (
+      permissionModeSetting === "default" ||
+      permissionModeSetting === "accept_edits" ||
+      permissionModeSetting === "auto" ||
+      permissionModeSetting === "bypass"
+    ) {
+      setPermissionMode(permissionModeSetting);
+    } else {
+      setPermissionMode("default");
+    }
+    const workflowTypeSetting = settings?.defaultWorkflowType;
+    if (workflowTypeSetting === "rpi" || workflowTypeSetting === "prd_tdd" || workflowTypeSetting === "freeform") {
+      setWorkflowType(workflowTypeSetting);
+    } else {
+      setWorkflowType("rpi");
+    }
+    const worktreeTimingSetting = settings?.defaultWorktreeTiming;
+    if (worktreeTimingSetting === "now" || worktreeTimingSetting === "later" || worktreeTimingSetting === "never") {
+      setWorktreeTiming(worktreeTimingSetting);
+    } else {
+      setWorktreeTiming("later");
+    }
+    setAutoAdvance(Boolean(settings?.autoAdvanceDefault ?? false));
   }, [settings, settingsLoading]);
 
   const draftTasks = useMemo(() => tasks.filter((task) => task.isDraft), [tasks]);
@@ -281,7 +301,7 @@ function NewTaskPage({
           defaultDirectory: defaultDirectory.trim() || null,
           workflowType,
           worktreeTiming,
-          permissionMode: permissionMode as "default" | "accept_edits" | "auto" | "bypass",
+          permissionMode,
           autoAdvance,
         },
         name: name.trim() || undefined,
@@ -295,10 +315,8 @@ function NewTaskPage({
   };
 
   const projectLabel = (projectId && projectOptions.find((project) => project.id === projectId)?.name) ||
-    (projectId && projectOptions.find((project) => project.id === projectId)?.path) ||
     (projectId || "Select project");
   const hostLabel = (hostId && hostOptions.find((host) => host.id === hostId)?.name) ||
-    (hostId && hostOptions.find((host) => host.id === hostId)?.directory) ||
     (hostId || "Select host");
 
   return (
@@ -329,7 +347,7 @@ function NewTaskPage({
             />
             <ComposerToolbarSelect
               value={permissionMode}
-              onChange={setPermissionMode}
+              onChange={(value) => setPermissionMode(value as "default" | "accept_edits" | "auto" | "bypass")}
               options={[
                 { value: "default", label: "Default" },
                 { value: "accept_edits", label: "Accept edits" },
@@ -342,7 +360,7 @@ function NewTaskPage({
               onClick={() => setAutoAdvance((value) => !value)}
               className={cn(
                 "inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm font-medium transition",
-                autoAdvance ? "border-emerald-500/60 bg-emerald-500/10 text-emerald-200" : "border-border bg-card text-muted-foreground",
+                autoAdvance ? "border-border bg-muted text-foreground" : "border-border bg-card text-muted-foreground",
               )}
             >
               <Icon name="ArrowTurnForward" className="size-4" />
@@ -353,7 +371,7 @@ function NewTaskPage({
               onChange={setHostId}
               options={hostOptions.map((host) => ({
                 value: host.id,
-                label: host.name ?? host.directory ?? host.id,
+                label: host.name,
               }))}
             />
             <ComposerToolbarSelect
@@ -361,7 +379,7 @@ function NewTaskPage({
               onChange={setProjectId}
               options={projectOptions.map((project) => ({
                 value: project.id,
-                label: project.name ?? project.path ?? project.id,
+                label: project.name,
               }))}
             />
             <ComposerToolbarSelect

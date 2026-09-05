@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type Database from "better-sqlite3";
+import type * as BetterSqlite3 from "better-sqlite3";
 import { nowMs, readRow, readRows, transaction, writeRow } from "./db";
 import { deriveBoardColumn, labelToStepLabel } from "./transitions";
 import type {
@@ -10,6 +10,8 @@ import type {
   TaskWorkspaceState,
   WorkflowType,
 } from "./contract";
+
+type Database = BetterSqlite3.Database;
 
 type RawTaskRecord = {
   id: string;
@@ -22,13 +24,20 @@ type RawTaskRecord = {
   isDraft: number | boolean;
   archived: number | boolean;
   hostId: string | null;
+  baseEnvironmentId: string | null;
+  worktreeEnvironmentId: string | null;
   defaultDirectory: string | null;
   providerId: string | null;
   model: string | null;
   reasoningLevel: string | null;
   serviceTier: string | null;
-  permissionMode: string | null;
+  permissionMode: "default" | "accept_edits" | "auto" | "bypass" | null;
   autoAdvance: number | boolean;
+  aa_questions_to_research: number | boolean;
+  aa_research_to_design: number | boolean;
+  aa_plan_to_worktree: number | boolean;
+  aa_worktree_to_implementation: number | boolean;
+  aa_implementation_to_pr: number | boolean;
   createdAt: number;
   updatedAt: number;
 };
@@ -39,6 +48,11 @@ function normalizeTaskRecord(row: RawTaskRecord): TaskRecord {
     isDraft: Boolean(row.isDraft),
     archived: Boolean(row.archived),
     autoAdvance: Boolean(row.autoAdvance),
+    aa_questions_to_research: Boolean(row.aa_questions_to_research),
+    aa_research_to_design: Boolean(row.aa_research_to_design),
+    aa_plan_to_worktree: Boolean(row.aa_plan_to_worktree),
+    aa_worktree_to_implementation: Boolean(row.aa_worktree_to_implementation),
+    aa_implementation_to_pr: Boolean(row.aa_implementation_to_pr),
   };
 }
 
@@ -82,6 +96,8 @@ function readTaskRecord(db: Database, taskId: string): TaskRecord | undefined {
       is_draft AS isDraft,
       archived,
       host_id AS hostId,
+      base_environment_id AS baseEnvironmentId,
+      worktree_environment_id AS worktreeEnvironmentId,
       default_directory AS defaultDirectory,
       provider_id AS providerId,
       model,
@@ -89,6 +105,11 @@ function readTaskRecord(db: Database, taskId: string): TaskRecord | undefined {
       service_tier AS serviceTier,
       permission_mode AS permissionMode,
       auto_advance AS autoAdvance,
+      aa_questions_to_research,
+      aa_research_to_design,
+      aa_plan_to_worktree,
+      aa_worktree_to_implementation,
+      aa_implementation_to_pr,
       created_at AS createdAt,
       updated_at AS updatedAt
     FROM tasks
@@ -125,6 +146,8 @@ function taskRowFromRecord(record: TaskRecord, sessionCount: number, latestLabel
     isDraft: record.isDraft,
     archived: record.archived,
     hostId: record.hostId,
+    baseEnvironmentId: record.baseEnvironmentId,
+    worktreeEnvironmentId: record.worktreeEnvironmentId,
     defaultDirectory: record.defaultDirectory,
     providerId: record.providerId,
     model: record.model,
@@ -132,6 +155,11 @@ function taskRowFromRecord(record: TaskRecord, sessionCount: number, latestLabel
     serviceTier: record.serviceTier,
     permissionMode: record.permissionMode,
     autoAdvance: record.autoAdvance,
+    aa_questions_to_research: record.aa_questions_to_research,
+    aa_research_to_design: record.aa_research_to_design,
+    aa_plan_to_worktree: record.aa_plan_to_worktree,
+    aa_worktree_to_implementation: record.aa_worktree_to_implementation,
+    aa_implementation_to_pr: record.aa_implementation_to_pr,
     currentLabel: latestLabel,
     stepLabel: labelToStepLabel(latestLabel, record.isDraft),
     boardColumn: deriveBoardColumn(latestLabel, record.isDraft),
@@ -180,6 +208,8 @@ export function listTasks(
       is_draft AS isDraft,
       archived,
       host_id AS hostId,
+      base_environment_id AS baseEnvironmentId,
+      worktree_environment_id AS worktreeEnvironmentId,
       default_directory AS defaultDirectory,
       provider_id AS providerId,
       model,
@@ -187,6 +217,11 @@ export function listTasks(
       service_tier AS serviceTier,
       permission_mode AS permissionMode,
       auto_advance AS autoAdvance,
+      aa_questions_to_research,
+      aa_research_to_design,
+      aa_plan_to_worktree,
+      aa_worktree_to_implementation,
+      aa_implementation_to_pr,
       created_at AS createdAt,
       updated_at AS updatedAt
     FROM tasks
@@ -248,11 +283,38 @@ export function getTask(db: Database, taskId: string) {
     hadTurn: Boolean(row.hadTurn),
     interrupted: Boolean(row.interrupted),
   }));
+  const launchAttempts = readRows<{
+    id: string;
+    taskId: string;
+    fromThreadId: string | null;
+    skillId: string | null;
+    status: "pending" | "spawned" | "uncertain" | "failed";
+    threadId: string | null;
+    createdAt: number;
+  }>(
+    db,
+    `
+    SELECT
+      id,
+      task_id AS taskId,
+      from_thread_id AS fromThreadId,
+      skill_id AS skillId,
+      status,
+      thread_id AS threadId,
+      created_at AS createdAt
+    FROM launch_attempts
+    WHERE task_id = ?
+    ORDER BY created_at ASC
+    `,
+    taskId,
+  );
   const latestLabel = readLatestLabel(db, taskId);
   const workspace: TaskWorkspaceState = {
     taskId: task.id,
     projectId: task.projectId,
     hostId: task.hostId,
+    baseEnvironmentId: task.baseEnvironmentId,
+    worktreeEnvironmentId: task.worktreeEnvironmentId,
     defaultDirectory: task.defaultDirectory,
     workflowType: task.workflowType,
     worktreeTiming: task.worktreeTiming,
@@ -261,8 +323,7 @@ export function getTask(db: Database, taskId: string) {
     hydratedAt: null,
     setupStatus: "pending",
     setupDetails: {},
-    worktreeEnvironmentId: null,
-    launchAttempts: [],
+    launchAttempts,
     currentLabel: latestLabel,
   };
   return { task, sessions, workspace };
@@ -297,10 +358,12 @@ export function createDraftTask(
       `
       INSERT INTO tasks (
         id, project_id, name, slug, draft_prompt, workflow_type, worktree_timing,
-        is_draft, archived, host_id, default_directory, provider_id, model,
-        reasoning_level, service_tier, permission_mode, auto_advance,
-        created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        is_draft, archived, host_id, base_environment_id, worktree_environment_id,
+        default_directory, provider_id, model, reasoning_level, service_tier,
+        permission_mode, auto_advance, aa_questions_to_research,
+        aa_research_to_design, aa_plan_to_worktree, aa_worktree_to_implementation,
+        aa_implementation_to_pr, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 1, 0, ?, ?)
       `,
       taskId,
       input.projectId,
@@ -310,6 +373,8 @@ export function createDraftTask(
       input.workflowType,
       input.worktreeTiming,
       input.hostId ?? null,
+      null,
+      null,
       input.defaultDirectory ?? null,
       input.providerId ?? null,
       input.model ?? null,
@@ -343,13 +408,16 @@ export function updateTask(
     serviceTier?: string | null;
     draftPrompt?: string;
     projectId?: string;
-    isDraft?: boolean;
+    aa_questions_to_research?: boolean;
+    aa_research_to_design?: boolean;
+    aa_plan_to_worktree?: boolean;
+    aa_worktree_to_implementation?: boolean;
+    aa_implementation_to_pr?: boolean;
   },
 ) {
   const task = readTaskRecord(db, taskId);
   if (!task) return null;
   const nextName = patch.name !== undefined ? cleanName(patch.name) : task.name;
-  const nextSlug = patch.name !== undefined ? generateTaskSlug(db, nextName) : task.slug;
   const nextUpdatedAt = nowMs();
   writeRow(
     db,
@@ -357,11 +425,9 @@ export function updateTask(
     UPDATE tasks
     SET
       name = ?,
-      slug = ?,
       draft_prompt = ?,
       workflow_type = ?,
       worktree_timing = ?,
-      is_draft = ?,
       archived = ?,
       host_id = ?,
       default_directory = ?,
@@ -371,16 +437,19 @@ export function updateTask(
       service_tier = ?,
       permission_mode = ?,
       auto_advance = ?,
+      aa_questions_to_research = ?,
+      aa_research_to_design = ?,
+      aa_plan_to_worktree = ?,
+      aa_worktree_to_implementation = ?,
+      aa_implementation_to_pr = ?,
       project_id = ?,
       updated_at = ?
     WHERE id = ?
     `,
     nextName,
-    nextSlug,
     patch.draftPrompt !== undefined ? draftPromptFrom(patch.draftPrompt) : task.draftPrompt,
     patch.workflowType ?? task.workflowType,
     patch.worktreeTiming ?? task.worktreeTiming,
-    patch.isDraft !== undefined ? (patch.isDraft ? 1 : 0) : task.isDraft ? 1 : 0,
     patch.archived !== undefined ? (patch.archived ? 1 : 0) : task.archived ? 1 : 0,
     patch.hostId !== undefined ? patch.hostId : task.hostId,
     patch.defaultDirectory !== undefined ? patch.defaultDirectory : task.defaultDirectory,
@@ -390,11 +459,30 @@ export function updateTask(
     patch.serviceTier !== undefined ? patch.serviceTier : task.serviceTier,
     patch.permissionMode !== undefined ? patch.permissionMode : task.permissionMode,
     patch.autoAdvance !== undefined ? (patch.autoAdvance ? 1 : 0) : task.autoAdvance ? 1 : 0,
+    patch.aa_questions_to_research !== undefined ? (patch.aa_questions_to_research ? 1 : 0) : task.aa_questions_to_research ? 1 : 0,
+    patch.aa_research_to_design !== undefined ? (patch.aa_research_to_design ? 1 : 0) : task.aa_research_to_design ? 1 : 0,
+    patch.aa_plan_to_worktree !== undefined ? (patch.aa_plan_to_worktree ? 1 : 0) : task.aa_plan_to_worktree ? 1 : 0,
+    patch.aa_worktree_to_implementation !== undefined ? (patch.aa_worktree_to_implementation ? 1 : 0) : task.aa_worktree_to_implementation ? 1 : 0,
+    patch.aa_implementation_to_pr !== undefined ? (patch.aa_implementation_to_pr ? 1 : 0) : task.aa_implementation_to_pr ? 1 : 0,
     patch.projectId ?? task.projectId,
     nextUpdatedAt,
     taskId,
   );
   return readTaskRecord(db, taskId) ?? null;
+}
+
+function updateTaskDraftState(db: Database, taskId: string, isDraft: boolean) {
+  writeRow(
+    db,
+    `
+    UPDATE tasks
+    SET is_draft = ?, updated_at = ?
+    WHERE id = ?
+    `,
+    isDraft ? 1 : 0,
+    nowMs(),
+    taskId,
+  );
 }
 
 export function archiveTask(db: Database, taskId: string) {
