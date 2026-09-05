@@ -113,3 +113,158 @@ I did not remove any of these; only the parent/reviewer should decide which phas
 - Confirm the `⌘E`/`T`/`g t` hotkeys against a real keyboard in the bb desktop app (verified as reachable code, not click-tested in a browser harness - see Deviations).
 - Decide whether `preferBatchQueueDelivery` should be removed entirely (still unwired, inert setting) or wired in a follow-up now that `queuedMessages.setGroupBoundary` exists in the SDK.
 - The 20 stale worktrees listed above are safe to prune once their branches are confirmed merged or abandoned.
+
+## Review fixes (Astra + Fable round 2)
+
+Both reviewers' findings from the first phase-8 pass, fixed in small commits
+(`git log --oneline` on this branch shows one commit per item below, in the
+same order). `npm test`, `npx tsc --noEmit`, `bb plugin build`, and
+`npm run check:pack` all pass after every commit and again at the end of this
+round.
+
+1. **Launch host selection (`launch.ts` `selectEnvironment`).** Replaced the
+   `hosts.list()[0]` / `{type:"project-default"}` fallback with
+   `bb.sdk.projects.get({projectId}).sources.find(s => s.isDefault)`: its
+   `hostId`/`path` becomes an explicit unmanaged workspace; `task.hostId`
+   alone is the next-best explicit choice; a launch with neither is rejected
+   with `"no source host for project <id>"` rather than guessing. Tests:
+   `tests/launch.test.ts` ("a hostless base-role task targets the project's
+   default source host, not the first listed host" - two hosts, project
+   source on the second, asserts the spawn targets the second; "...rejects
+   the launch instead of spawning" - no source, no host, typed error, zero
+   `threads.spawn` calls).
+2. **Scratch pad CAS (`db.ts`, `server.ts`, `contract.ts`, `ui/humanlayer.tsx`).**
+   Append-only migration adds `scratch_pads.revision`. `saveScratchPad` takes
+   `expectedRevision`, rejects a stale write with `{outcome:"conflict"}` and
+   the current server text/revision instead of clobbering it; the UI reloads
+   the server copy and toasts "Updated elsewhere, reloaded" on conflict. The
+   textarea enforces the same 20,000-char limit client-side (`maxLength`) and
+   save errors surface via `toast.error`. Test: `tests/server.test.ts`
+   "saveScratchPad is compare-and-swap on revision...".
+3. **Packaging + licensing (`package.json`, `scripts/check-pack.ts`, LICENSE,
+   README, `.gitignore`, `tests/skills.test.ts`).** `files` now ships `dist`
+   and `PARITY.md`; `npm run check:pack` (new) asserts `dist/**` is present
+   and `docs`/`tests`/`docs/hl-reference` are absent from `npm pack --dry-run
+   --json`. `docs/hl-reference/` was moved to a sibling checkout
+   (`../bb-plugin-humanlayer-hl-reference/`, gitignored) and removed from git
+   tracking; the shingle test reads it from `HL_REFERENCE_DIR` (same default
+   path) and skips loudly (visible `# HL_REFERENCE_DIR not found...` message,
+   not a silent pass) when the sibling checkout is absent. LICENSE/README no
+   longer claim this repo contains HL material at HEAD; a git-history purge
+   before any public push is documented as an explicit, separate maintainer
+   release step (not performed here).
+4. **Workflow default prefs at task creation (`tasks.ts`
+   `resolveTaskExecutionDefaults`, `contract.ts`, `server.ts`).** Precedence:
+   explicit request field (including an explicit `null`, "clear this") >
+   that workflow type's stored default > the workflow-agnostic global
+   default. `taskCreateRequestSchema` gained optional/nullable
+   `providerId`/`model`/`reasoningLevel`/`serviceTier`/`permissionMode`
+   fields so "omitted" (`undefined`) is representable separately from
+   "cleared" (`null`). Test: `tests/tasks.test.ts`
+   "resolveTaskExecutionDefaults: explicit request > workflow default >
+   global default...".
+5. **Suggested-next affordance (`transitions.ts` `computeSuggestedNext`,
+   `contract.ts`, `server.ts`, `advance.ts`, `notify.ts`,
+   `ui/humanlayer.tsx`).** Visible whenever a labelled, ready-for-input,
+   unblocked, fully-processed session's extraction is `no_next_step` or
+   disagrees with `autoAdvanceTransition(label, workflowType).next` -
+   uniformly for human gates too (they are manual regardless, not a special
+   always/never case). Renders "Suggested next: `<button text>`"; on a
+   mismatch, both "Agent suggested X; workflow expects Y". One click calls
+   `launchSkill`, now wrapped in the same per-task `withTaskLock` mutex as
+   proceed/auto-advance/retry, and is disabled client-side while a
+   `launch_attempt` for the task is pending/uncertain/retrying. The
+   `hl:notify` ready toast body carries the same hint
+   (`suggestedNextHintFor` in `server.ts`). `SessionView` gained
+   `workflowType`. Auto-advance itself is unchanged: still strictly
+   extraction-gated. Tests: `tests/transitions.test.ts` visibility matrix
+   (found+match / found+mismatch / none / human gate), `tests/notify.test.ts`
+   toast-hint appending, `tests/server.test.ts` launchSkill's
+   pending-attempt rejection.
+6. **Hotkeys (`ui/humanlayer.tsx`).** `T` and `g`-then-`t` now listen on the
+   `HumanLayerPanel`'s own root DOM element via a shared `usePanelHotkeys`
+   hook, not `document` + `capture:true`; they only fire (and only
+   `preventDefault`) while focus is inside the panel. `⌘E` has no owned DOM
+   root (bb's native thread header hosts it), so it stays gated on the
+   viewed session and uses the same hook pointed at
+   `document.documentElement`, in bubble phase instead of capture. All three
+   skip a combo that collides with the user's configured jump hotkey.
+7. **`listSessions` perf (`server.ts`, `sessions.ts`).** Added a
+   `threadInfoCache` kept current by `registerSessionRuntime`'s existing
+   `thread:changed`/`thread.active`/`thread.idle` events (new
+   `onThreadSnapshot` callback param); `listSessions` now reads it
+   synchronously and makes zero SDK calls regardless of session count.
+   `getSession` still fetches live title/workingDirectory/contextUsage for
+   the single-session view. Test: `tests/server.test.ts` "listSessions never
+   makes a per-session SDK call; getSession still fetches live
+   contextUsage".
+8. **PARITY.md recount.** Added a `Recount` note: 89 status-bearing rows,
+   61 full / 14 partial / 9 omitted / 16 N/A, superseding the prior 11
+   partial / 5 omitted / 12 N/A count. Fixed: delete-confirm was
+   misclassified `N/A` (it is a deliberate `omitted`, not "no local
+   equivalent"); the batch-queue row disagreed with itself between the
+   Notifications and Settings tables (now `omitted` in both); the Phase/UI
+   toggles row claimed a blanket `full` (now `partial`, naming exactly which
+   keys do not exist at all - `scratchPadEnabled`, `workflowGraphEnabled` -
+   and which exist but are never read anywhere outside their own
+   `bb.settings.define` call - `showTaskPhaseLabels` (now wired, see below),
+   `showIterateConfirmation` (now wired), `showBypassPermissionsNudge`,
+   `showFastModeWarning`, `showSessionUiExplainer`, and
+   `confirmBeforeInterruptingSubagents`, which also does not exist under
+   HL's exact `confirmBeforeInterruptingSubAgents` casing); hotkeys now say
+   "while panel mounted and has focus"; subagent delegation now notes it is
+   model-dependent; the workflow-defaults row now points at item 4's
+   precedence implementation and its test; the minimap row now says
+   "sessions, not message chips". Wired the two cheap toggles
+   (`showTaskPhaseLabels` hides the phase pill, `showIterateConfirmation`
+   gates the iterate confirm dialog) instead of leaving all of them inert.
+9. **README model guidance.** New "Model guidance" section: Sonnet-class or
+   gpt-5.4 (non-mini) for design/plan/implementation orchestration;
+   mini-class acceptable for research questions, bounded research children,
+   `describe-pr`. States that mini-class models frequently drop the
+   final-answer template and that the Suggested-next affordance is what the
+   UI does then (cross-linked from the existing "Proceed button is
+   disabled" troubleshooting entry). States plainly that no model ids are
+   pre-seeded in `prefs`.
+10. **Em dashes.** Removed every U+2014 from README.md, PARITY.md, and
+    `docs/phases/07-notifications.md`/`08-polish-parity.md` (the only
+    `docs/phases/*.md` files that had any), including several I introduced in
+    this round's own new comments before catching them. New
+    `tests/prose.test.ts` greps every `*.md` outside `docs/research` and
+    `docs/hl-reference`, plus `ui/humanlayer.tsx`, for U+2014.
+11. **Fresh live verification (items 1 and 5).** `bb plugin install .
+    --yes` then, via the plugin's documented RPC HTTP route
+    (`$BB_SERVER_URL/api/v1/plugins/humanlayer/rpc/<method>`, the same route
+    `app.tsx`'s palette actions use) against the real
+    `bb-plugin-humanlayer` project (`proj_v36xq75qse`, whose only source is
+    `host_bsbj4cminc` at `/Users/marktripoli/PersonalDevelopment/bb-plugin-humanlayer`):
+    - `createTask` with `workflowType: "rpi"`, `worktreeTiming: "later"`,
+      `draft: false` (task `8b6a1bf1-ce7c-41cc-bbf2-631c1a23ea49`). The
+      created task's `baseEnvironmentId` (`env_vprakwz6w3`) resolved via
+      `bb environment show env_vprakwz6w3 --json` to
+      `"hostId": "host_bsbj4cminc"`, `"path":
+      "/Users/marktripoli/PersonalDevelopment/bb-plugin-humanlayer"`,
+      `"managed": false`, `"workspaceProvisionType": "unmanaged"` - exactly
+      the project's own default source host, as an unmanaged workspace, per
+      item 1's fix.
+    - `updateTask` set `providerId: "codex"`, `model: "gpt-5.4-mini"`, then
+      `launchSkill` launched `create-design-discussion` (the "design"
+      human-gate label) directly with a commandLine instructing the model to
+      reply in one plain-text sentence with no fenced command block. The
+      session (`thr_bhiwvuxfjt`) finished `ready_for_input` with
+      `nextStepJson.extraction = {"type":"no_next_step","reason":"no
+      command block"}`, confirming a mini-class model dropped the template
+      live, per item 9's guidance.
+    - `computeSuggestedNext("design", "rpi", {type:"no_next_step"})` (run via
+      `npx tsx -e '...'` against the actual `transitions.ts`) returned
+      `{"visible":true,"skillId":"create-plan","buttonText":"write
+      plan",...}` - confirming the Suggested-next affordance would render
+      "Suggested next: write plan" for this exact live session state.
+    - Clicking it was reproduced via the same RPC the button calls:
+      `launchSkill` with `skillId: "create-plan"` returned a new thread
+      (`thr_ajzk4ufw3s`); `getTask` afterward showed that session with
+      `label: "plan"`, confirming the launch actually happened.
+    - Cleanup: archived all three threads (`thr_5vdsfyen54`,
+      `thr_bhiwvuxfjt`, `thr_ajzk4ufw3s`) and the task, then
+      `bb plugin remove humanlayer` (confirmed absent from `bb plugin
+      list`).
