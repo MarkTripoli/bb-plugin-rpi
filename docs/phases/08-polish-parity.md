@@ -371,3 +371,10 @@ and again at the end of this round.
    template drop was deliberately induced by the test's own
    no-command-block instruction, not a spontaneous failure caught in the
    wild. No other wording in that section changed.
+
+## Rendered Suggested-next verification (parent thread, post-merge)
+
+Performed on main `8d7246b` with the plugin installed, driving the local bb web UI in a managed browser.
+Task `ui-suggest-check` (outline_only, worktree never), session `research-questions` (thr_qaq79pcxqf) at `ready_for_input`.
+A genuine user follow-up (sent with `BB_THREAD_ID` unset so no `senderThreadId`) produced `no_next_step` ("no command block"). A follow-up sent from an agent thread was correctly classified system-origin and preserved the earlier `next_step_found`.
+The session header rendered `button "Suggested next: proceed to research"`. Clicking it launched `create-research` (launch_attempts row `spawned`, launchedBy `user`), navigated to the new `research` session, and the button disappeared. Threads and task archived; plugin removed.
