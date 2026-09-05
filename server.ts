@@ -589,6 +589,11 @@ export default async function plugin(bb: BbPluginApi) {
         usage: "bb humanlayer comments resolve --task <taskId> --file <fileName> --id <prefix> [--json]",
       },
       {
+        name: "proceed",
+        summary: "Launch the parsed next step for a HumanLayer session",
+        usage: "bb humanlayer proceed --thread <threadId> [--json]",
+      },
+      {
         name: "launch-skill",
         summary: "Launch a HumanLayer task session with an RPI skill",
         usage: "bb humanlayer launch-skill --task <taskId> --skill <skillId> [--command-line <text>] [--provider <id>] [--model <id>] [--json]",
@@ -659,6 +664,12 @@ export default async function plugin(bb: BbPluginApi) {
           });
           bb.realtime.publish("tasks", { taskId: opts.task });
           return { exitCode: 0, stdout: json ? `${JSON.stringify({ task })}\n` : "updated\n" };
+        }
+        if (argv[0] === "proceed") {
+          const opts = parseArgs(argv.slice(1));
+          if (!opts.thread) return { exitCode: 2, stderr: "usage: bb humanlayer proceed --thread <threadId> [--json]\n" };
+          const result = await proceed(bb, db, sessionMirror, launchBindings, opts.thread);
+          return { exitCode: 0, stdout: json ? `${JSON.stringify(result)}\n` : `${result.threadId ?? ""}\n` };
         }
         if (argv[0] === "launch-skill") {
           const opts = parseArgs(argv.slice(1));
