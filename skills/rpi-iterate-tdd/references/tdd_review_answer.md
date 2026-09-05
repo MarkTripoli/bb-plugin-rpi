@@ -1,10 +1,10 @@
 Artifact saved:
 {artifact_directive}
 
-The TDD is updated and ready for implementation structuring.
+The TDD has been updated and still needs review or another technical decision.
 
 Auto-advance does not apply at this human gate. Continue manually with:
 
 ```text
-/rpi-create-structure-outline @{artifact_file}
+/rpi-iterate-tdd @{artifact_file}
 ```
