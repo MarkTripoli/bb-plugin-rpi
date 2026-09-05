@@ -1,11 +1,8 @@
 Artifact saved:
 {artifact_directive}
 
-Summary:
-{summary}
-
-Auto-advance does not apply at this gate. Continue manually with:
+The plan is ready. The next phase sets up the task worktree before implementation.
 
 ```text
-/rpi-setup-worktree
+/rpi-setup-worktree @{artifact_file}
 ```
