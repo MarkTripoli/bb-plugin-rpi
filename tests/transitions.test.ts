@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { ALIASES, AUTO_ADVANCE, SKILLS, WORKFLOW_GRAPHS, deriveBoardColumn } from "../transitions";
 
 test("skills table keeps labels and button text", () => {
-  assert.equal(SKILLS.length, 22);
+  assert.equal(SKILLS.length, 23);
   assert.ok(SKILLS.every((entry) => entry[2].length > 0));
+  assert.ok(SKILLS.some((entry) => entry[1] === "show-me"));
 });
 
 test("workflow graphs match the phase plan", () => {

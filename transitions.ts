@@ -21,6 +21,7 @@ export const SKILLS = [
   ["/rpi-describe-pr", "describe-pr", "describe-pr", "create pull request"],
   ["/rpi-ci-commit", "ci-commit", "implementation", "commit changes"],
   ["/rpi-review-artifact-comments", "review-artifact-comments", "review", "review comments"],
+  ["/rpi-show-me", "show-me", "review", "show me"],
 ] as const;
 
 export const ALIASES = {
