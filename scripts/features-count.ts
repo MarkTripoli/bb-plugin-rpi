@@ -1,11 +1,11 @@
-// Mechanical status-column counter for PARITY.md. A table's status column may mix two
+// Mechanical status-column counter for FEATURES.md. A table's status column may mix two
 // statuses in one cell (e.g. "N/A (bb owns X) / full (Y)"); each named status is counted
-// once. Used by scripts/check-parity.ts (prints the counts) and tests/parity.test.ts
-// (asserts the summary sentence in PARITY.md cannot drift from this count).
+// once. Used by scripts/check-features.ts (prints the counts) and tests/features.test.ts
+// (asserts the summary sentence in FEATURES.md cannot drift from this count).
 const STATUS_TOKENS = ["full", "partial", "omitted", "N/A"] as const;
 export type StatusToken = (typeof STATUS_TOKENS)[number];
 
-export interface ParityCounts {
+export interface FeatureCounts {
   full: number;
   partial: number;
   omitted: number;
@@ -25,8 +25,8 @@ function isSeparatorRow(cells: string[]): boolean {
   return cells.every((cell) => /^:?-+:?$/.test(cell));
 }
 
-export function countParityStatuses(markdown: string): ParityCounts {
-  const counts: ParityCounts = { full: 0, partial: 0, omitted: 0, "N/A": 0, rows: 0, mixedRows: 0 };
+export function countFeatureStatuses(markdown: string): FeatureCounts {
+  const counts: FeatureCounts = { full: 0, partial: 0, omitted: 0, "N/A": 0, rows: 0, mixedRows: 0 };
   const lines = markdown.split("\n");
   let statusIndex = -1;
   for (const line of lines) {
