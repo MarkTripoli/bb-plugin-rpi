@@ -2,6 +2,16 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { prefsSchema, prefsUpdateSchema, rpcContract } from "./contract";
 import { openPluginDatabase, parseJson } from "./db";
 import {
+  artifactPermalink,
+  deleteArtifact,
+  getArtifactVersion,
+  isTextArtifact,
+  listArtifactVersions,
+  listArtifacts,
+  restoreArtifact,
+  upsertArtifact,
+} from "./artifacts";
+import {
   forkSession,
   interruptSession,
   launchDraft,
@@ -9,6 +19,7 @@ import {
   promoteStalePendingLaunchAttempts,
   resolveLaunchAttempt,
 } from "./launch";
+import { hydrate, ingest, latestTaskThread } from "./mirror";
 import {
   bindPendingThread,
   createLaunchBindingMirror,
@@ -26,6 +37,7 @@ import {
   listTasks,
   updateTask,
 } from "./tasks";
+import { ARTIFACT_TOOL_NAMES, registerArtifactTools } from "./tools";
 
 const PREFS_KEY = "prefs:structured-defaults";
 
@@ -169,6 +181,55 @@ export default async function plugin(bb: BbPluginApi) {
     interruptSession: async ({ threadId }) => interruptSession(bb, db, sessionMirror, threadId),
     listLaunchAttempts: async ({ taskId }) => ({ attempts: listLaunchAttempts(db, taskId) }),
     resolveLaunchAttempt: async ({ id, action }) => resolveLaunchAttempt(bb, db, sessionMirror, launchBindings, id, action),
+    listArtifacts: async ({ taskId, includeDeleted }) => ({ artifacts: listArtifacts(db, taskId, { includeDeleted }) }),
+    getArtifact: async ({ taskId, fileName, version }) => {
+      const result = getArtifactVersion(db, taskId, fileName, version ?? null);
+      if (!result) return { artifact: null, version: null, content: null, isBinary: false, url: null };
+      const isBinary = !isTextArtifact(result.artifact.fileName, result.artifact.contentType);
+      return {
+        artifact: result.artifact,
+        version: versionView(result.version),
+        content: isBinary ? null : result.version.content.toString("utf8"),
+        isBinary,
+        url: `/api/v1/plugins/humanlayer/http/artifact?task=${encodeURIComponent(taskId)}&file=${encodeURIComponent(fileName)}&version=${result.version.version}`,
+      };
+    },
+    listArtifactVersions: async ({ taskId, fileName }) => ({
+      versions: listArtifactVersions(db, taskId, fileName).map(versionView),
+    }),
+    saveArtifact: async ({ taskId, fileName, content }) => {
+      const result = upsertArtifact(db, taskId, fileName, content, {
+        createdBy: "ui",
+        operation: "ui",
+        contentType: "text/markdown",
+      });
+      bb.realtime.publish("artifacts", { taskId });
+      return { artifact: result.artifact, version: result.version, permalink: artifactPermalink(taskId, fileName) };
+    },
+    deleteArtifact: async ({ taskId, fileName }) => {
+      const artifact = deleteArtifact(db, taskId, fileName);
+      const threadId = latestTaskThread(db, taskId);
+      if (threadId) await hydrate(bb, db, taskId, threadId).catch((error) => bb.log.warn(`Failed to move deleted HumanLayer artifact: ${String(error)}`));
+      bb.realtime.publish("artifacts", { taskId });
+      return { artifact };
+    },
+    restoreArtifact: async ({ taskId, fileName }) => {
+      const artifact = restoreArtifact(db, taskId, fileName);
+      const threadId = latestTaskThread(db, taskId);
+      if (threadId) await hydrate(bb, db, taskId, threadId).catch((error) => bb.log.warn(`Failed to restore HumanLayer artifact: ${String(error)}`));
+      bb.realtime.publish("artifacts", { taskId });
+      return { artifact };
+    },
+    hydrateNow: async ({ taskId }) => {
+      const threadId = latestTaskThread(db, taskId);
+      if (!threadId) throw new Error("No task session is available for hydration.");
+      return hydrate(bb, db, taskId, threadId);
+    },
+    ingestNow: async ({ taskId }) => {
+      const threadId = latestTaskThread(db, taskId);
+      if (!threadId) throw new Error("No task session is available for ingest.");
+      return ingest(bb, db, taskId, threadId, { threadId });
+    },
     listProjects: async ({ includePersonal }) =>
       bb.sdk.projects.list({ includePersonal: includePersonal ?? true }).then((projects) =>
         projects.map((project) => ({
@@ -213,7 +274,7 @@ export default async function plugin(bb: BbPluginApi) {
       {
         name: "tasks-create",
         summary: "Create a freeform task, optionally launching it",
-        usage: "bb humanlayer tasks create --name <name> --project <projectId> --prompt <text> [--launch] [--provider <id>] [--model <id>] [--json]",
+        usage: "bb humanlayer tasks create --name <name> --project <projectId> --prompt <text> [--launch] [--host <hostId>] [--directory <path>] [--provider <id>] [--model <id>] [--json]",
       },
       {
         name: "tasks-list",
@@ -224,6 +285,31 @@ export default async function plugin(bb: BbPluginApi) {
         name: "sessions-list",
         summary: "List sessions",
         usage: "bb humanlayer sessions list [--task <taskId>] [--json]",
+      },
+      {
+        name: "artifacts-list",
+        summary: "List task artifacts",
+        usage: "bb humanlayer artifacts list --task <taskId> [--json]",
+      },
+      {
+        name: "artifacts-get",
+        summary: "Print a task artifact",
+        usage: "bb humanlayer artifacts get --task <taskId> --file <fileName> [--version <n>] [--json]",
+      },
+      {
+        name: "artifacts-versions",
+        summary: "List artifact versions",
+        usage: "bb humanlayer artifacts versions --task <taskId> --file <fileName> [--json]",
+      },
+      {
+        name: "artifacts-ingest",
+        summary: "Ingest task artifacts from the current task thread workspace",
+        usage: "bb humanlayer artifacts ingest --task <taskId> [--file <fileName>] [--json]",
+      },
+      {
+        name: "artifacts-save",
+        summary: "Save a text artifact version",
+        usage: "bb humanlayer artifacts save --task <taskId> --file <fileName> --content <text> [--json]",
       },
     ],
     async run(argv) {
@@ -240,6 +326,8 @@ export default async function plugin(bb: BbPluginApi) {
             projectId,
             prompt,
             name: opts.name,
+            hostId: opts.host ?? null,
+            defaultDirectory: opts.directory ?? null,
             workflowType: "freeform",
             worktreeTiming: "never",
             permissionMode: "default",
@@ -264,16 +352,77 @@ export default async function plugin(bb: BbPluginApi) {
           const sessions = listSessions(db, opts.task ?? null, { limit, offset }).map(sessionCliView);
           return { exitCode: 0, stdout: json ? `${JSON.stringify({ sessions, limit, offset })}\n` : sessions.map((session) => `${session.threadId}\t${session.hlStatus}\t${session.label ?? ""}`).join("\n") + "\n" };
         }
-        return { exitCode: 2, stderr: "usage: bb humanlayer {tasks|sessions} ...\n" };
+        if (argv[0] === "artifacts" && argv[1] === "list") {
+          const opts = parseArgs(argv.slice(2));
+          if (!opts.task) return { exitCode: 2, stderr: "usage: bb humanlayer artifacts list --task <taskId>\n" };
+          const artifacts = listArtifacts(db, opts.task, { includeDeleted: opts.deleted === "true" });
+          return { exitCode: 0, stdout: json ? `${JSON.stringify({ artifacts })}\n` : artifacts.map((artifact) => `${artifact.fileName}\tv${artifact.currentVersion}\t${artifact.type}`).join("\n") + "\n" };
+        }
+        if (argv[0] === "artifacts" && argv[1] === "get") {
+          const opts = parseArgs(argv.slice(2));
+          if (!opts.task || !opts.file) return { exitCode: 2, stderr: "usage: bb humanlayer artifacts get --task <taskId> --file <fileName>\n" };
+          const result = getArtifactVersion(db, opts.task, opts.file, opts.version ? Number.parseInt(opts.version, 10) : null);
+          if (!result) return { exitCode: 1, stderr: "artifact not found\n" };
+          const isBinary = !isTextArtifact(result.artifact.fileName, result.artifact.contentType);
+          if (json) {
+            return { exitCode: 0, stdout: `${JSON.stringify({ artifact: result.artifact, version: versionView(result.version), content: isBinary ? null : result.version.content.toString("utf8"), isBinary })}\n` };
+          }
+          if (isBinary) return { exitCode: 1, stderr: "artifact is binary; use the HTTP route\n" };
+          return { exitCode: 0, stdout: result.version.content.toString("utf8") };
+        }
+        if (argv[0] === "artifacts" && argv[1] === "versions") {
+          const opts = parseArgs(argv.slice(2));
+          if (!opts.task || !opts.file) return { exitCode: 2, stderr: "usage: bb humanlayer artifacts versions --task <taskId> --file <fileName>\n" };
+          const versions = listArtifactVersions(db, opts.task, opts.file).map(versionView);
+          return { exitCode: 0, stdout: json ? `${JSON.stringify({ versions })}\n` : versions.map((version) => `v${version.version}\t${version.createdBy}\t${new Date(version.createdAt).toISOString()}`).join("\n") + "\n" };
+        }
+        if (argv[0] === "artifacts" && argv[1] === "ingest") {
+          const opts = parseArgs(argv.slice(2));
+          if (!opts.task) return { exitCode: 2, stderr: "usage: bb humanlayer artifacts ingest --task <taskId> [--file <fileName>]\n" };
+          const threadId = latestTaskThread(db, opts.task);
+          if (!threadId) return { exitCode: 1, stderr: "No task session is available for ingest.\n" };
+          const result = await ingest(bb, db, opts.task, "cli", { threadId, fileName: opts.file ?? null, operation: "ingest" });
+          return { exitCode: 0, stdout: json ? `${JSON.stringify(result)}\n` : `${result.ingested} ingested, ${result.skipped} skipped\n` };
+        }
+        if (argv[0] === "artifacts" && argv[1] === "save") {
+          const opts = parseArgs(argv.slice(2));
+          if (!opts.task || !opts.file || opts.content === undefined) return { exitCode: 2, stderr: "usage: bb humanlayer artifacts save --task <taskId> --file <fileName> --content <text>\n" };
+          const result = upsertArtifact(db, opts.task, opts.file, opts.content, {
+            createdBy: "cli",
+            operation: "cli",
+            contentType: "text/markdown",
+          });
+          const body = { artifact: result.artifact, version: result.version, permalink: artifactPermalink(opts.task, opts.file) };
+          bb.realtime.publish("artifacts", { taskId: opts.task });
+          return { exitCode: 0, stdout: json ? `${JSON.stringify(body)}\n` : `v${result.version}\t${body.permalink}\n` };
+        }
+        return { exitCode: 2, stderr: "usage: bb humanlayer {tasks|sessions|artifacts} ...\n" };
       } catch (error) {
         return { exitCode: 1, stderr: `${String(error instanceof Error ? error.message : error)}\n` };
       }
     },
   });
 
+  bb.http.route("GET", "/artifact", (context) => {
+    const taskId = context.req.query("task");
+    const fileName = context.req.query("file");
+    const versionInput = context.req.query("version");
+    if (!taskId || !fileName) return new Response("missing task or file", { status: 400 });
+    const result = getArtifactVersion(db, taskId, fileName, versionInput ? Number.parseInt(versionInput, 10) : null);
+    if (!result) return new Response("not found", { status: 404 });
+    return new Response(new Uint8Array(result.version.content), {
+      headers: {
+        "content-type": result.artifact.contentType,
+        "content-length": String(result.version.sizeBytes),
+      },
+    });
+  }, { auth: "local" });
+
+  registerArtifactTools(bb, db, sessionMirror);
+
   bb.agents.configure((context) => {
     bindPendingThread(db, sessionMirror, launchBindings, context.thread.id);
-    return sessionMirror.has(context.thread.id) ? { tools: [], skills: [] } : { tools: [], skills: [] };
+    return sessionMirror.has(context.thread.id) ? { tools: [...ARTIFACT_TOOL_NAMES], skills: [] } : { tools: [], skills: [] };
   });
   bb.agents.contributeInstructions(({ threadId }) => {
     const row = sessionMirror.get(threadId) ?? bindPendingThread(db, sessionMirror, launchBindings, threadId);
@@ -299,6 +448,19 @@ export default async function plugin(bb: BbPluginApi) {
   });
 }
 
+function versionView(version: NonNullable<ReturnType<typeof getArtifactVersion>>["version"]) {
+  return {
+    id: version.id,
+    artifactId: version.artifactId,
+    version: version.version,
+    sha256: version.sha256,
+    sizeBytes: version.sizeBytes,
+    createdBy: version.createdBy,
+    operation: version.operation,
+    createdAt: version.createdAt,
+  };
+}
+
 function parseArgs(argv: string[]) {
   const result: Record<string, string> = {};
   for (let index = 0; index < argv.length; index += 1) {
@@ -314,7 +476,7 @@ function parseArgs(argv: string[]) {
     if (arg.startsWith("--")) {
       const key = arg.slice(2);
       const value = argv[index + 1];
-      if (value && !value.startsWith("--")) {
+      if (value && (key === "content" || !value.startsWith("--"))) {
         result[key] = value;
         index += 1;
       }

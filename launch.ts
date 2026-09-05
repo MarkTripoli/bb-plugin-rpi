@@ -162,11 +162,14 @@ export async function launchPhase(
     threadId: null,
   });
   try {
+    const environment = task.baseEnvironmentId
+      ? { type: "reuse" as const, environmentId: task.baseEnvironmentId }
+      : task.worktreeTiming === "never" && task.hostId && task.defaultDirectory
+        ? { type: "host" as const, hostId: task.hostId, workspace: { type: "unmanaged" as const, path: task.defaultDirectory } }
+        : { type: "project-default" as const };
     const thread = await bb.sdk.threads.spawn({
       projectId: task.projectId,
-      environment: task.baseEnvironmentId
-        ? { type: "reuse", environmentId: task.baseEnvironmentId }
-        : { type: "project-default" },
+      environment,
       prompt: `${launchMarker(attemptId)}\n${input.prompt}`,
       title: task.name,
       visibility: "visible",

@@ -8,6 +8,7 @@ export const composerWorkflowTypeSchema = z.enum(["rpi", "prd_tdd", "oneshot", "
 
 export const worktreeTimingSchema = z.enum(["now", "later", "never"]);
 export const permissionModeSchema = z.enum(["default", "accept_edits", "auto", "bypass"]);
+const ARTIFACT_TEXT_LIMIT = 10 * 1024 * 1024;
 
 export const taskRowSchema = z
   .object({
@@ -146,6 +147,52 @@ export const workspaceStateSchema = z
   .strict();
 export type TaskWorkspaceState = z.infer<typeof workspaceStateSchema>;
 
+export const artifactGroupSchema = z.enum([
+  "research-questions",
+  "research",
+  "design-discussion",
+  "prd",
+  "tdd",
+  "structure-outline",
+  "plan",
+  "pr-description",
+  "other",
+]);
+
+export const artifactRowSchema = z
+  .object({
+    id: z.string(),
+    taskId: z.string(),
+    fileName: z.string(),
+    frontmatter: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])),
+    contentType: z.string(),
+    isDeleted: z.boolean(),
+    currentVersion: z.number().int().nonnegative(),
+    currentSha256: z.string().nullable(),
+    sizeBytes: z.number().int().nonnegative(),
+    type: z.string(),
+    groupType: artifactGroupSchema,
+    commentCount: z.number().int().nonnegative(),
+    createdAt: z.number().int(),
+    updatedAt: z.number().int(),
+  })
+  .strict();
+export type ArtifactRecord = z.infer<typeof artifactRowSchema>;
+
+export const artifactVersionSchema = z
+  .object({
+    id: z.string(),
+    artifactId: z.string(),
+    version: z.number().int().positive(),
+    sha256: z.string(),
+    sizeBytes: z.number().int().nonnegative(),
+    createdBy: z.string(),
+    operation: z.string().nullable(),
+    createdAt: z.number().int(),
+  })
+  .strict();
+export type ArtifactVersionRecord = z.infer<typeof artifactVersionSchema>;
+
 export const taskCreateRequestSchema = z
   .object({
     text: z.string().trim().max(10000),
@@ -260,6 +307,11 @@ export const resolveLaunchAttemptInputSchema = z
     ]),
   })
   .strict();
+export const artifactFileInputSchema = z.object({ taskId: z.string().min(1), fileName: z.string().min(1) }).strict();
+export const getArtifactInputSchema = artifactFileInputSchema.extend({ version: z.number().int().positive().nullable().optional() }).strict();
+export const saveArtifactInputSchema = artifactFileInputSchema.extend({ content: z.string().max(ARTIFACT_TEXT_LIMIT) }).strict();
+export const listArtifactsInputSchema = z.object({ taskId: z.string().min(1), includeDeleted: z.boolean().optional() }).strict();
+export const artifactTaskInputSchema = z.object({ taskId: z.string().min(1) }).strict();
 
 export const rpcContract = defineRpcContract({
   listTasks: {
@@ -309,6 +361,46 @@ export const rpcContract = defineRpcContract({
   resolveLaunchAttempt: {
     input: resolveLaunchAttemptInputSchema,
     output: z.object({ threadId: z.string().nullable().optional() }).strict(),
+  },
+  listArtifacts: {
+    input: listArtifactsInputSchema,
+    output: z.object({ artifacts: z.array(artifactRowSchema) }).strict(),
+  },
+  getArtifact: {
+    input: getArtifactInputSchema,
+    output: z
+      .object({
+        artifact: artifactRowSchema.nullable(),
+        version: artifactVersionSchema.nullable(),
+        content: z.string().nullable(),
+        isBinary: z.boolean(),
+        url: z.string().nullable(),
+      })
+      .strict(),
+  },
+  listArtifactVersions: {
+    input: artifactFileInputSchema,
+    output: z.object({ versions: z.array(artifactVersionSchema) }).strict(),
+  },
+  saveArtifact: {
+    input: saveArtifactInputSchema,
+    output: z.object({ artifact: artifactRowSchema, version: z.number().int().positive(), permalink: z.string() }).strict(),
+  },
+  deleteArtifact: {
+    input: artifactFileInputSchema,
+    output: z.object({ artifact: artifactRowSchema.nullable() }).strict(),
+  },
+  restoreArtifact: {
+    input: artifactFileInputSchema,
+    output: z.object({ artifact: artifactRowSchema.nullable() }).strict(),
+  },
+  hydrateNow: {
+    input: artifactTaskInputSchema,
+    output: z.object({ written: z.number().int().nonnegative(), skipped: z.number().int().nonnegative(), trashed: z.number().int().nonnegative() }).strict(),
+  },
+  ingestNow: {
+    input: artifactTaskInputSchema,
+    output: z.object({ ingested: z.number().int().nonnegative(), skipped: z.number().int().nonnegative() }).strict(),
   },
   listProjects: {
     input: z

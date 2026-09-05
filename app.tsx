@@ -1,5 +1,10 @@
 import { definePluginApp } from "@get-bb/plugin-sdk/app";
-import { HumanLayerPanel, HumanLayerThreadHeaderAction } from "./ui/humanlayer";
+import {
+  HumanLayerArtifactDirective,
+  HumanLayerArtifactThreadPanel,
+  HumanLayerPanel,
+  HumanLayerThreadHeaderAction,
+} from "./ui/humanlayer";
 
 export default definePluginApp((app) => {
   app.slots.navPanel({
@@ -13,5 +18,16 @@ export default definePluginApp((app) => {
     id: "humanlayer-session",
     title: "HumanLayer session",
     component: HumanLayerThreadHeaderAction,
+  });
+  app.slots.threadPanelAction({
+    id: "artifacts",
+    title: "Artifacts",
+    icon: "Code",
+    layout: "flush",
+    component: HumanLayerArtifactThreadPanel,
+  });
+  app.slots.messageDirective({
+    id: "hl-artifact",
+    component: HumanLayerArtifactDirective,
   });
 });

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type * as BetterSqlite3 from "better-sqlite3";
 import { nowMs, readRow, readRows, transaction, writeRow } from "./db";
+import { upsertArtifact } from "./artifacts";
 import { deriveBoardColumn, labelToStepLabel } from "./transitions";
 import type {
   Prefs,
@@ -396,7 +397,13 @@ export function createDraftTask(
     );
     return taskId;
   });
-  return { taskId: create() };
+  const taskId = create();
+  upsertArtifact(db, taskId, "task.md", prompt, {
+    createdBy: "task:create",
+    operation: "create",
+    contentType: "text/markdown",
+  });
+  return { taskId };
 }
 
 export function updateTask(

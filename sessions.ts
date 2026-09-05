@@ -1,6 +1,7 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type * as BetterSqlite3 from "better-sqlite3";
 import { nowMs, parseJson, readRow, readRows, stringifyJson, writeRow } from "./db";
+import { hydrate, ingest } from "./mirror";
 import type { SessionRow } from "./contract";
 
 type Database = BetterSqlite3.Database;
@@ -43,7 +44,7 @@ export type SessionMirrorRow = SessionRow & {
   workflowType: string;
 };
 
-export const HYDRATION_ENABLED = false;
+export const HYDRATION_ENABLED = true;
 export const LAUNCH_MARKER_PREFIX = "<!-- hl:launch:";
 const LAUNCH_MARKER_RE = /<!--\s*hl:launch:([A-Za-z0-9_-]+)\s*-->/;
 
@@ -490,9 +491,10 @@ export async function recordIdleCompletion(
 }
 
 export async function hydrateSession(bb: BbPluginApi, db: Database, mirror: Map<string, SessionMirrorRow>, threadId: string) {
-  writeRow(db, "UPDATE sessions SET hydrated_at = ?, updated_at = ? WHERE thread_id = ? AND hydrated_at IS NULL", nowMs(), nowMs(), threadId);
+  const row = mirror.get(threadId) ?? mirrorSession(db, mirror, threadId);
+  if (!row) return;
+  await hydrate(bb, db, row.taskId, threadId);
   mirrorSession(db, mirror, threadId);
-  bb.log.info(`Hydrated HumanLayer session ${threadId}`);
 }
 
 async function idleWasInterrupted(bb: BbPluginApi, threadId: string) {
@@ -598,6 +600,10 @@ export function registerSessionRuntime(bb: BbPluginApi, db: Database, mirror: Ma
     return enqueueThreadWork(thread.id, async () => {
       writeRow(db, "UPDATE sessions SET had_turn = 1, interrupted = 0, updated_at = ? WHERE thread_id = ?", nowMs(), thread.id);
       mirrorSession(db, mirror, thread.id);
+      const activeRow = mirror.get(thread.id);
+      if (HYDRATION_ENABLED && activeRow?.hydratedAt === null) {
+        await hydrateSession(bb, db, mirror, thread.id).catch((error) => bb.log.warn(`Failed to hydrate HumanLayer session ${thread.id}: ${String(error)}`));
+      }
       const interactions = await bb.sdk.threads.interactions.list({ threadId: thread.id });
       if (!mirror.has(thread.id) || retiredThreads.has(thread.id)) return;
       const sequence = nextSeq;
@@ -628,6 +634,10 @@ export function registerSessionRuntime(bb: BbPluginApi, db: Database, mirror: Ma
           mirrorSession(db, mirror, thread.id);
         } else {
           appendSessionSummary(db, mirror, thread, lastAssistantText);
+          const row = mirror.get(thread.id);
+          if (row) {
+            await ingest(bb, db, row.taskId, thread.id, { threadId: thread.id }).catch((error) => bb.log.warn(`Failed to ingest HumanLayer artifacts for ${thread.id}: ${String(error)}`));
+          }
         }
       }
       if (!mirror.has(thread.id) || retiredThreads.has(thread.id)) return;
@@ -711,6 +721,7 @@ export function registerSessionRuntime(bb: BbPluginApi, db: Database, mirror: Ma
     if (HYDRATION_ENABLED && ctx.environment && row.hydratedAt === null) {
       if (hydrationWaited.has(ctx.thread.id)) return { action: "proceed" };
       hydrationWaited.add(ctx.thread.id);
+      bb.log.info(`HumanLayer dispatch waiting for hydration: ${ctx.thread.id}`);
       setTimeout(() => {
         if (hydrating.has(ctx.thread.id)) return;
         hydrating.add(ctx.thread.id);

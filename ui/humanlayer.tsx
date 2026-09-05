@@ -1,7 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
-import { useBbContext, useBbNavigate, useRealtime, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
-import type { LaunchAttemptRecord, RpcContract, SessionView, TaskRecord, TaskRow, TaskWorkspaceState } from "../contract";
+import {
+  Markdown,
+  experimental_SourceCode as SourceCode,
+  useBbContext,
+  useBbNavigate,
+  useRealtime,
+  useRpc,
+  useSettings,
+} from "@get-bb/plugin-sdk/app";
+import type {
+  ArtifactRecord,
+  ArtifactVersionRecord,
+  LaunchAttemptRecord,
+  RpcContract,
+  SessionView,
+  TaskRecord,
+  TaskRow,
+  TaskWorkspaceState,
+} from "../contract";
 import { BOARD_COLUMNS, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS } from "../transitions";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -620,12 +637,228 @@ function SessionsTable({ sessions }: { sessions: SessionView[] }) {
   );
 }
 
-function TaskDetailPage({ taskId }: { taskId: string }) {
+const ARTIFACT_GROUP_ORDER = [
+  "research-questions",
+  "research",
+  "design-discussion",
+  "prd",
+  "tdd",
+  "structure-outline",
+  "plan",
+  "pr-description",
+  "other",
+] as const;
+
+function ArtifactIcon({ artifact }: { artifact: ArtifactRecord }) {
+  const isImage = artifact.contentType.startsWith("image/");
+  return <Icon name={isImage ? "Code" : "Code"} className={cn("size-4", isImage ? "text-foreground" : "text-muted-foreground")} />;
+}
+
+function ArtifactRow({
+  artifact,
+  selected,
+  onSelect,
+  onDelete,
+  onRestore,
+}: {
+  artifact: ArtifactRecord;
+  selected: boolean;
+  onSelect: () => void;
+  onDelete: () => void;
+  onRestore: () => void;
+}) {
+  const path = `/plugins/humanlayer/tasks/${encodeURIComponent(artifact.taskId)}/artifacts/${encodeURIComponent(artifact.fileName)}`;
+  return (
+    <div className={cn("flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2", selected && "border-foreground")}>
+      <button type="button" onClick={onSelect} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+        <ArtifactIcon artifact={artifact} />
+        <span className={cn("truncate text-sm font-medium", artifact.isDeleted ? "text-muted-foreground line-through" : "text-foreground")}>{artifact.fileName}</span>
+      </button>
+      <span className="text-xs text-muted-foreground">{artifact.commentCount}</span>
+      <details className="relative">
+        <summary className="flex size-7 cursor-pointer list-none items-center justify-center rounded-md border border-border text-muted-foreground hover:text-foreground">
+          <Icon name="MoreHorizontal" className="size-4" />
+        </summary>
+        <div className="absolute right-0 z-10 mt-1 w-36 rounded-md border border-border bg-popover p-1 shadow-sm">
+          <button type="button" onClick={onSelect} className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted">Open</button>
+          <button type="button" onClick={() => void navigator.clipboard?.writeText(path)} className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted">Copy path</button>
+          {artifact.isDeleted ? (
+            <button type="button" onClick={onRestore} className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted">Restore</button>
+          ) : (
+            <button type="button" onClick={onDelete} className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted">Delete</button>
+          )}
+        </div>
+      </details>
+    </div>
+  );
+}
+
+function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileName: string; onRestore: () => void }) {
+  const rpc = useRpc<RpcContract>();
+  const [mode, setMode] = useState<"preview" | "raw">("preview");
+  const [artifact, setArtifact] = useState<ArtifactRecord | null>(null);
+  const [versions, setVersions] = useState<ArtifactVersionRecord[]>([]);
+  const [version, setVersion] = useState<number | null>(null);
+  const [content, setContent] = useState<string | null>(null);
+  const [isBinary, setIsBinary] = useState(false);
+  const [url, setUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      rpc.call("listArtifactVersions", { taskId, fileName }),
+      rpc.call("getArtifact", { taskId, fileName, version }),
+    ]).then(([versionResult, artifactResult]) => {
+      if (cancelled) return;
+      setVersions(versionResult.versions);
+      setArtifact(artifactResult.artifact);
+      setContent(artifactResult.content);
+      setIsBinary(artifactResult.isBinary);
+      setUrl(artifactResult.url);
+      setVersion(artifactResult.version?.version ?? null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [fileName, taskId, version, rpc]);
+
+  if (!artifact) return <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">Select an artifact.</div>;
+
+  const versionMeta = versions.find((item) => item.version === version);
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-3 rounded-md border border-border bg-card p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <h3 className="truncate text-sm font-semibold text-foreground">{artifact.fileName}</h3>
+          <div className="text-xs text-muted-foreground">
+            v{version ?? artifact.currentVersion}
+            {versionMeta ? ` by ${versionMeta.createdBy} at ${new Date(versionMeta.createdAt).toLocaleString()}` : ""}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <select value={version ?? artifact.currentVersion} onChange={(event) => setVersion(Number.parseInt(event.target.value, 10))} className="h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground">
+            {versions.map((item) => (
+              <option key={item.id} value={item.version}>v{item.version} {item.createdBy}</option>
+            ))}
+          </select>
+          <button type="button" onClick={() => setMode("preview")} className={cn("h-8 rounded-md border px-2 text-xs", mode === "preview" ? "border-foreground text-foreground" : "border-border text-muted-foreground")}>Preview</button>
+          <button type="button" onClick={() => setMode("raw")} className={cn("h-8 rounded-md border px-2 text-xs", mode === "raw" ? "border-foreground text-foreground" : "border-border text-muted-foreground")}>Raw</button>
+        </div>
+      </div>
+      {artifact.isDeleted ? (
+        <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
+          <span>This artifact is deleted.</span>
+          <Button type="button" variant="outline" className="h-8" onClick={onRestore}>Restore</Button>
+        </div>
+      ) : null}
+      <div className="min-h-[260px] flex-1 overflow-auto rounded-md border border-border bg-background p-3">
+        {mode === "preview" && artifact.contentType.startsWith("image/") && url ? (
+          <img src={url} alt={artifact.fileName} className="max-h-full max-w-full rounded-md" />
+        ) : mode === "preview" && !isBinary && content !== null ? (
+          <Markdown content={content} />
+        ) : isBinary ? (
+          <div className="text-sm text-muted-foreground">Binary preview is available through the HTTP route.</div>
+        ) : (
+          <SourceCode content={content ?? ""} path={artifact.fileName} overflow="wrap" />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFileName?: string | null }) {
+  const rpc = useRpc<RpcContract>();
+  const [artifacts, setArtifacts] = useState<ArtifactRecord[]>([]);
+  const [grouped, setGrouped] = useState(true);
+  const [selected, setSelected] = useState<string | null>(initialFileName ?? null);
+  const [busy, setBusy] = useState(false);
+
+  const refetch = () => {
+    rpc.call("listArtifacts", { taskId, includeDeleted: true }).then(({ artifacts: next }) => {
+      setArtifacts(next);
+      setSelected((current) => current ?? initialFileName ?? next[0]?.fileName ?? null);
+    });
+  };
+
+  useEffect(() => {
+    refetch();
+  }, [taskId, initialFileName]);
+  useRealtime("artifacts", refetch);
+
+  const groups = useMemo(() => ARTIFACT_GROUP_ORDER.map((group) => ({
+    group,
+    artifacts: artifacts.filter((artifact) => artifact.groupType === group),
+  })).filter((group) => group.artifacts.length > 0 || group.group === "other"), [artifacts]);
+
+  const mutate = async (action: "deleteArtifact" | "restoreArtifact", fileName: string) => {
+    await rpc.call(action, { taskId, fileName });
+    refetch();
+  };
+
+  const hydrateNow = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await rpc.call("hydrateNow", { taskId });
+      refetch();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const rows = (items: ArtifactRecord[]) => items.map((artifact) => (
+    <ArtifactRow
+      key={artifact.id}
+      artifact={artifact}
+      selected={selected === artifact.fileName}
+      onSelect={() => setSelected(artifact.fileName)}
+      onDelete={() => void mutate("deleteArtifact", artifact.fileName)}
+      onRestore={() => void mutate("restoreArtifact", artifact.fileName)}
+    />
+  ));
+
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => setGrouped((value) => !value)} className={cn("inline-flex h-9 items-center gap-2 rounded-md border px-3 text-xs uppercase tracking-[0.2em]", grouped ? "border-foreground text-foreground" : "border-border text-muted-foreground")}>
+            Grouped
+          </button>
+          <span className="text-xs text-muted-foreground">{artifacts.length} artifacts</span>
+        </div>
+        <Button type="button" variant="outline" className="h-9" disabled={busy} onClick={hydrateNow}>
+          <Icon name="Download" className="size-4" />
+          Hydrate now
+        </Button>
+      </div>
+      <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(220px,360px)_minmax(0,1fr)]">
+        <div className="min-h-0 space-y-3 overflow-auto">
+          {artifacts.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">No artifacts yet.</div>
+          ) : grouped ? (
+            groups.map((group) => (
+              <section key={group.group} className="space-y-2">
+                <div className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">{group.group.replaceAll("-", " ")} ({group.artifacts.length})</div>
+                <div className="space-y-2">{rows(group.artifacts)}</div>
+              </section>
+            ))
+          ) : (
+            <div className="space-y-2">{rows(artifacts)}</div>
+          )}
+        </div>
+        {selected ? <ArtifactViewer taskId={taskId} fileName={selected} onRestore={() => void mutate("restoreArtifact", selected)} /> : null}
+      </div>
+    </div>
+  );
+}
+
+function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifactFileName?: string | null }) {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
   const [task, setTask] = useState<TaskRecord | null>(null);
   const [workspace, setWorkspace] = useState<TaskWorkspaceState | null>(null);
   const [sessions, setSessions] = useState<SessionView[]>([]);
+  const [tab, setTab] = useState<"sessions" | "artifacts">(artifactFileName ? "artifacts" : "sessions");
 
   const refetch = () => {
     Promise.all([
@@ -641,6 +874,9 @@ function TaskDetailPage({ taskId }: { taskId: string }) {
   useEffect(() => {
     refetch();
   }, [taskId]);
+  useEffect(() => {
+    if (artifactFileName) setTab("artifacts");
+  }, [artifactFileName]);
   useRealtime("tasks", refetch);
   useRealtime("hl:sessions", refetch);
 
@@ -682,20 +918,70 @@ function TaskDetailPage({ taskId }: { taskId: string }) {
           </Button>
         ) : null}
       </div>
-      <div className="border-b border-border pb-2 text-xs font-medium uppercase tracking-[0.24em] text-foreground">Sessions</div>
-      {visibleAttempts.length > 0 ? (
-        <div className="space-y-2">
-          {visibleAttempts.map((attempt) => <RecoverLaunchRow key={attempt.id} attempt={attempt} onResolved={refetch} />)}
-        </div>
-      ) : null}
-      {sessions.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-border bg-card/60 px-4 py-6 text-sm text-muted-foreground">
-          No sessions yet.
+      <div className="flex items-center gap-2 border-b border-border pb-2 text-xs font-medium uppercase tracking-[0.24em] text-muted-foreground">
+        <button type="button" onClick={() => setTab("sessions")} className={cn("rounded-md px-3 py-1.5", tab === "sessions" && "bg-card text-foreground")}>Sessions</button>
+        <button type="button" onClick={() => setTab("artifacts")} className={cn("rounded-md px-3 py-1.5", tab === "artifacts" && "bg-card text-foreground")}>Artifacts</button>
+      </div>
+      {tab === "artifacts" ? (
+        <div className="min-h-[520px]">
+          <ArtifactsPanel taskId={taskId} initialFileName={artifactFileName} />
         </div>
       ) : (
-        <SessionsTable sessions={sessions} />
+        <>
+          {visibleAttempts.length > 0 ? (
+            <div className="space-y-2">
+              {visibleAttempts.map((attempt) => <RecoverLaunchRow key={attempt.id} attempt={attempt} onResolved={refetch} />)}
+            </div>
+          ) : null}
+          {sessions.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-border bg-card/60 px-4 py-6 text-sm text-muted-foreground">
+              No sessions yet.
+            </div>
+          ) : (
+            <SessionsTable sessions={sessions} />
+          )}
+        </>
       )}
     </div>
+  );
+}
+
+export function HumanLayerArtifactThreadPanel({ threadId, params }: { threadId: string; params?: unknown }) {
+  const rpc = useRpc<RpcContract>();
+  const [session, setSession] = useState<SessionView | null | undefined>(undefined);
+  const initialFileName = typeof params === "object" && params !== null && "fileName" in params ? String((params as { fileName?: unknown }).fileName ?? "") : null;
+
+  useEffect(() => {
+    rpc.call("getSession", { threadId }).then(({ session: next }) => setSession(next));
+  }, [rpc, threadId]);
+
+  if (session === undefined) return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
+  if (!session) return <div className="p-4 text-sm text-muted-foreground">Not a HumanLayer task session</div>;
+  return (
+    <div className="h-full min-h-0 p-3">
+      <ArtifactsPanel taskId={session.taskId} initialFileName={initialFileName} />
+    </div>
+  );
+}
+
+export function HumanLayerArtifactDirective({ attributes, source }: { attributes: Readonly<Record<string, string>>; source: string }) {
+  const navigate = useBbNavigate();
+  const taskId = attributes.task;
+  const fileName = attributes.file;
+  if (!taskId || !fileName || fileName.includes("..") || fileName.includes("/") || fileName.includes("\\")) return <code>{source}</code>;
+  const open = () => {
+    const accepted = navigate.openThreadPanel({
+      actionId: "artifacts",
+      title: fileName,
+      params: { taskId, fileName },
+    });
+    if (!accepted) navigate.toPluginPanel("humanlayer", { subPath: `tasks/${taskId}/artifacts/${encodeURIComponent(fileName)}` });
+  };
+  return (
+    <button type="button" onClick={open} className="inline-flex items-center gap-2 rounded-md border border-border bg-card px-2 py-1 text-sm font-medium text-foreground">
+      <Icon name="Code" className="size-4" />
+      {fileName}
+    </button>
   );
 }
 
@@ -801,6 +1087,11 @@ export function HumanLayerPanel({ subPath }: { subPath: string }) {
   useRealtime("tasks", refetch);
 
   useEffect(() => {
+    const artifactMatch = /^tasks\/([^/]+)\/artifacts\/(.+)$/.exec(subPath);
+    if (artifactMatch) {
+      setDetailTaskId(artifactMatch[1]);
+      return;
+    }
     const taskMatch = /^tasks\/([^/]+)$/.exec(subPath);
     if (taskMatch) {
       setDetailTaskId(taskMatch[1]);
@@ -896,7 +1187,7 @@ export function HumanLayerPanel({ subPath }: { subPath: string }) {
 
         <main className="min-h-0 overflow-auto rounded-2xl border border-border bg-background/80 p-4">
           {detailTaskId ? (
-            <TaskDetailPage taskId={detailTaskId} />
+            <TaskDetailPage taskId={detailTaskId} artifactFileName={/^tasks\/[^/]+\/artifacts\/(.+)$/.exec(subPath)?.[1] ? decodeURIComponent(/^tasks\/[^/]+\/artifacts\/(.+)$/.exec(subPath)![1]!) : null} />
           ) : view === "new" ? (
             <NewTaskPage tasks={tasks} />
           ) : (
