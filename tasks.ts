@@ -161,8 +161,8 @@ function taskRowFromRecord(record: TaskRecord, sessionCount: number, latestLabel
     aa_worktree_to_implementation: record.aa_worktree_to_implementation,
     aa_implementation_to_pr: record.aa_implementation_to_pr,
     currentLabel: latestLabel,
-    stepLabel: labelToStepLabel(latestLabel, record.isDraft),
-    boardColumn: deriveBoardColumn(latestLabel, record.isDraft),
+    stepLabel: record.isDraft ? "Draft" : latestLabel ? labelToStepLabel(latestLabel, false) : record.workflowType,
+    boardColumn: record.isDraft || latestLabel ? deriveBoardColumn(latestLabel, record.isDraft) : "implementation",
     sessionCount,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
@@ -246,6 +246,7 @@ export function getTask(db: Database, taskId: string) {
     hlStatusAt: number;
     hadTurn: number | boolean;
     interrupted: number | boolean;
+    blockedReason: string | null;
     nextStepJson: string | null;
     summaryJson: string | null;
     advancedAt: number | null;
@@ -266,6 +267,7 @@ export function getTask(db: Database, taskId: string) {
       hl_status_at AS hlStatusAt,
       had_turn AS hadTurn,
       interrupted,
+      blocked_reason AS blockedReason,
       next_step_json AS nextStepJson,
       summary_json AS summaryJson,
       advanced_at AS advancedAt,
@@ -282,6 +284,7 @@ export function getTask(db: Database, taskId: string) {
     ...row,
     hadTurn: Boolean(row.hadTurn),
     interrupted: Boolean(row.interrupted),
+    blockedReason: row.blockedReason === "question" || row.blockedReason === "plugin" ? row.blockedReason : null,
   }));
   const launchAttempts = readRows<{
     id: string;

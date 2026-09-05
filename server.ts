@@ -2,6 +2,20 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { prefsSchema, prefsUpdateSchema, rpcContract } from "./contract";
 import { openPluginDatabase } from "./db";
 import {
+  forkSession,
+  interruptSession,
+  launchDraft,
+  listLaunchAttempts,
+  resolveLaunchAttempt,
+} from "./launch";
+import {
+  listSessions,
+  loadSessionMirror,
+  readSession,
+  registerSessionRuntime,
+  taskInstructions,
+} from "./sessions";
+import {
   archiveTask,
   createDraftTask,
   defaultTaskPrefs,
@@ -14,6 +28,7 @@ const PREFS_KEY = "prefs:structured-defaults";
 
 export default async function plugin(bb: BbPluginApi) {
   const db = openPluginDatabase(bb);
+  const sessionMirror = loadSessionMirror(db);
   const settings = bb.settings.define({
     notificationSoundsEnabled: {
       type: "boolean",
@@ -28,7 +43,7 @@ export default async function plugin(bb: BbPluginApi) {
     defaultWorkflowType: {
       type: "select",
       label: "Default workflow type",
-      options: ["rpi", "prd_tdd", "freeform"],
+      options: ["rpi", "prd_tdd", "oneshot", "freeform"],
       default: "rpi",
     },
     defaultWorktreeTiming: {
@@ -97,12 +112,6 @@ export default async function plugin(bb: BbPluginApi) {
       return result;
     },
     createTask: async ({ request, name, draft }) => {
-      if (!draft) {
-        return {
-          taskId: "",
-          note: "Sessions launch in a later release.",
-        };
-      }
       const storedPrefs = await bb.storage.kv.get<unknown>(PREFS_KEY);
       const prefs = prefsSchema.parse(storedPrefs ?? defaultTaskPrefs({}));
       const result = createDraftTask(db, {
@@ -121,6 +130,13 @@ export default async function plugin(bb: BbPluginApi) {
         serviceTier: prefs.defaults.serviceTier ?? null,
       });
       bb.realtime.publish("tasks", { taskId: result.taskId });
+      if (!draft) {
+        if (request.workflowType !== "freeform" && request.workflowType !== "oneshot") {
+          return { ...result, note: "available in a later release" };
+        }
+        const launched = await launchDraft(bb, db, sessionMirror, result.taskId);
+        return { ...result, threadId: launched.threadId };
+      }
       return result;
     },
     updateTask: async ({ taskId, patch }) => {
@@ -133,6 +149,18 @@ export default async function plugin(bb: BbPluginApi) {
       bb.realtime.publish("tasks", { taskId });
       return { task };
     },
+    launchDraft: async ({ taskId }) => launchDraft(bb, db, sessionMirror, taskId),
+    listSessions: async ({ taskId }) => ({
+      sessions: await Promise.all(listSessions(db, taskId ?? null).map((session) => sessionView(bb, session))),
+    }),
+    getSession: async ({ threadId }) => {
+      const session = readSession(db, threadId);
+      return { session: session ? await sessionView(bb, session) : null };
+    },
+    forkSession: async ({ threadId, text }) => forkSession(bb, db, sessionMirror, threadId, text),
+    interruptSession: async ({ threadId }) => interruptSession(bb, db, sessionMirror, threadId),
+    listLaunchAttempts: async ({ taskId }) => ({ attempts: listLaunchAttempts(db, taskId) }),
+    resolveLaunchAttempt: async ({ id, action }) => resolveLaunchAttempt(bb, db, sessionMirror, id, action),
     listProjects: async ({ includePersonal }) =>
       bb.sdk.projects.list({ includePersonal: includePersonal ?? true }).then((projects) =>
         projects.map((project) => ({
@@ -170,7 +198,122 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  bb.cli.register({
+    name: "humanlayer",
+    summary: "HumanLayer tasks and sessions",
+    commands: [
+      {
+        name: "tasks-create",
+        summary: "Create a freeform task, optionally launching it",
+        usage: "bb humanlayer tasks create --name <name> --project <projectId> --prompt <text> [--launch] [--provider <id>] [--model <id>] [--json]",
+      },
+      {
+        name: "tasks-list",
+        summary: "List tasks",
+        usage: "bb humanlayer tasks list [--json]",
+      },
+      {
+        name: "sessions-list",
+        summary: "List sessions",
+        usage: "bb humanlayer sessions list [--task <taskId>] [--json]",
+      },
+    ],
+    async run(argv) {
+      try {
+        const json = argv.includes("--json");
+        if (argv[0] === "tasks" && argv[1] === "create") {
+          const opts = parseArgs(argv.slice(2));
+          const projectId = opts.project;
+          const prompt = opts.prompt;
+          if (!projectId || !prompt) {
+            return { exitCode: 2, stderr: "usage: bb humanlayer tasks create --name <name> --project <projectId> --prompt <text> [--launch]\n" };
+          }
+          const result = createDraftTask(db, {
+            projectId,
+            prompt,
+            name: opts.name,
+            workflowType: "freeform",
+            worktreeTiming: "never",
+            permissionMode: "default",
+            autoAdvance: false,
+            providerId: opts.provider ?? null,
+            model: opts.model ?? null,
+            reasoningLevel: opts.effort ?? null,
+            serviceTier: null,
+          });
+          const launched = opts.launch === "true" ? await launchDraft(bb, db, sessionMirror, result.taskId) : null;
+          const body = { ...result, ...(launched ?? {}) };
+          return { exitCode: 0, stdout: json ? `${JSON.stringify(body)}\n` : `${body.taskId}${launched ? ` ${launched.threadId}` : ""}\n` };
+        }
+        if (argv[0] === "tasks" && argv[1] === "list") {
+          const tasks = listTasks(db, { archived: false });
+          return { exitCode: 0, stdout: json ? `${JSON.stringify({ tasks })}\n` : tasks.map((task) => `${task.id}\t${task.stepLabel}\t${task.name}`).join("\n") + "\n" };
+        }
+        if (argv[0] === "sessions" && argv[1] === "list") {
+          const opts = parseArgs(argv.slice(2));
+          const sessions = listSessions(db, opts.task ?? null);
+          return { exitCode: 0, stdout: json ? `${JSON.stringify({ sessions })}\n` : sessions.map((session) => `${session.threadId}\t${session.hlStatus}\t${session.label ?? ""}`).join("\n") + "\n" };
+        }
+        return { exitCode: 2, stderr: "usage: bb humanlayer {tasks|sessions} ...\n" };
+      } catch (error) {
+        return { exitCode: 1, stderr: `${String(error instanceof Error ? error.message : error)}\n` };
+      }
+    },
+  });
+
+  bb.agents.configure((context) => (sessionMirror.has(context.thread.id) ? { tools: [], skills: [] } : { tools: [], skills: [] }));
+  bb.agents.contributeInstructions(({ threadId }) => {
+    const row = sessionMirror.get(threadId);
+    return row ? taskInstructions(row) : null;
+  });
+
+  registerSessionRuntime(bb, db, sessionMirror);
+
   bb.onDispose(() => {
     db.close();
   });
+}
+
+function parseArgs(argv: string[]) {
+  const result: Record<string, string> = {};
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--json") {
+      result.json = "true";
+      continue;
+    }
+    if (arg === "--launch") {
+      result.launch = "true";
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      const key = arg.slice(2);
+      const value = argv[index + 1];
+      if (value && !value.startsWith("--")) {
+        result[key] = value;
+        index += 1;
+      }
+    }
+  }
+  return result;
+}
+
+async function sessionView(bb: BbPluginApi, session: ReturnType<typeof readSession> extends infer T ? NonNullable<T> : never) {
+  try {
+    const thread = await bb.sdk.threads.get({ threadId: session.threadId, include: "environment" });
+    const environment = "environment" in thread ? thread.environment : null;
+    return {
+      ...session,
+      title: thread.title ?? thread.titleFallback ?? null,
+      workingDirectory: environment?.path ?? null,
+      threadUpdatedAt: thread.updatedAt ?? null,
+    };
+  } catch {
+    return {
+      ...session,
+      title: null,
+      workingDirectory: null,
+      threadUpdatedAt: null,
+    };
+  }
 }

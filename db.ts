@@ -152,6 +152,7 @@ export const MIGRATIONS: string[] = [
   `,
   `DROP TABLE launch_attempts`,
   `ALTER TABLE launch_attempts_v2 RENAME TO launch_attempts`,
+  `ALTER TABLE sessions ADD COLUMN blocked_reason TEXT`,
 ];
 
 export function openPluginDatabase(bb: BbPluginApi): Database {

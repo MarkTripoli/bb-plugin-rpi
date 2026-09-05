@@ -4,7 +4,7 @@ import { z } from "zod";
 export const workflowTypeSchema = z.enum(["rpi", "outline_only", "prd_tdd", "oneshot", "freeform"]);
 export type WorkflowType = z.infer<typeof workflowTypeSchema>;
 
-export const composerWorkflowTypeSchema = z.enum(["rpi", "prd_tdd", "freeform"]);
+export const composerWorkflowTypeSchema = z.enum(["rpi", "prd_tdd", "oneshot", "freeform"]);
 
 export const worktreeTimingSchema = z.enum(["now", "later", "never"]);
 export const permissionModeSchema = z.enum(["default", "accept_edits", "auto", "bypass"]);
@@ -89,6 +89,7 @@ export const sessionRowSchema = z
     hlStatusAt: z.number().int(),
     hadTurn: z.boolean(),
     interrupted: z.boolean(),
+    blockedReason: z.enum(["question", "plugin"]).nullable(),
     nextStepJson: z.string().nullable(),
     summaryJson: z.string().nullable(),
     advancedAt: z.number().int().nullable(),
@@ -98,6 +99,28 @@ export const sessionRowSchema = z
   })
   .strict();
 export type SessionRow = z.infer<typeof sessionRowSchema>;
+
+export const launchAttemptRowSchema = z
+  .object({
+    id: z.string(),
+    taskId: z.string(),
+    fromThreadId: z.string().nullable(),
+    skillId: z.string().nullable(),
+    status: z.enum(["pending", "spawned", "uncertain", "failed"]),
+    threadId: z.string().nullable(),
+    createdAt: z.number().int(),
+  })
+  .strict();
+export type LaunchAttemptRecord = z.infer<typeof launchAttemptRowSchema>;
+
+export const sessionViewSchema = sessionRowSchema
+  .extend({
+    title: z.string().nullable(),
+    workingDirectory: z.string().nullable(),
+    threadUpdatedAt: z.number().int().nullable(),
+  })
+  .strict();
+export type SessionView = z.infer<typeof sessionViewSchema>;
 
 export const workspaceStateSchema = z
   .object({
@@ -114,19 +137,7 @@ export const workspaceStateSchema = z
     hydratedAt: z.number().int().nullable(),
     setupStatus: z.enum(["pending", "in_progress", "completed", "failed"]),
     setupDetails: z.record(z.string(), z.any()),
-    launchAttempts: z.array(
-      z
-        .object({
-          id: z.string(),
-          taskId: z.string(),
-          fromThreadId: z.string().nullable(),
-          skillId: z.string().nullable(),
-          status: z.enum(["pending", "spawned", "uncertain", "failed"]),
-          threadId: z.string().nullable(),
-          createdAt: z.number().int(),
-        })
-        .strict(),
-    ),
+    launchAttempts: z.array(launchAttemptRowSchema),
     currentLabel: z.string().nullable(),
   })
   .strict();
@@ -228,6 +239,24 @@ export const listTasksInputSchema = z
 
 export const getTaskInputSchema = z.object({ taskId: z.string().min(1) }).strict();
 export const archiveTaskInputSchema = z.object({ taskId: z.string().min(1) }).strict();
+export const launchDraftInputSchema = z.object({ taskId: z.string().min(1) }).strict();
+export const listSessionsInputSchema = z.object({ taskId: z.string().min(1).nullable().optional() }).strict();
+export const getSessionInputSchema = z.object({ threadId: z.string().min(1) }).strict();
+export const forkSessionInputSchema = z
+  .object({ threadId: z.string().min(1), text: z.string().max(10000).nullable().optional() })
+  .strict();
+export const interruptSessionInputSchema = z.object({ threadId: z.string().min(1) }).strict();
+export const listLaunchAttemptsInputSchema = z.object({ taskId: z.string().min(1) }).strict();
+export const resolveLaunchAttemptInputSchema = z
+  .object({
+    id: z.string().min(1),
+    action: z.discriminatedUnion("type", [
+      z.object({ type: z.literal("adopt"), threadId: z.string().min(1) }).strict(),
+      z.object({ type: z.literal("retry") }).strict(),
+      z.object({ type: z.literal("dismiss") }).strict(),
+    ]),
+  })
+  .strict();
 
 export const rpcContract = defineRpcContract({
   listTasks: {
@@ -240,7 +269,7 @@ export const rpcContract = defineRpcContract({
   },
   createTask: {
     input: taskCreateInputSchema,
-    output: z.object({ taskId: z.string(), note: z.string().optional() }).strict(),
+    output: z.object({ taskId: z.string(), threadId: z.string().optional(), note: z.string().optional() }).strict(),
   },
   updateTask: {
     input: taskUpdateInputSchema,
@@ -249,6 +278,34 @@ export const rpcContract = defineRpcContract({
   archiveTask: {
     input: archiveTaskInputSchema,
     output: z.object({ task: taskRecordSchema.nullable() }).strict(),
+  },
+  launchDraft: {
+    input: launchDraftInputSchema,
+    output: z.object({ threadId: z.string() }).strict(),
+  },
+  listSessions: {
+    input: listSessionsInputSchema,
+    output: z.object({ sessions: z.array(sessionViewSchema) }).strict(),
+  },
+  getSession: {
+    input: getSessionInputSchema,
+    output: z.object({ session: sessionViewSchema.nullable() }).strict(),
+  },
+  forkSession: {
+    input: forkSessionInputSchema,
+    output: z.object({ threadId: z.string() }).strict(),
+  },
+  interruptSession: {
+    input: interruptSessionInputSchema,
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
+  listLaunchAttempts: {
+    input: listLaunchAttemptsInputSchema,
+    output: z.object({ attempts: z.array(launchAttemptRowSchema) }).strict(),
+  },
+  resolveLaunchAttempt: {
+    input: resolveLaunchAttemptInputSchema,
+    output: z.object({ threadId: z.string().nullable().optional() }).strict(),
   },
   listProjects: {
     input: z
