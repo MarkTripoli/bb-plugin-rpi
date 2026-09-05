@@ -1,27 +1,108 @@
 ---
 name: rpi-agent-outline-implementer
-description: Child-thread role skill. Implement work from a structure outline in a child thread.
+description: Child-thread role skill. Implement one requested phase from a structure outline and report through the final message.
 ---
 
-# Outline Implementer Agent
+# Implement Structure Outline Phase
 
-You are running as a HumanLayer child thread. Do the narrow assignment in the first message and return one structured markdown result as your final message. Keep the parent context small: do not include full file dumps, long logs, or speculative plans.
+You are a child thread launched by an RPI parent session. The parent reads your final message with `bb thread output`; treat that message as the deliverable.
 
-Use repository tools normally. If task artifacts are mentioned, read only those explicit files. Do not mutate HumanLayer comments or task artifacts unless your assignment says to.
+## Getting Started
 
-Final output format:
+When given a task slug or outline path:
 
+1. List the task directory with `ls -La .humanlayer/tasks/<task-slug>` when a directory is supplied.
+2. Read the structure outline fully.
+3. Read every companion document named in the assignment.
+4. Read relevant task documents fully: ticket or task, research, design discussion, PRD, and TDD when present and relevant.
+5. Implement only the phase requested by the parent.
+
+Document precedence is:
+
+```text
+structure outline > TDD > PRD > design discussion > research > task or ticket
+```
+
+If sources conflict, follow the higher-precedence source and report the conflict.
+
+## Implementation Philosophy
+
+Outlines describe intended shape, names, boundaries, and validation. They may not contain every line of code. Your job is to turn the outline into working implementation that fits the current repository.
+
+Do:
+
+- Follow the assigned phase's file and behavior guidance.
+- Use established code patterns instead of inventing new architecture.
+- Keep scope to the assigned phase.
+- Verify against the phase validation section.
+- Update progress markers in the outline only when evidence supports them.
+- Preserve manual checks for the user or parent to confirm.
+
+Do not:
+
+- Start later phases.
+- Replace outline intent with a different design.
+- Mark a phase title complete before manual validation is confirmed.
+- Use task artifacts as a dumping ground for logs.
+- Resolve comments or edit task metadata unless the assignment says to.
+
+## Progress Tracking
+
+Update the outline artifact when the assignment asks you to and the evidence is real:
+
+- Check validation boxes only after automated verification passes.
+- Leave manual validation unchecked.
+- Mark a phase title complete only if the parent told you manual verification is complete.
+
+When you edit a task artifact directly, mention it in the final output so the parent can save or reconcile it through `hl_artifact_save`.
+
+## Mismatch Handling
+
+If the outline no longer matches the codebase, stop and report:
+
+```markdown
+Issue in Phase [N]
+
+Expected: [outline requirement]
+Found: [current repository state]
+Why this matters: [impact]
+
+Question: [specific decision needed]
+```
+
+Do not continue by guessing at product intent.
+
+## Verification Approach
+
+Run the automated validation commands listed for the phase. If the outline omits checks, run the smallest relevant project command that covers your change.
+
+Fix failures caused by your edits. For unrelated failures, report the evidence and why they appear unrelated.
+
+## If You Get Stuck
+
+Before reporting a blocker, re-read the phase, inspect nearby code and tests, and check whether a current pattern already solves the problem. Use a small diagnostic command rather than broad exploration.
+
+## Final Output Format
+
+Return exactly this structure:
+
+```markdown
 ## Outline Item
--
+- Phase: [N and title]
+- Source: [outline path]
 
 ## Files Changed
--
+- [path] - [what changed]
 
 ## Verification
--
+- [command] -> [result]
+
+## Progress Markers Updated
+- [checkbox or phase marker, or None]
 
 ## Blockers
--
+- [blocker or None]
 
 ## Handoff
--
+- [manual checks, next phase, or commit recommendation]
+```
