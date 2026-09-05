@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { useBbContext, useBbNavigate, useRealtime, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
-import type { RpcContract, TaskRow } from "../contract";
+import type { LaunchAttemptRecord, RpcContract, SessionView, TaskRecord, TaskRow, TaskWorkspaceState } from "../contract";
 import { BOARD_COLUMNS, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS } from "../transitions";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -52,7 +52,41 @@ function TaskStepPill({ task }: { task: TaskRow }) {
   return <span className={pillClassName(task.isDraft ? "draft" : "step")}>{label}</span>;
 }
 
+function statusMeta(status: string) {
+  switch (status) {
+    case "ready_for_input":
+      return { text: "idle", icon: "Circle" as const, className: "text-destructive" };
+    case "needs_approval":
+      return { text: "needs approval", icon: "AlertTriangle" as const, className: "text-foreground" };
+    case "running":
+      return { text: "running", icon: "Loading" as const, className: "text-foreground" };
+    case "launching":
+    case "resuming":
+      return { text: status.replaceAll("_", " "), icon: "Spinner" as const, className: "text-foreground" };
+    case "failed":
+      return { text: "failed", icon: "AlertCircle" as const, className: "text-destructive" };
+    case "interrupted":
+    case "interrupt_requested":
+      return { text: status.replaceAll("_", " "), icon: "CircleX" as const, className: "text-muted-foreground" };
+    case "lost":
+      return { text: "lost", icon: "AlertCircle" as const, className: "text-muted-foreground" };
+    default:
+      return { text: status.replaceAll("_", " "), icon: "Circle" as const, className: "text-muted-foreground" };
+  }
+}
+
+function SessionStatus({ status }: { status: string }) {
+  const meta = statusMeta(status);
+  return (
+    <span className={cn("inline-flex items-center gap-2 text-sm font-medium", meta.className)}>
+      <Icon name={meta.icon} className="size-4" />
+      {meta.text}
+    </span>
+  );
+}
+
 function TaskTable({ tasks }: { tasks: TaskRow[] }) {
+  const navigate = useBbNavigate();
   return (
     <div className="overflow-hidden rounded-xl border border-border bg-card">
       <table className="min-w-full border-collapse text-sm">
@@ -67,7 +101,11 @@ function TaskTable({ tasks }: { tasks: TaskRow[] }) {
         </thead>
         <tbody>
           {tasks.map((task) => (
-            <tr key={task.id} className="border-b border-border last:border-b-0">
+            <tr
+              key={task.id}
+              className="cursor-pointer border-b border-border last:border-b-0 hover:bg-card/70"
+              onClick={() => navigate.toPluginPanel("humanlayer", { subPath: `tasks/${task.id}` })}
+            >
               <td className="px-4 py-3">
                 <div className="flex flex-col gap-1">
                   <span className="font-medium text-foreground">{task.name}</span>
@@ -89,6 +127,7 @@ function TaskTable({ tasks }: { tasks: TaskRow[] }) {
 }
 
 function TaskBoard({ tasks }: { tasks: TaskRow[] }) {
+  const navigate = useBbNavigate();
   const groups = useMemo(() => {
     const base = {
       todo_draft: [] as TaskRow[],
@@ -121,7 +160,11 @@ function TaskBoard({ tasks }: { tasks: TaskRow[] }) {
           </div>
           <div className="space-y-2">
             {groups[column.id].map((task) => (
-              <article key={task.id} className="rounded-lg border border-border bg-background/70 p-3">
+              <article
+                key={task.id}
+                onClick={() => navigate.toPluginPanel("humanlayer", { subPath: `tasks/${task.id}` })}
+                className="cursor-pointer rounded-lg border border-border bg-background/70 p-3 transition hover:border-foreground/40"
+              >
                 <div className="space-y-2">
                   <div className="flex items-start justify-between gap-3">
                     <h4 className="font-medium leading-tight text-foreground">{task.name}</h4>
@@ -179,7 +222,7 @@ function WorkflowStrip({
   workflowType,
   worktreeTiming,
 }: {
-  workflowType: "rpi" | "prd_tdd" | "freeform";
+  workflowType: "rpi" | "prd_tdd" | "oneshot" | "freeform";
   worktreeTiming: "now" | "later" | "never";
 }) {
   const steps =
@@ -233,7 +276,7 @@ function NewTaskPage({
   const [hostId, setHostId] = useState("");
   const [defaultDirectory, setDefaultDirectory] = useState("");
   const [permissionMode, setPermissionMode] = useState<"default" | "accept_edits" | "auto" | "bypass">("default");
-  const [workflowType, setWorkflowType] = useState<"rpi" | "prd_tdd" | "freeform">("rpi");
+  const [workflowType, setWorkflowType] = useState<"rpi" | "prd_tdd" | "oneshot" | "freeform">("rpi");
   const [worktreeTiming, setWorktreeTiming] = useState<"now" | "later" | "never">("later");
   const [autoAdvance, setAutoAdvance] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -273,7 +316,12 @@ function NewTaskPage({
       setPermissionMode("default");
     }
     const workflowTypeSetting = settings?.defaultWorkflowType;
-    if (workflowTypeSetting === "rpi" || workflowTypeSetting === "prd_tdd" || workflowTypeSetting === "freeform") {
+    if (
+      workflowTypeSetting === "rpi" ||
+      workflowTypeSetting === "prd_tdd" ||
+      workflowTypeSetting === "oneshot" ||
+      workflowTypeSetting === "freeform"
+    ) {
       setWorkflowType(workflowTypeSetting);
     } else {
       setWorkflowType("rpi");
@@ -288,6 +336,7 @@ function NewTaskPage({
   }, [settings, settingsLoading]);
 
   const draftTasks = useMemo(() => tasks.filter((task) => task.isDraft), [tasks]);
+  const canLaunch = (workflowType === "freeform" || workflowType === "oneshot") && worktreeTiming === "never";
   const createDraft = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (busy || projectId === "" || text.trim() === "") return;
@@ -309,6 +358,30 @@ function NewTaskPage({
       });
       setText("");
       setName("");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const createAndLaunch = async () => {
+    if (busy || projectId === "" || text.trim() === "" || !canLaunch) return;
+    setBusy(true);
+    try {
+      const created = await rpc.call("createTask", {
+        request: {
+          text,
+          projectId,
+          hostId: hostId || null,
+          defaultDirectory: defaultDirectory.trim() || null,
+          workflowType,
+          worktreeTiming,
+          permissionMode,
+          autoAdvance,
+        },
+        name: name.trim() || undefined,
+        draft: true,
+      });
+      const launched = await rpc.call("launchDraft", { taskId: created.taskId });
+      navigate.toThread(launched.threadId);
     } finally {
       setBusy(false);
     }
@@ -393,10 +466,11 @@ function NewTaskPage({
             />
             <ComposerToolbarSelect
               value={workflowType}
-              onChange={(value) => setWorkflowType(value as "rpi" | "prd_tdd" | "freeform")}
+              onChange={(value) => setWorkflowType(value as "rpi" | "prd_tdd" | "oneshot" | "freeform")}
               options={[
                 { value: "rpi", label: "RPI" },
                 { value: "prd_tdd", label: "PRD / TDD" },
+                { value: "oneshot", label: "Oneshot" },
                 { value: "freeform", label: "Freeform" },
               ]}
             />
@@ -417,9 +491,10 @@ function NewTaskPage({
               </button>
               <button
                 type="button"
-                disabled
-                title={workflowType === "rpi" ? "Sessions launch in a later release" : "Sessions launch in a later release"}
-                className="inline-flex h-10 items-center gap-2 rounded-md border border-border bg-card px-4 text-sm font-semibold text-muted-foreground opacity-60"
+                onClick={createAndLaunch}
+                disabled={busy || text.trim() === "" || projectId === "" || !canLaunch}
+                title={canLaunch ? "Create and launch" : "This phase launches only freeform or oneshot tasks without a worktree"}
+                className="inline-flex h-10 items-center gap-2 rounded-md border border-border bg-card px-4 text-sm font-semibold text-foreground transition hover:border-foreground/40 disabled:cursor-not-allowed disabled:text-muted-foreground disabled:opacity-60"
               >
                 <Icon name="Play" className="size-4" />
                 Create
@@ -462,6 +537,214 @@ function NewTaskPage({
   );
 }
 
+function RecoverLaunchRow({ attempt, onResolved }: { attempt: LaunchAttemptRecord; onResolved: () => void }) {
+  const rpc = useRpc<RpcContract>();
+  const [threadId, setThreadId] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const resolve = async (action: { type: "adopt"; threadId: string } | { type: "retry" } | { type: "dismiss" }) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await rpc.call("resolveLaunchAttempt", { id: attempt.id, action });
+      onResolved();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-border bg-card/70 p-3">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="space-y-1">
+          <div className="text-sm font-medium text-foreground">Recover launch</div>
+          <div className="text-xs text-muted-foreground">{attempt.id}</div>
+        </div>
+        <span className={pillClassName("ghost")}>uncertain</span>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Input value={threadId} onChange={(event) => setThreadId(event.target.value)} placeholder="Thread id to adopt" className="h-9 max-w-[220px]" />
+        <Button type="button" disabled={busy || threadId.trim() === ""} onClick={() => resolve({ type: "adopt", threadId: threadId.trim() })}>
+          Adopt
+        </Button>
+        <Button type="button" disabled={busy} onClick={() => resolve({ type: "retry" })}>
+          Retry
+        </Button>
+        <Button type="button" disabled={busy} variant="outline" onClick={() => resolve({ type: "dismiss" })}>
+          Dismiss
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function SessionsTable({ sessions }: { sessions: SessionView[] }) {
+  const navigate = useBbNavigate();
+  return (
+    <div className="overflow-hidden rounded-xl border border-border bg-card">
+      <table className="min-w-full border-collapse text-sm">
+        <thead className="border-b border-border text-left text-[11px] uppercase tracking-[0.24em] text-muted-foreground">
+          <tr>
+            <th className="px-4 py-3 font-medium">Status</th>
+            <th className="px-4 py-3 font-medium">Title</th>
+            <th className="px-4 py-3 font-medium">Label</th>
+            <th className="px-4 py-3 font-medium">Working directory</th>
+            <th className="px-4 py-3 font-medium">Updated</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sessions.map((session) => (
+            <tr
+              key={session.threadId}
+              className="cursor-pointer border-b border-border last:border-b-0 hover:bg-background/70"
+              onClick={() => navigate.toThread(session.threadId)}
+            >
+              <td className="px-4 py-3"><SessionStatus status={session.hlStatus} /></td>
+              <td className="px-4 py-3">
+                <div className="flex flex-col gap-1">
+                  <span className="font-medium text-foreground">{session.title ?? session.threadId}</span>
+                  {session.blockedReason ? <span className="text-xs text-muted-foreground">blocked: {session.blockedReason}</span> : null}
+                </div>
+              </td>
+              <td className="px-4 py-3">{session.label ? <span className={pillClassName("step")}>{session.label}</span> : <span className={pillClassName("ghost")}>none</span>}</td>
+              <td className="max-w-[320px] truncate px-4 py-3 text-muted-foreground">{session.workingDirectory ?? "unknown"}</td>
+              <td className="px-4 py-3 text-muted-foreground">{relativeTime(session.threadUpdatedAt ?? session.updatedAt)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function TaskDetailPage({ taskId }: { taskId: string }) {
+  const rpc = useRpc<RpcContract>();
+  const navigate = useBbNavigate();
+  const [task, setTask] = useState<TaskRecord | null>(null);
+  const [workspace, setWorkspace] = useState<TaskWorkspaceState | null>(null);
+  const [sessions, setSessions] = useState<SessionView[]>([]);
+
+  const refetch = () => {
+    Promise.all([
+      rpc.call("getTask", { taskId }),
+      rpc.call("listSessions", { taskId }),
+    ]).then(([taskResult, sessionResult]) => {
+      setTask(taskResult.task);
+      setWorkspace(taskResult.workspace);
+      setSessions(sessionResult.sessions);
+    });
+  };
+
+  useEffect(() => {
+    refetch();
+  }, [taskId]);
+  useRealtime("tasks", refetch);
+  useRealtime("hl:sessions", refetch);
+
+  if (!task || !workspace) {
+    return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
+  }
+
+  const uncertain = workspace.launchAttempts.filter((attempt) => attempt.status === "uncertain");
+
+  return (
+    <div className="space-y-4">
+      <button
+        type="button"
+        onClick={() => navigate.toPluginPanel("humanlayer", { subPath: "" })}
+        className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
+      >
+        <Icon name="ChevronLeft" className="size-4" />
+        Tasks
+      </button>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-2">
+          <h2 className="text-2xl font-semibold tracking-tight text-foreground">{task.name}</h2>
+          <div className="flex flex-wrap gap-2">
+            <span className={pillClassName(task.isDraft ? "draft" : "step")}>{task.isDraft ? "Draft" : workspace.currentLabel ?? "Session"}</span>
+            <span className={pillClassName("ghost")}>{task.workflowType}</span>
+            <span className={pillClassName("ghost")}>{task.worktreeTiming}</span>
+          </div>
+        </div>
+        {task.isDraft ? (
+          <Button
+            type="button"
+            onClick={async () => {
+              const result = await rpc.call("launchDraft", { taskId });
+              navigate.toThread(result.threadId);
+            }}
+          >
+            <Icon name="Play" className="size-4" />
+            Launch
+          </Button>
+        ) : null}
+      </div>
+      <div className="border-b border-border pb-2 text-xs font-medium uppercase tracking-[0.24em] text-foreground">Sessions</div>
+      {uncertain.length > 0 ? (
+        <div className="space-y-2">
+          {uncertain.map((attempt) => <RecoverLaunchRow key={attempt.id} attempt={attempt} onResolved={refetch} />)}
+        </div>
+      ) : null}
+      {sessions.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-border bg-card/60 px-4 py-6 text-sm text-muted-foreground">
+          No sessions yet.
+        </div>
+      ) : (
+        <SessionsTable sessions={sessions} />
+      )}
+    </div>
+  );
+}
+
+export const viewing = new Set<string>();
+
+export function HumanLayerThreadHeaderAction({ threadId }: { threadId: string; projectId: string; isCompactViewport: boolean }) {
+  const rpc = useRpc<RpcContract>();
+  const navigate = useBbNavigate();
+  const [session, setSession] = useState<SessionView | null>(null);
+
+  const refetch = () => {
+    rpc.call("getSession", { threadId }).then(({ session: next }) => setSession(next));
+  };
+
+  useEffect(() => {
+    viewing.add(threadId);
+    refetch();
+    return () => {
+      viewing.delete(threadId);
+    };
+  }, [threadId]);
+  useRealtime("hl:sessions", refetch);
+
+  if (!session) return null;
+
+  return (
+    <div className="flex items-center gap-2">
+      <span className={pillClassName(session.label ? "step" : "ghost")}>{session.label ?? "freeform"}</span>
+      <SessionStatus status={session.hlStatus} />
+      <Button
+        type="button"
+        variant="outline"
+        className="h-7 px-2 text-xs"
+        onClick={async () => {
+          const result = await rpc.call("forkSession", { threadId });
+          navigate.toThread(result.threadId);
+        }}
+      >
+        Fork
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        className="h-7 px-2 text-xs"
+        onClick={() => void rpc.call("interruptSession", { threadId })}
+      >
+        Interrupt
+      </Button>
+    </div>
+  );
+}
+
 function SidebarSummary({
   tasks,
   onCreateTask,
@@ -500,6 +783,7 @@ export function HumanLayerPanel({ subPath }: { subPath: string }) {
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [showBoard, setShowBoard] = useState(false);
   const [view, setView] = useState<"tasks" | "drafts" | "new">("tasks");
+  const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
   const { projectId } = useBbContext();
 
   const refetch = () => {
@@ -514,6 +798,12 @@ export function HumanLayerPanel({ subPath }: { subPath: string }) {
   useRealtime("tasks", refetch);
 
   useEffect(() => {
+    const taskMatch = /^tasks\/([^/]+)$/.exec(subPath);
+    if (taskMatch) {
+      setDetailTaskId(taskMatch[1]);
+      return;
+    }
+    setDetailTaskId(null);
     if (subPath === "new") {
       setView("new");
       return;
@@ -524,6 +814,7 @@ export function HumanLayerPanel({ subPath }: { subPath: string }) {
     }
     setView("tasks");
   }, [subPath]);
+  useRealtime("hl:sessions", refetch);
 
   const visibleTasks = useMemo(() => {
     if (view === "drafts") return tasks.filter((task) => task.isDraft);
@@ -601,7 +892,9 @@ export function HumanLayerPanel({ subPath }: { subPath: string }) {
         </aside>
 
         <main className="min-h-0 overflow-auto rounded-2xl border border-border bg-background/80 p-4">
-          {view === "new" ? (
+          {detailTaskId ? (
+            <TaskDetailPage taskId={detailTaskId} />
+          ) : view === "new" ? (
             <NewTaskPage tasks={tasks} />
           ) : (
             <div className="space-y-4">
