@@ -1,11 +1,10 @@
 Artifact saved:
 {artifact_directive}
 
-Summary:
-{summary}
+The TDD is approved and ready for implementation structuring.
 
-Auto-advance does not apply at this gate. Continue manually with:
+Auto-advance does not apply at this human gate. Continue manually with:
 
 ```text
-/rpi-create-structure-outline
+/rpi-create-structure-outline @{artifact_file}
 ```
