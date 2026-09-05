@@ -47,6 +47,30 @@ export type LaunchAdoptionCandidate = {
   strong: boolean;
 };
 
+// Typed domain error for a launch that cannot proceed (as opposed to a bug/transport failure,
+// which stays a plain Error). advance.ts's advance-rejection reasons (session_running,
+// pending_interaction, ...) and launch.ts's own environment-selection reasons (no_source_host)
+// share this one class and code union, since both are "why didn't this launch happen" facts
+// surfaced to the RPC caller and, from there, to the UI's error toast.
+export class LaunchRejectedError extends Error {
+  constructor(
+    public readonly code:
+      | "session_running"
+      | "pending_interaction"
+      | "task_archived"
+      | "missing_completed_turn"
+      | "stale_extraction"
+      | "invalid_next_step"
+      | "human_gate"
+      | "launch_blocked"
+      | "no_source_host",
+    message: string,
+  ) {
+    super(message);
+    this.name = "LaunchRejectedError";
+  }
+}
+
 const taskLocks = new Map<string, Promise<unknown>>();
 
 export function withTaskLock<T>(taskId: string, fn: () => Promise<T>) {
@@ -281,7 +305,10 @@ async function selectEnvironment(bb: BbPluginApi, task: TaskRecord, skillId: str
       role: "base" as const,
     };
   }
-  throw new Error(`no source host for project ${task.projectId}`);
+  throw new LaunchRejectedError(
+    "no_source_host",
+    "No host to launch on: the project has no default source repository and this task has no host set. Set a project source or pick a host for this task.",
+  );
 }
 
 async function projectDefaultSource(bb: BbPluginApi, projectId: string): Promise<{ hostId: string; path: string } | null> {

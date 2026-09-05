@@ -4,31 +4,13 @@ import type * as BetterSqlite3 from "better-sqlite3";
 import { parseJson, readRow, writeRow } from "./db";
 import type { SessionRow, TaskRecord } from "./contract";
 import type { NextStepSuggestions } from "./extraction";
-import { activeLaunchAttempt, environmentRoleForAttempt, insertAttempt, launchPhase, withTaskLock } from "./launch";
+import { activeLaunchAttempt, environmentRoleForAttempt, insertAttempt, LaunchRejectedError, launchPhase, withTaskLock } from "./launch";
 import { getTask } from "./tasks";
 import { AUTO_ADVANCE, ITERATE_SKILL_BY_LABEL, autoAdvanceTransition, normalizePhaseLabel, skillInfo, type PhaseLabel } from "./transitions";
 import type { LaunchBindingMirror, SessionMirrorRow } from "./sessions";
 
 type Database = BetterSqlite3.Database;
 type AdvanceMode = "auto_advance" | "proceed";
-
-export class AdvanceRejectedError extends Error {
-  constructor(
-    public readonly code:
-      | "session_running"
-      | "pending_interaction"
-      | "task_archived"
-      | "missing_completed_turn"
-      | "stale_extraction"
-      | "invalid_next_step"
-      | "human_gate"
-      | "launch_blocked",
-    message: string,
-  ) {
-    super(message);
-    this.name = "AdvanceRejectedError";
-  }
-}
 
 export async function onCompletedTurn(
   bb: BbPluginApi,
@@ -182,21 +164,21 @@ async function validateAdvance(
   mode: AdvanceMode,
 ): Promise<
   | { ok: true; nextStep: NextStepSuggestions & { extraction: { type: "next_step_found"; nextStepType: string; nextStepPrompt: string } }; transition: ReturnType<typeof autoAdvanceTransition> }
-  | { ok: false; error: AdvanceRejectedError }
+  | { ok: false; error: LaunchRejectedError }
 > {
   const existing = successorFor(db, session.threadId);
-  if (session.advancedAt !== null && existing) return { ok: false, error: new AdvanceRejectedError("launch_blocked", "Session already advanced.") };
-  if (session.hlStatus !== "ready_for_input") return { ok: false, error: new AdvanceRejectedError("session_running", "session running") };
-  if (task.archived) return { ok: false, error: new AdvanceRejectedError("task_archived", "Task is archived.") };
-  if (session.blockedReason) return { ok: false, error: new AdvanceRejectedError("pending_interaction", "Session has pending interactions.") };
-  if (await hasPendingInteractions(bb, session.threadId)) return { ok: false, error: new AdvanceRejectedError("pending_interaction", "Session has pending interactions.") };
-  if (!session.completedTurnKey) return { ok: false, error: new AdvanceRejectedError("missing_completed_turn", "No completed turn is available.") };
-  if (session.nextStepTurnKey !== session.completedTurnKey) return { ok: false, error: new AdvanceRejectedError("stale_extraction", "stale extraction") };
+  if (session.advancedAt !== null && existing) return { ok: false, error: new LaunchRejectedError("launch_blocked", "Session already advanced.") };
+  if (session.hlStatus !== "ready_for_input") return { ok: false, error: new LaunchRejectedError("session_running", "session running") };
+  if (task.archived) return { ok: false, error: new LaunchRejectedError("task_archived", "Task is archived.") };
+  if (session.blockedReason) return { ok: false, error: new LaunchRejectedError("pending_interaction", "Session has pending interactions.") };
+  if (await hasPendingInteractions(bb, session.threadId)) return { ok: false, error: new LaunchRejectedError("pending_interaction", "Session has pending interactions.") };
+  if (!session.completedTurnKey) return { ok: false, error: new LaunchRejectedError("missing_completed_turn", "No completed turn is available.") };
+  if (session.nextStepTurnKey !== session.completedTurnKey) return { ok: false, error: new LaunchRejectedError("stale_extraction", "stale extraction") };
   const nextStep = parseJson<NextStepSuggestions | null>(session.nextStepJson, null);
-  if (nextStep?.extraction.type !== "next_step_found") return { ok: false, error: new AdvanceRejectedError("invalid_next_step", "No next step is available.") };
+  if (nextStep?.extraction.type !== "next_step_found") return { ok: false, error: new LaunchRejectedError("invalid_next_step", "No next step is available.") };
   const label = normalizePhaseLabel(session.label) as PhaseLabel | null;
   const transition = label ? autoAdvanceTransition(label, task.workflowType) : undefined;
-  if (activeLaunchAttempt(db, task.id)) return { ok: false, error: new AdvanceRejectedError("launch_blocked", "A launch attempt is already pending.") };
+  if (activeLaunchAttempt(db, task.id)) return { ok: false, error: new LaunchRejectedError("launch_blocked", "A launch attempt is already pending.") };
   return { ok: true, nextStep: nextStep as NextStepSuggestions & { extraction: { type: "next_step_found"; nextStepType: string; nextStepPrompt: string } }, transition };
 }
 

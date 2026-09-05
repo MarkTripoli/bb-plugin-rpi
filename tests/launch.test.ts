@@ -4,7 +4,7 @@ import Database from "better-sqlite3";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { MIGRATIONS } from "../db";
 import { createDraftTask } from "../tasks";
-import { launchPhase, listLaunchAdoptionCandidates, promoteStalePendingLaunchAttempts, resolveLaunchAttempt } from "../launch";
+import { launchPhase, LaunchRejectedError, listLaunchAdoptionCandidates, promoteStalePendingLaunchAttempts, resolveLaunchAttempt } from "../launch";
 import { TASK_CONTEXT_FIRST_ACTION } from "../instructions";
 import { bindPendingLaunch, createLaunchBindingMirror, registerPendingLaunch, type SessionMirrorRow } from "../sessions";
 
@@ -119,6 +119,59 @@ test("launchPhase prompts start with marker then task context first-action line"
   const lines = prompt.split("\n");
   assert.match(lines[0]!, /^<!-- hl:launch:/);
   assert.equal(lines[1], TASK_CONTEXT_FIRST_ACTION);
+  db.close();
+});
+
+test("launchPhase rejects with a typed no_source_host error when the project has no default source and the task has no host", async () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId) as { id: string };
+  const bb = {
+    realtime: { publish: () => undefined },
+    sdk: {
+      // No default source (sources: []) and the task below has hostId: null, baseEnvironmentId:
+      // null, defaultDirectory: null: selectEnvironment has nothing to launch on.
+      projects: { get: async () => ({ id: "proj_1", name: "Proj", kind: "standard" as const, gitRemoteUrl: null, createdAt: 1, updatedAt: 1, sources: [] }) },
+      threads: { spawn: async () => { throw new Error("must not spawn"); }, get: async () => { throw new Error("must not spawn"); } },
+    },
+    log: { warn: () => undefined },
+  };
+  await assert.rejects(
+    launchPhase(bb as never, db, new Map(), createLaunchBindingMirror(), {
+      id: task.id,
+      projectId: "proj_1",
+      name: "Task",
+      slug: "task",
+      draftPrompt: "prompt",
+      workflowType: "freeform",
+      worktreeTiming: "never",
+      isDraft: true,
+      archived: false,
+      hostId: null,
+      baseEnvironmentId: null,
+      worktreeEnvironmentId: null,
+      defaultDirectory: null,
+      providerId: null,
+      model: null,
+      reasoningLevel: null,
+      serviceTier: null,
+      permissionMode: "default",
+      autoAdvance: false,
+      aa_questions_to_research: true,
+      aa_research_to_design: true,
+      aa_plan_to_worktree: true,
+      aa_worktree_to_implementation: true,
+      aa_implementation_to_pr: false,
+      createdAt: 1,
+      updatedAt: 1,
+    }, { skillId: null, prompt: "do work", launchedBy: "user", fromThreadId: null }),
+    (error: unknown) => {
+      assert.ok(error instanceof LaunchRejectedError);
+      assert.equal(error.code, "no_source_host");
+      assert.match(error.message, /no host to launch on/i);
+      return true;
+    },
+  );
   db.close();
 });
 
@@ -557,7 +610,7 @@ test("a hostless base-role task with no project source and no task.hostId reject
   };
   await assert.rejects(
     launchPhase(bb as never, db, new Map(), createLaunchBindingMirror(), task, { skillId: "create-research", launchedBy: "user", fromThreadId: null }),
-    /no source host for project/,
+    /no host to launch on/i,
   );
   assert.equal(spawned, false);
   const attempts = db.prepare("SELECT status FROM launch_attempts WHERE task_id = ?").all(taskId) as Array<{ status: string }>;
