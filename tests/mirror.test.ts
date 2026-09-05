@@ -77,7 +77,8 @@ test("hydrate writes task artifacts through .humanlayer rootPath with CAS", asyn
   };
 
   await hydrate(bb as never, db, taskId, "thr_1");
-  assert.ok(mkdirs.some((mkdir) => mkdir.path === "/repo/.humanlayer/tasks/task" && mkdir.rootPath === "/repo/.humanlayer/tasks/task"));
+  assert.ok(mkdirs.some((mkdir) => mkdir.path === "/repo/.humanlayer/tasks" && mkdir.rootPath === "/repo"));
+  assert.ok(mkdirs.some((mkdir) => mkdir.path === "/repo/.humanlayer/tasks/task" && mkdir.rootPath === "/repo/.humanlayer/tasks"));
   assert.equal(writes.length, 2);
   assert.ok(writes.every((write) => write.path.startsWith("/repo/.humanlayer/tasks/task/")));
   assert.ok(writes.every((write) => write.rootPath === "/repo/.humanlayer/tasks/task"));

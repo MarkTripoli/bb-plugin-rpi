@@ -328,7 +328,8 @@ export async function hydrate(bb: BbPluginApi, db: Database, taskId: string, thr
     bb.log.info(`HumanLayer hydration skipped for ${threadId}: no workspace path`);
     return { written: 0, skipped: 0, trashed: 0 };
   }
-  await mkdir(bb, location, location.taskDir, location.rootPath);
+  await mkdir(bb, location, path.dirname(location.taskDir), location.workspacePath);
+  await mkdir(bb, location, location.taskDir, path.dirname(location.taskDir));
   await ensureGitExclude(bb, location).catch((error) => bb.log.warn(`HumanLayer could not update .git/info/exclude: ${String(error)}`));
   let written = 0;
   let skipped = 0;
