@@ -462,6 +462,11 @@ export const sendCommentsInputSchema = commentIdsInputSchema.extend({
   requestId: z.string().min(1).max(100).optional(),
   includeResolved: z.boolean().optional(),
 }).strict();
+export const taskUiStateSchema = z.object({
+  dismissedTips: z.record(z.string(), z.boolean()).optional(),
+}).strict();
+export type TaskUiState = z.infer<typeof taskUiStateSchema>;
+export const dismissTaskTipInputSchema = z.object({ taskId: z.string().min(1), label: z.string().min(1) }).strict();
 
 export const rpcContract = defineRpcContract({
   listTasks: {
@@ -471,6 +476,14 @@ export const rpcContract = defineRpcContract({
   getTask: {
     input: getTaskInputSchema,
     output: z.object({ task: taskRecordSchema, sessions: z.array(sessionRowSchema), workspace: workspaceStateSchema }).strict(),
+  },
+  getTaskUiState: {
+    input: getTaskInputSchema,
+    output: taskUiStateSchema,
+  },
+  dismissTaskTip: {
+    input: dismissTaskTipInputSchema,
+    output: taskUiStateSchema,
   },
   createTask: {
     input: taskCreateInputSchema,

@@ -1,6 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { prefsSchema, prefsUpdateSchema, rpcContract } from "./contract";
-import { openPluginDatabase, parseJson, readRow } from "./db";
+import { openPluginDatabase, parseJson, readRow, writeRow } from "./db";
 import {
   artifactPermalink,
   deleteArtifact,
@@ -60,12 +60,22 @@ import {
   updateTask,
 } from "./tasks";
 import { ARTIFACT_TOOL_NAMES, registerArtifactTools } from "./tools";
-import { ITERATE_SKILL_BY_LABEL, normalizePhaseLabel, skillInfo, type PhaseLabel } from "./transitions";
+import { ITERATE_SKILL_BY_LABEL, normalizePhaseLabel, SKILLS, skillInfo, type PhaseLabel } from "./transitions";
 import { getWorkspaceView, rerunWorkspaceSetup, validateWorkspaceForWorktreeLaunch } from "./workspace";
 
 const PREFS_KEY = "prefs:structured-defaults";
-const RPI_SKILLS_AVAILABLE = false;
+const RPI_SKILLS_AVAILABLE = true;
 const RPI_LAUNCH_NOTE = "Sessions launch in a later release.";
+const RPI_SKILL_NAMES = SKILLS.map(([, skillId]) => `rpi-${skillId}`);
+const RPI_AGENT_SKILL_NAMES = [
+  "rpi-agent-codebase-locator",
+  "rpi-agent-codebase-analyzer",
+  "rpi-agent-codebase-pattern-finder",
+  "rpi-agent-web-search-researcher",
+  "rpi-agent-implementer",
+  "rpi-agent-outline-implementer",
+  "rpi-agent-implementation-reviewer",
+];
 const SECURITY_HEADERS = {
   "x-content-type-options": "nosniff",
   "cache-control": "no-store",
@@ -126,6 +136,22 @@ function assertAnchorInVersion(content: Buffer, blockIndex: number) {
 
 function stripCommentPage(page: ReturnType<typeof listComments>) {
   return { threads: page.threads, total: page.total, nextOffset: page.nextOffset };
+}
+
+function readTaskUiState(db: ReturnType<typeof openPluginDatabase>, taskId: string) {
+  const row = readRow<{ json: string }>(db, "SELECT json FROM task_ui_state WHERE task_id = ?", taskId);
+  const parsed = parseJson<{ dismissedTips?: Record<string, boolean> }>(row?.json, {});
+  const dismissedTips = parsed.dismissedTips && typeof parsed.dismissedTips === "object" ? parsed.dismissedTips : {};
+  return { dismissedTips };
+}
+
+function writeTaskUiState(db: ReturnType<typeof openPluginDatabase>, taskId: string, state: { dismissedTips?: Record<string, boolean> }) {
+  writeRow(
+    db,
+    "INSERT INTO task_ui_state (task_id, json) VALUES (?, ?) ON CONFLICT(task_id) DO UPDATE SET json = excluded.json",
+    taskId,
+    JSON.stringify({ dismissedTips: state.dismissedTips ?? {} }),
+  );
 }
 
 function commentCliLines(threads: CommentThread[]) {
@@ -208,6 +234,31 @@ export default async function plugin(bb: BbPluginApi) {
       label: "Show phase tips",
       default: true,
     },
+    showIterateConfirmation: {
+      type: "boolean",
+      label: "Show iterate confirmation dialog",
+      default: true,
+    },
+    showBypassPermissionsNudge: {
+      type: "boolean",
+      label: "Show bypass permissions nudge",
+      default: true,
+    },
+    showFastModeWarning: {
+      type: "boolean",
+      label: "Show fast mode warning",
+      default: true,
+    },
+    showSessionUiExplainer: {
+      type: "boolean",
+      label: "Show session UI explainer",
+      default: true,
+    },
+    confirmBeforeInterruptingSubagents: {
+      type: "boolean",
+      label: "Confirm before interrupting sub-agents",
+      default: true,
+    },
     jumpHotkey: {
       type: "string",
       label: "Jump hotkey",
@@ -235,6 +286,14 @@ export default async function plugin(bb: BbPluginApi) {
 	      }
 	      return { ...result, workspace: { ...result.workspace, launchAttempts: await attemptsWithCandidates(bb, db, result.workspace.launchAttempts) } };
 	    },
+    getTaskUiState: async ({ taskId }) => readTaskUiState(db, taskId),
+    dismissTaskTip: async ({ taskId, label }) => {
+      const state = readTaskUiState(db, taskId);
+      const next = { ...state, dismissedTips: { ...(state.dismissedTips ?? {}), [label]: true } };
+      writeTaskUiState(db, taskId, next);
+      bb.realtime.publish("hl:ui-state", { taskId });
+      return next;
+    },
     createTask: async ({ request, name, draft }) => {
       const storedPrefs = await bb.storage.kv.get<unknown>(PREFS_KEY);
       const prefs = prefsSchema.parse(storedPrefs ?? defaultTaskPrefs({}));
@@ -531,8 +590,8 @@ export default async function plugin(bb: BbPluginApi) {
       },
       {
         name: "launch-skill",
-        summary: "Internal: launch a HumanLayer task session with an RPI skill",
-        usage: "bb humanlayer launch-skill --task <taskId> --skill <skillId> --internal [--prompt <text>] [--command-line <text>] [--provider <id>] [--model <id>] [--json]",
+        summary: "Launch a HumanLayer task session with an RPI skill",
+        usage: "bb humanlayer launch-skill --task <taskId> --skill <skillId> [--command-line <text>] [--provider <id>] [--model <id>] [--json]",
       },
       {
         name: "launch-attempts",
@@ -589,7 +648,7 @@ export default async function plugin(bb: BbPluginApi) {
         }
         if (argv[0] === "launch-skill") {
           const opts = parseArgs(argv.slice(1));
-          if (!opts.task || !opts.skill) return { exitCode: 2, stderr: "usage: bb humanlayer launch-skill --task <taskId> --skill <skillId> --internal [--prompt <text>] [--command-line <text>] [--provider <id>] [--model <id>]\n" };
+          if (!opts.task || !opts.skill) return { exitCode: 2, stderr: "usage: bb humanlayer launch-skill --task <taskId> --skill <skillId> [--command-line <text>] [--provider <id>] [--model <id>]\n" };
           if (opts.internal !== "true") {
             try {
               rejectUnavailableRpiSkill(opts.skill);
@@ -770,17 +829,22 @@ export default async function plugin(bb: BbPluginApi) {
   }, { auth: "local" });
 
   registerArtifactTools(bb, db, sessionMirror);
+  const agentSkillThreads = new Set<string>();
 
   bb.agents.configure((context) => {
     bindPendingThread(db, sessionMirror, launchBindings, context.thread.id);
-    return sessionMirror.has(context.thread.id) ? { tools: [...ARTIFACT_TOOL_NAMES], skills: [] } : { tools: [], skills: [] };
+    if (sessionMirror.has(context.thread.id)) return { tools: [...ARTIFACT_TOOL_NAMES], skills: RPI_SKILL_NAMES };
+    if (agentSkillThreads.has(context.thread.id)) return { tools: [], skills: RPI_AGENT_SKILL_NAMES };
+    return { tools: [], skills: [] };
   });
   bb.agents.contributeInstructions(({ threadId }) => {
     const row = sessionMirror.get(threadId) ?? bindPendingThread(db, sessionMirror, launchBindings, threadId);
     return row ? taskInstructions(row) : null;
   });
 
-  registerSessionRuntime(bb, db, sessionMirror, launchBindings, (row) => onCompletedTurn(bb, db, sessionMirror, launchBindings, row));
+  registerSessionRuntime(bb, db, sessionMirror, launchBindings, (row) => onCompletedTurn(bb, db, sessionMirror, launchBindings, row), (threadId) => {
+    agentSkillThreads.add(threadId);
+  });
 
   bb.background.service("launch-attempt-sweep", {
     async start(signal) {

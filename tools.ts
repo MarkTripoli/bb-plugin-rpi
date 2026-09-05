@@ -103,6 +103,11 @@ export function registerArtifactTools(bb: BbPluginApi, db: Database, mirror: Map
           currentLabel: row.label,
           artifactDir: `.humanlayer/tasks/${row.taskSlug}`,
         },
+        prefs: {
+          researchSubagentModel: row.providerId && row.model ? `${row.providerId} ${row.model}` : null,
+          providerId: row.providerId,
+          model: row.model,
+        },
         artifacts,
         taskMd: task ? trimToolContent(task.version.content.toString("utf8")) : null,
       }, null, 2);

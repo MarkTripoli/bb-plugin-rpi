@@ -18,6 +18,7 @@ import type {
   SessionView,
   TaskRecord,
   TaskRow,
+  TaskUiState,
   TaskWorkspaceState,
   WorkspaceViewRecord,
   CommentThreadRecord,
@@ -316,6 +317,64 @@ function labelStep(label: string | null | undefined) {
   if (normalized === "design-tdd") return "TDD";
   return normalized ?? null;
 }
+
+const PHASE_TIPS: Record<string, string[]> = {
+  "research-questions": [
+    "Use only task.md, ticket.md, and explicit mentions.",
+    "Phrase discovery neutrally so the research does not reveal the planned implementation.",
+    "End with the create-research command block.",
+  ],
+  research: [
+    "Keep the artifact descriptive: facts, locations, constraints, and gaps.",
+    "Spawn research child threads for separable codebase or web questions.",
+    "Do not turn findings into recommendations in this phase.",
+  ],
+  design: [
+    "Convert research into design tradeoffs and open decisions.",
+    "Leave unresolved questions visible for the human gate.",
+    "Proceed manually when the design is ready for outline work.",
+  ],
+  "design-prd": [
+    "Describe user-facing requirements, scope, and acceptance criteria.",
+    "Avoid implementation detail except where it constrains product behavior.",
+    "Proceed manually to technical design.",
+  ],
+  "design-tdd": [
+    "Bridge requirements to implementation shape, data, APIs, and risks.",
+    "Keep verification and rollout expectations concrete.",
+    "Proceed manually to the structure outline.",
+  ],
+  structure: [
+    "Break implementation into ordered phases with files and checks.",
+    "Keep each phase independently reviewable.",
+    "Proceed manually to implementation for outline-only tasks.",
+  ],
+  plan: [
+    "Expand the outline into executable implementation steps.",
+    "Name the checks and manual gate after each phase.",
+    "Proceed manually to workspace setup.",
+  ],
+  "worktree-setup": [
+    "Use .humanlayer/workspace.json for the requested shape.",
+    "Let bb own managed worktree creation.",
+    "Run copyGlobs and setupCommand only inside the selected worktree thread.",
+  ],
+  implementation: [
+    "Keep the parent thread as an orchestrator.",
+    "Use child implementer and reviewer threads before the commit gate.",
+    "Commit only after the human approves commit and proceed.",
+  ],
+  "describe-pr": [
+    "Use bb environment commands for status, diff, and pull-request state.",
+    "Write pr-description.md as the task artifact.",
+    "Do not merge automatically.",
+  ],
+  review: [
+    "Read the chosen artifact and comments.",
+    "Ask before resolving, deleting, replying, or applying comments unless the user already gave that instruction.",
+    "Handle one root comment at a time.",
+  ],
+};
 
 function NewTaskPage({
   tasks,
@@ -736,6 +795,62 @@ function AutoAdvancePanel({ task, onUpdated }: { task: TaskRecord; onUpdated: ()
         ))}
       </div>
     </div>
+  );
+}
+
+function TipsPanel({ taskId, label }: { taskId: string; label: string | null | undefined }) {
+  const rpc = useRpc<RpcContract>();
+  const { values: settings } = useSettings();
+  const [state, setState] = useState<TaskUiState>({ dismissedTips: {} });
+  const normalized = label?.startsWith("rpi:") ? label.slice(4) : label;
+  const tipKey = normalized ?? "todo";
+  const tips = PHASE_TIPS[tipKey] ?? [
+    "Use explicit task materials as the source of truth.",
+    "Keep each phase in its own session so context stays small.",
+    "Use the final command block exactly as written by the skill template.",
+  ];
+  const hidden = state.dismissedTips?.[tipKey] || settings?.showPhaseTips === false;
+
+  const refetch = () => {
+    rpc.call("getTaskUiState", { taskId }).then(setState);
+  };
+
+  useEffect(() => {
+    refetch();
+  }, [taskId]);
+  useRealtime("hl:ui-state", refetch);
+
+  if (hidden) {
+    return (
+      <div className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground">
+        Phase tips are hidden for this task.
+      </div>
+    );
+  }
+
+  return (
+    <section className="space-y-3 rounded-md border border-border bg-card p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-semibold text-foreground">Tips</h3>
+          <p className="text-xs text-muted-foreground">{tipKey.replaceAll("-", " ")}</p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          className="h-8"
+          onClick={async () => {
+            const next = await rpc.call("dismissTaskTip", { taskId, label: tipKey });
+            setState(next);
+          }}
+        >
+          Don't show again
+        </Button>
+      </div>
+      <ul className="space-y-2 text-sm text-foreground">
+        {tips.map((tip) => <li key={tip}>{tip}</li>)}
+      </ul>
+    </section>
   );
 }
 
@@ -1357,7 +1472,7 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
   const [task, setTask] = useState<TaskRecord | null>(null);
   const [workspace, setWorkspace] = useState<TaskWorkspaceState | null>(null);
   const [sessions, setSessions] = useState<SessionView[]>([]);
-  const [tab, setTab] = useState<"sessions" | "artifacts" | "workspace" | "auto-advance">(artifactFileName ? "artifacts" : "sessions");
+  const [tab, setTab] = useState<"sessions" | "artifacts" | "workspace" | "auto-advance" | "tips">(artifactFileName ? "artifacts" : "sessions");
 
   const refetch = () => {
     Promise.all([
@@ -1422,6 +1537,7 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
         <button type="button" onClick={() => setTab("artifacts")} className={cn("rounded-md px-3 py-1.5", tab === "artifacts" && "bg-card text-foreground")}>Artifacts</button>
         <button type="button" onClick={() => setTab("workspace")} className={cn("rounded-md px-3 py-1.5", tab === "workspace" && "bg-card text-foreground")}>Workspace</button>
         <button type="button" onClick={() => setTab("auto-advance")} className={cn("rounded-md px-3 py-1.5", tab === "auto-advance" && "bg-card text-foreground")}>Auto-advance</button>
+        <button type="button" onClick={() => setTab("tips")} className={cn("rounded-md px-3 py-1.5", tab === "tips" && "bg-card text-foreground")}>Tips</button>
       </div>
       <WorkflowStrip workflowType={task.workflowType} worktreeTiming={task.worktreeTiming} currentLabel={workspace.currentLabel} />
       {tab === "artifacts" ? (
@@ -1432,6 +1548,8 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
         <WorkspacePanel taskId={taskId} />
       ) : tab === "auto-advance" ? (
         <AutoAdvancePanel task={task} onUpdated={refetch} />
+      ) : tab === "tips" ? (
+        <TipsPanel taskId={taskId} label={workspace.currentLabel} />
       ) : (
         <>
           {visibleAttempts.length > 0 ? (
@@ -1483,6 +1601,23 @@ export function HumanLayerWorkspaceThreadPanel({ threadId }: { threadId: string 
   return (
     <div className="h-full min-h-0 overflow-auto p-3">
       <WorkspacePanel taskId={session.taskId} />
+    </div>
+  );
+}
+
+export function HumanLayerTipsThreadPanel({ threadId }: { threadId: string }) {
+  const rpc = useRpc<RpcContract>();
+  const [session, setSession] = useState<SessionView | null | undefined>(undefined);
+
+  useEffect(() => {
+    rpc.call("getSession", { threadId }).then(({ session: next }) => setSession(next));
+  }, [rpc, threadId]);
+
+  if (session === undefined) return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
+  if (!session) return <div className="p-4 text-sm text-muted-foreground">Not a HumanLayer task session</div>;
+  return (
+    <div className="h-full min-h-0 overflow-auto p-3">
+      <TipsPanel taskId={session.taskId} label={session.label} />
     </div>
   );
 }

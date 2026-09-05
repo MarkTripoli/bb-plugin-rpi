@@ -63,7 +63,7 @@ test("artifact route forces attachment for html and sets security headers", asyn
   await harness.lifecycle.dispose();
 });
 
-test("RPI launch RPCs are gated while CLI launch-skill requires --internal", async () => {
+test("RPI launch RPC and CLI paths are enabled", async () => {
   let spawns = 0;
   const { bb, harness } = createFakePluginHost({
     pluginId: "humanlayer",
@@ -72,9 +72,12 @@ test("RPI launch RPCs are gated while CLI launch-skill requires --internal", asy
       threads: {
         spawn: async () => {
           spawns += 1;
-          return { id: "thr_internal", environmentId: "env_1" };
+          return { id: `thr_internal_${spawns}`, environmentId: "env_1" };
         },
-        get: async () => ({ id: "thr_internal", environmentId: "env_1", title: "thread", titleFallback: null, updatedAt: 1, environment: { path: "/repo" } }),
+        get: async ({ threadId }: { threadId: string }) => ({ id: threadId, environmentId: "env_1", title: "thread", titleFallback: null, updatedAt: 1, environment: { path: "/repo" } }),
+        interactions: {
+          list: async () => [],
+        },
       },
     },
   });
@@ -84,7 +87,14 @@ test("RPI launch RPCs are gated while CLI launch-skill requires --internal", asy
     name: "Task",
     draft: true,
   }) as { taskId: string };
-  await assert.rejects(harness.behavior.callRpc("launchSkill", { taskId: created.taskId, skillId: "create-research" }), /later release/);
+  const rpcLaunch = await harness.behavior.callRpc("launchSkill", { taskId: created.taskId, skillId: "create-research" }) as { threadId: string };
+  assert.equal(rpcLaunch.threadId, "thr_internal_1");
+
+  const createdForProceed = await harness.behavior.callRpc("createTask", {
+    request: { text: "prompt", projectId: "proj_1", workflowType: "freeform", worktreeTiming: "never", permissionMode: "default", autoAdvance: false },
+    name: "Task 2",
+    draft: true,
+  }) as { taskId: string };
   const db = bb.storage.database();
   db.prepare(`
     INSERT INTO sessions (
@@ -92,15 +102,18 @@ test("RPI launch RPCs are gated while CLI launch-skill requires --internal", asy
       hl_status, hl_status_at, had_turn, interrupted, blocked_reason,
       next_step_json, completed_turn_key, next_step_turn_key, created_at, updated_at
     ) VALUES ('thr_source', ?, 'research-questions', 'create-research-questions', 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, ?, 'turn_1', 'turn_1', 1, 1)
-  `).run(created.taskId, JSON.stringify({ parsedAt: 1, extraction: { type: "next_step_found", nextStepPrompt: "/rpi-create-research", nextStepSummary: "next", nextStepType: "create-research", taskReference: null, suggestedDirectory: null } }));
-  await assert.rejects(harness.behavior.callRpc("proceed", { threadId: "thr_source" }), /later release/);
-  await assert.rejects(harness.behavior.callRpc("iterateInFreshSession", { threadId: "thr_source" }), /later release/);
-  const rejected = await harness.behavior.runCli(["launch-skill", "--task", created.taskId, "--skill", "create-research"]);
-  assert.equal(rejected.exitCode, 1);
-  assert.match(rejected.stderr, /later release/);
-  const launched = await harness.behavior.runCli(["launch-skill", "--task", created.taskId, "--skill", "create-research", "--internal"]);
+  `).run(createdForProceed.taskId, JSON.stringify({ parsedAt: 1, extraction: { type: "next_step_found", nextStepPrompt: "/rpi-create-research", nextStepSummary: "next", nextStepType: "create-research", taskReference: null, suggestedDirectory: null } }));
+  const proceeded = await harness.behavior.callRpc("proceed", { threadId: "thr_source" }) as { threadId: string };
+  assert.equal(proceeded.threadId, "thr_internal_2");
+
+  const createdForCli = await harness.behavior.callRpc("createTask", {
+    request: { text: "prompt", projectId: "proj_1", workflowType: "freeform", worktreeTiming: "never", permissionMode: "default", autoAdvance: false },
+    name: "Task 3",
+    draft: true,
+  }) as { taskId: string };
+  const launched = await harness.behavior.runCli(["launch-skill", "--task", createdForCli.taskId, "--skill", "create-research"]);
   assert.equal(launched.exitCode, 0);
-  assert.equal(launched.stdout.trim(), "thr_internal");
-  assert.equal(spawns, 1);
+  assert.equal(launched.stdout.trim(), "thr_internal_3");
+  assert.equal(spawns, 3);
   await harness.lifecycle.dispose();
 });

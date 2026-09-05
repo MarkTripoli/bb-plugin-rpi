@@ -183,7 +183,6 @@ async function validateAdvance(
   if (nextStep?.extraction.type !== "next_step_found") return { ok: false, error: new AdvanceRejectedError("invalid_next_step", "No next step is available.") };
   const label = normalizePhaseLabel(session.label) as PhaseLabel | null;
   const transition = label ? AUTO_ADVANCE[label as keyof typeof AUTO_ADVANCE] : undefined;
-  if (mode === "proceed" && transition?.flag === null) return { ok: false, error: new AdvanceRejectedError("human_gate", "Session is at a human gate.") };
   if (activeLaunchAttempt(db, task.id)) return { ok: false, error: new AdvanceRejectedError("launch_blocked", "A launch attempt is already pending.") };
   return { ok: true, nextStep: nextStep as NextStepSuggestions & { extraction: { type: "next_step_found"; nextStepType: string; nextStepPrompt: string } }, transition };
 }

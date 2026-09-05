@@ -45,6 +45,8 @@ export type SessionMirrorRow = SessionRow & {
   taskName: string;
   taskSlug: string;
   workflowType: string;
+  providerId: string | null;
+  model: string | null;
 };
 
 export const HYDRATION_ENABLED = true;
@@ -338,6 +340,8 @@ export function refreshSessionMirror(db: Database, mirror: Map<string, SessionMi
     taskName: string;
     taskSlug: string;
     workflowType: string;
+    providerId: string | null;
+    model: string | null;
   }>(
     db,
     `
@@ -367,13 +371,15 @@ export function refreshSessionMirror(db: Database, mirror: Map<string, SessionMi
 	      sessions.updated_at AS updatedAt,
       tasks.name AS taskName,
       tasks.slug AS taskSlug,
-      tasks.workflow_type AS workflowType
+      tasks.workflow_type AS workflowType,
+      tasks.provider_id AS providerId,
+      tasks.model
     FROM sessions
     JOIN tasks ON tasks.id = sessions.task_id
     `,
   );
   for (const row of rows) {
-    mirror.set(row.threadId, { ...normalizeSessionRow(row), taskName: row.taskName, taskSlug: row.taskSlug, workflowType: row.workflowType });
+    mirror.set(row.threadId, { ...normalizeSessionRow(row), taskName: row.taskName, taskSlug: row.taskSlug, workflowType: row.workflowType, providerId: row.providerId, model: row.model });
   }
   return mirror;
 }
@@ -383,6 +389,8 @@ export function mirrorSession(db: Database, mirror: Map<string, SessionMirrorRow
     taskName: string;
     taskSlug: string;
     workflowType: string;
+    providerId: string | null;
+    model: string | null;
   }>(
     db,
     `
@@ -412,7 +420,9 @@ export function mirrorSession(db: Database, mirror: Map<string, SessionMirrorRow
 	      sessions.updated_at AS updatedAt,
       tasks.name AS taskName,
       tasks.slug AS taskSlug,
-      tasks.workflow_type AS workflowType
+      tasks.workflow_type AS workflowType,
+      tasks.provider_id AS providerId,
+      tasks.model
     FROM sessions
     JOIN tasks ON tasks.id = sessions.task_id
     WHERE sessions.thread_id = ?
@@ -423,7 +433,7 @@ export function mirrorSession(db: Database, mirror: Map<string, SessionMirrorRow
     mirror.delete(threadId);
     return null;
   }
-  const next = { ...normalizeSessionRow(rows[0]), taskName: rows[0].taskName, taskSlug: rows[0].taskSlug, workflowType: rows[0].workflowType };
+  const next = { ...normalizeSessionRow(rows[0]), taskName: rows[0].taskName, taskSlug: rows[0].taskSlug, workflowType: rows[0].workflowType, providerId: rows[0].providerId, model: rows[0].model };
   mirror.set(threadId, next);
   return next;
 }
@@ -652,6 +662,7 @@ export function registerSessionRuntime(
   mirror: Map<string, SessionMirrorRow>,
   bindings: LaunchBindingMirror,
   onCompletedTurn?: (row: SessionMirrorRow) => Promise<unknown>,
+  onAgentThread?: (threadId: string) => void,
 ) {
   const maxSeq = readRow<{ maxSeq: number }>(db, "SELECT COALESCE(MAX(last_reconcile_seq), 0) + 1 AS maxSeq FROM sessions")?.maxSeq ?? 1;
   let nextSeq = maxSeq;
@@ -837,6 +848,7 @@ export function registerSessionRuntime(
   });
 
   bb.experimental_hooks.on("message.dispatch", (ctx) => {
+    if (/^\s*\/rpi-agent-[a-z0-9-]+(?:\s|$)/.test(ctx.input.text ?? "")) onAgentThread?.(ctx.thread.id);
     let row = mirror.get(ctx.thread.id);
     if (!row && ctx.originPluginId === bb.pluginId) {
       const token = extractLaunchToken(ctx.input.text);
@@ -875,6 +887,6 @@ export function taskInstructions(row: SessionMirrorRow) {
     `HumanLayer task: ${row.taskName} (slug ${row.taskSlug}). Task artifact directory: .humanlayer/tasks/${row.taskSlug} (relative to the workspace root; a real directory, not a symlink).`,
     `Current phase: ${row.label ?? "none"}. Workflow: ${row.workflowType}.`,
     "After writing or editing any file in the task artifact directory, call hl_artifact_save with its file name and include the returned permalink line in your final answer.",
-    "Research subagent model preference: none.",
+    `Faster research subagents model hint: ${row.providerId && row.model ? `${row.providerId} ${row.model}` : "use the task's current provider/model unless hl_task_context says otherwise"}.`,
   ].join("\n");
 }
