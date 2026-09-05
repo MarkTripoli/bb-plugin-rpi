@@ -73,7 +73,7 @@ export type LaunchBindingMirror = {
   pendingByToken: Map<string, PendingBinding>;
   pendingByThread: Map<string, PendingBinding>;
   bufferedByThread: Map<string, BufferedLifecycle[]>;
-  onBound?: (threadId: string) => void;
+  onBound?: (threadId: string) => void | Promise<void>;
 };
 
 export function createLaunchBindingMirror(): LaunchBindingMirror {
@@ -97,6 +97,13 @@ export function notePendingLaunchThread(bindings: LaunchBindingMirror, token: st
   return binding;
 }
 
+export function clearPendingLaunch(bindings: LaunchBindingMirror, token: string) {
+  bindings.pendingByToken.delete(token);
+  for (const [threadId, binding] of bindings.pendingByThread) {
+    if (binding.token === token) bindings.pendingByThread.delete(threadId);
+  }
+}
+
 export function bindPendingLaunch(
   db: Database,
   mirror: Map<string, SessionMirrorRow>,
@@ -107,7 +114,16 @@ export function bindPendingLaunch(
   const binding = bindings.pendingByToken.get(token);
   if (!binding) return mirror.get(threadId) ?? null;
   const timestamp = nowMs();
+  let claimed = false;
   db.transaction(() => {
+    const claim = writeRow(
+      db,
+      "UPDATE launch_attempts SET status = 'spawned', thread_id = ? WHERE id = ? AND status IN ('pending', 'uncertain')",
+      threadId,
+      token,
+    );
+    claimed = claim.changes === 1;
+    if (!claimed) return;
     const existing = readRow<{ threadId: string }>(db, "SELECT thread_id AS threadId FROM sessions WHERE thread_id = ?", threadId);
     if (!existing) {
       writeRow(
@@ -129,17 +145,11 @@ export function bindPendingLaunch(
         timestamp,
       );
     }
-    writeRow(
-      db,
-      "UPDATE launch_attempts SET status = 'spawned', thread_id = ? WHERE id = ? AND status IN ('pending', 'uncertain')",
-      threadId,
-      token,
-    );
   })();
-  bindings.pendingByToken.delete(token);
-  bindings.pendingByThread.delete(threadId);
+  clearPendingLaunch(bindings, token);
+  if (!claimed) return null;
   const row = mirrorSession(db, mirror, threadId);
-  bindings.onBound?.(threadId);
+  void bindings.onBound?.(threadId);
   return row;
 }
 
@@ -513,7 +523,10 @@ export async function reconcileSession(
 }
 
 export function registerSessionRuntime(bb: BbPluginApi, db: Database, mirror: Map<string, SessionMirrorRow>, bindings: LaunchBindingMirror) {
-  const reconcileState = new Map<string, { chain: Promise<void>; nextSeq: number }>();
+  const maxSeq = readRow<{ maxSeq: number }>(db, "SELECT COALESCE(MAX(last_reconcile_seq), 0) + 1 AS maxSeq FROM sessions")?.maxSeq ?? 1;
+  let nextSeq = maxSeq;
+  const reconcileState = new Map<string, Promise<void>>();
+  const retiredThreads = new Set<string>();
   const hydrationWaited = new Set<string>();
   const hydrating = new Set<string>();
 
@@ -522,31 +535,44 @@ export function registerSessionRuntime(bb: BbPluginApi, db: Database, mirror: Ma
     if (row) bb.realtime.publish("hl:sessions", { taskId: row.taskId, threadId });
   };
 
-  const reconcileAndPublish = (threadId: string) => {
-    if (!mirror.has(threadId)) return;
-    const state = reconcileState.get(threadId) ?? { chain: Promise.resolve(), nextSeq: 0 };
-    const sequence = state.nextSeq + 1;
-    state.nextSeq = sequence;
-    state.chain = state.chain
+  const enqueueThreadWork = (threadId: string, work: () => Promise<void>) => {
+    const previous = reconcileState.get(threadId) ?? Promise.resolve();
+    const chain = previous
       .catch(() => undefined)
       .then(async () => {
-        if (!mirror.has(threadId)) return;
-        const result = await reconcileSession(bb, db, mirror, threadId, sequence);
-        if (result?.changed) publish(threadId);
+        if (!mirror.has(threadId) || retiredThreads.has(threadId)) return;
+        await work();
       })
-      .catch((error) => bb.log.warn(`Failed to derive HumanLayer session ${threadId}: ${String(error)}`));
-    reconcileState.set(threadId, state);
+      .catch((error) => bb.log.warn(`Failed to process HumanLayer session ${threadId}: ${String(error)}`))
+      .finally(() => {
+        if (reconcileState.get(threadId) === chain) reconcileState.delete(threadId);
+      });
+    reconcileState.set(threadId, chain);
+    return chain;
   };
 
-  const replayBuffered = (threadId: string) => {
+  const reconcileAndPublish = (threadId: string) => {
+    if (!mirror.has(threadId)) return;
+    const sequence = nextSeq;
+    nextSeq += 1;
+    return enqueueThreadWork(threadId, async () => {
+      const thread = await bb.sdk.threads.get({ threadId, include: "environment" });
+      const interactions = await bb.sdk.threads.interactions.list({ threadId });
+      if (!mirror.has(threadId) || retiredThreads.has(threadId)) return;
+      const result = applyStatusDerivation(db, mirror, thread as ThreadLike, interactions as InteractionLike[], sequence);
+      if (result?.changed) publish(threadId);
+    });
+  };
+
+  const replayBuffered = async (threadId: string) => {
     const buffered = bindings.bufferedByThread.get(threadId);
     if (!buffered) return;
     bindings.bufferedByThread.delete(threadId);
     for (const event of buffered) {
-      if (event.kind === "active") handleActive(event.thread);
-      if (event.kind === "idle") handleIdle(event.thread, event.lastAssistantText);
-      if (event.kind === "failed") reconcileAndPublish(event.thread.id);
-      if (event.kind === "changed") reconcileAndPublish(event.threadId);
+      if (event.kind === "active") await handleActive(event.thread);
+      if (event.kind === "idle") await handleIdle(event.thread, event.lastAssistantText);
+      if (event.kind === "failed") await reconcileAndPublish(event.thread.id);
+      if (event.kind === "changed") await reconcileAndPublish(event.threadId);
     }
   };
 
@@ -569,31 +595,60 @@ export function registerSessionRuntime(bb: BbPluginApi, db: Database, mirror: Ma
   };
 
   const handleActive = (thread: ThreadLike) => {
-    writeRow(db, "UPDATE sessions SET had_turn = 1, interrupted = 0, updated_at = ? WHERE thread_id = ?", nowMs(), thread.id);
-    mirrorSession(db, mirror, thread.id);
-    reconcileAndPublish(thread.id);
+    return enqueueThreadWork(thread.id, async () => {
+      writeRow(db, "UPDATE sessions SET had_turn = 1, interrupted = 0, updated_at = ? WHERE thread_id = ?", nowMs(), thread.id);
+      mirrorSession(db, mirror, thread.id);
+      const interactions = await bb.sdk.threads.interactions.list({ threadId: thread.id });
+      if (!mirror.has(thread.id) || retiredThreads.has(thread.id)) return;
+      const sequence = nextSeq;
+      nextSeq += 1;
+      const result = applyStatusDerivation(db, mirror, thread, interactions as InteractionLike[], sequence);
+      if (result?.changed) publish(thread.id);
+    });
   };
 
   const handleIdle = (thread: ThreadLike, lastAssistantText: string | null) => {
-    void (async () => {
+    return enqueueThreadWork(thread.id, async () => {
+      let interrupted = false;
       try {
-        await recordIdleCompletion(bb, db, mirror, thread, lastAssistantText);
-        let interrupted = false;
-        try {
-          interrupted = await idleWasInterrupted(bb, thread.id);
-        } catch (error) {
-          bb.log.warn(`Failed to inspect HumanLayer idle events ${thread.id}: ${String(error)}`);
-        }
-        if (interrupted) {
-          writeRow(db, "UPDATE sessions SET interrupted = 1, updated_at = ? WHERE thread_id = ?", nowMs(), thread.id);
-          mirrorSession(db, mirror, thread.id);
-        }
-        reconcileAndPublish(thread.id);
-        publish(thread.id);
+        interrupted = await idleWasInterrupted(bb, thread.id);
       } catch (error) {
-        bb.log.warn(`Failed to process HumanLayer idle ${thread.id}: ${String(error)}`);
+        bb.log.warn(`Failed to inspect HumanLayer idle events ${thread.id}: ${String(error)}`);
       }
-    })();
+      if (!mirror.has(thread.id) || retiredThreads.has(thread.id)) return;
+      if (interrupted) {
+        writeRow(db, "UPDATE sessions SET interrupted = 1, updated_at = ? WHERE thread_id = ?", nowMs(), thread.id);
+        mirrorSession(db, mirror, thread.id);
+      } else {
+        const interactions = await bb.sdk.threads.interactions.list({ threadId: thread.id });
+        if (!mirror.has(thread.id) || retiredThreads.has(thread.id)) return;
+        const blockedReason = pendingBlockedReason(interactions as InteractionLike[]);
+        if (blockedReason !== null) {
+          writeRow(db, "UPDATE sessions SET blocked_reason = ?, updated_at = ? WHERE thread_id = ?", blockedReason, nowMs(), thread.id);
+          mirrorSession(db, mirror, thread.id);
+        } else {
+          appendSessionSummary(db, mirror, thread, lastAssistantText);
+        }
+      }
+      if (!mirror.has(thread.id) || retiredThreads.has(thread.id)) return;
+      const sequence = nextSeq;
+      nextSeq += 1;
+      const interactions = await bb.sdk.threads.interactions.list({ threadId: thread.id });
+      if (!mirror.has(thread.id) || retiredThreads.has(thread.id)) return;
+      applyStatusDerivation(db, mirror, thread, interactions as InteractionLike[], sequence);
+      publish(thread.id);
+    });
+  };
+
+  const forgetThread = (threadId: string) => {
+    retiredThreads.add(threadId);
+    mirror.delete(threadId);
+    reconcileState.delete(threadId);
+    bindings.bufferedByThread.delete(threadId);
+    for (const [token, binding] of bindings.pendingByToken) {
+      if (binding.threadId === threadId) bindings.pendingByToken.delete(token);
+    }
+    bindings.pendingByThread.delete(threadId);
   };
 
   const unsubscribe = bb.sdk.subscribe({
@@ -615,7 +670,7 @@ export function registerSessionRuntime(bb: BbPluginApi, db: Database, mirror: Ma
       if ((thread as { originPluginId?: string | null }).originPluginId === bb.pluginId) buffer(thread.id, { kind: "active", thread: thread as ThreadLike });
       return;
     }
-    handleActive(thread as ThreadLike);
+    void handleActive(thread as ThreadLike);
   });
 
   bb.events.on("thread.idle", ({ thread, lastAssistantText }) => {
@@ -623,7 +678,7 @@ export function registerSessionRuntime(bb: BbPluginApi, db: Database, mirror: Ma
       if ((thread as { originPluginId?: string | null }).originPluginId === bb.pluginId) buffer(thread.id, { kind: "idle", thread: thread as ThreadLike, lastAssistantText });
       return;
     }
-    handleIdle(thread as ThreadLike, lastAssistantText);
+    void handleIdle(thread as ThreadLike, lastAssistantText);
   });
 
   bb.events.on("thread.failed", ({ thread }) => {
@@ -632,6 +687,14 @@ export function registerSessionRuntime(bb: BbPluginApi, db: Database, mirror: Ma
       return;
     }
     reconcileAndPublish(thread.id);
+  });
+
+  bb.events.on("thread.archived", ({ thread }) => {
+    forgetThread(thread.id);
+  });
+
+  bb.events.on("thread.deleted", ({ thread }) => {
+    forgetThread(thread.id);
   });
 
   bb.experimental_hooks.on("message.dispatch", (ctx) => {

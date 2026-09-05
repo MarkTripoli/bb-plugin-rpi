@@ -5,7 +5,15 @@ import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/tes
 import plugin from "../server";
 import { MIGRATIONS, parseJson } from "../db";
 import { createDraftTask } from "../tasks";
-import { applyStatusDerivation, deriveStatus, recordIdleCompletion } from "../sessions";
+import {
+  applyStatusDerivation,
+  createLaunchBindingMirror,
+  deriveStatus,
+  loadSessionMirror,
+  mirrorSession,
+  recordIdleCompletion,
+  registerSessionRuntime,
+} from "../sessions";
 
 const row = { hadTurn: false, interrupted: false };
 
@@ -49,6 +57,41 @@ function seedSession(db: Database.Database, threadId = "thr_1") {
       hl_status, hl_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at
     ) VALUES (?, ?, NULL, NULL, 'user', NULL, 'running', 1, 1, 0, NULL, 1, 1)
   `).run(threadId, task.taskId);
+}
+
+function delay(ms = 0) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function makeRuntimeBb(overrides: {
+  get?: (input: { threadId: string }) => Promise<ReturnType<typeof makeThreadResponse>>;
+  interactions?: (input: { threadId: string }) => Promise<unknown[]>;
+  events?: (input: { threadId: string }) => Promise<unknown[]>;
+} = {}) {
+  const handlers = new Map<string, (payload: never) => void>();
+  return {
+    bb: {
+      pluginId: "humanlayer",
+      log: { warn: () => undefined, info: () => undefined },
+      realtime: { publish: () => undefined },
+      sdk: {
+        subscribe: () => () => undefined,
+        threads: {
+          get: overrides.get ?? (async () => makeThreadResponse({ id: "thr_1", status: "idle", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } })),
+          interactions: { list: overrides.interactions ?? (async () => []) },
+          events: { list: overrides.events ?? (async () => []) },
+        },
+      },
+      events: {
+        on: (name: string, handler: (payload: never) => void) => {
+          handlers.set(name, handler);
+        },
+      },
+      experimental_hooks: { on: () => undefined },
+      onDispose: () => undefined,
+    },
+    handlers,
+  };
 }
 
 test("deriveStatus covers Fable 5.1 rows in order", () => {
@@ -101,6 +144,26 @@ test("older reconciliation snapshots cannot regress a newer status", () => {
   db.close();
 });
 
+test("runtime reconciliation sequence starts after persisted rows on reload", async () => {
+  const db = makeDb();
+  seedSession(db);
+  db.prepare("UPDATE sessions SET last_reconcile_seq = 40 WHERE thread_id = ?").run("thr_1");
+  const mirror = loadSessionMirror(db);
+  const { bb } = makeRuntimeBb({
+    get: async () => makeThreadResponse({ id: "thr_1", status: "idle", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } }),
+  });
+  registerSessionRuntime(bb as never, db, mirror, createLaunchBindingMirror());
+  for (let i = 0; i < 10; i += 1) {
+    await delay();
+    const stored = db.prepare("SELECT last_reconcile_seq AS seq FROM sessions WHERE thread_id = ?").get("thr_1") as { seq: number };
+    if (stored.seq === 41) break;
+  }
+  const stored = db.prepare("SELECT hl_status, last_reconcile_seq FROM sessions WHERE thread_id = ?").get("thr_1") as { hl_status: string; last_reconcile_seq: number };
+  assert.equal(stored.hl_status, "ready_for_input");
+  assert.equal(stored.last_reconcile_seq, 41);
+  db.close();
+});
+
 test("idle with pending blocker records blocked reason and skips summary", async () => {
   const db = makeDb();
   const mirror = new Map();
@@ -137,6 +200,91 @@ test("idle summary deduplicates by completed turn key", async () => {
   const summary = parseJson<{ summaryHistory?: string[] }>(stored.summary_json, {});
   assert.equal(stored.completed_turn_key, "events:2");
   assert.deepEqual(summary.summaryHistory, ["done"]);
+  db.close();
+});
+
+test("buffered idle replay preserves completion order", async () => {
+  const db = makeDb();
+  const mirror = new Map();
+  seedSession(db);
+  const bindings = createLaunchBindingMirror();
+  let eventCalls = 0;
+  const { bb } = makeRuntimeBb({
+    events: async () => {
+      eventCalls += 1;
+      if (eventCalls === 1) await delay(20);
+      return [];
+    },
+  });
+  registerSessionRuntime(bb as never, db, mirror, bindings);
+  mirrorSession(db, mirror, "thr_1");
+  bindings.bufferedByThread.set("thr_1", [
+    { kind: "idle", thread: thread({ numEvents: 1, updatedAt: 1 }), lastAssistantText: "first" },
+    { kind: "idle", thread: thread({ numEvents: 2, updatedAt: 2 }), lastAssistantText: "second" },
+  ]);
+  await bindings.onBound?.("thr_1");
+  const stored = db.prepare("SELECT completed_turn_key, summary_json FROM sessions WHERE thread_id = ?").get("thr_1") as { completed_turn_key: string | null; summary_json: string | null };
+  assert.equal(stored.completed_turn_key, "2:2");
+  assert.deepEqual(parseJson<{ summaryHistory?: string[] }>(stored.summary_json, {}).summaryHistory, ["first", "second"]);
+  db.close();
+});
+
+test("interrupted idle skips summary and completed turn key", async () => {
+  const db = makeDb();
+  const mirror = new Map();
+  seedSession(db);
+  const bindings = createLaunchBindingMirror();
+  const { bb } = makeRuntimeBb({
+    events: async () => [{ type: "system/thread/interrupted" }],
+  });
+  registerSessionRuntime(bb as never, db, mirror, bindings);
+  mirrorSession(db, mirror, "thr_1");
+  bindings.bufferedByThread.set("thr_1", [
+    { kind: "idle", thread: thread({ numEvents: 1, updatedAt: 1 }), lastAssistantText: "done" },
+  ]);
+  await bindings.onBound?.("thr_1");
+  const stored = db.prepare("SELECT interrupted, completed_turn_key, summary_json FROM sessions WHERE thread_id = ?").get("thr_1") as { interrupted: number; completed_turn_key: string | null; summary_json: string | null };
+  assert.equal(stored.interrupted, 1);
+  assert.equal(stored.completed_turn_key, null);
+  assert.equal(parseJson<{ summaryHistory?: string[] }>(stored.summary_json, {}).summaryHistory?.length ?? 0, 0);
+  db.close();
+});
+
+test("thread archive evicts runtime mirror without deleting the session row", async () => {
+  const db = makeDb();
+  seedSession(db);
+  const mirror = loadSessionMirror(db);
+  let releaseGet = () => {};
+  const getStarted = new Promise<void>((resolve) => {
+    releaseGet = resolve;
+  });
+  const { bb, handlers } = makeRuntimeBb({
+    get: async () => {
+      await getStarted;
+      return makeThreadResponse({ id: "thr_1", status: "idle", runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null } });
+    },
+  });
+  registerSessionRuntime(bb as never, db, mirror, createLaunchBindingMirror());
+  handlers.get("thread.archived")?.({ thread: makeThreadResponse({ id: "thr_1" }) } as never);
+  releaseGet();
+  await delay();
+  assert.equal(mirror.has("thr_1"), false);
+  const count = db.prepare("SELECT COUNT(*) AS count FROM sessions WHERE thread_id = ?").get("thr_1") as { count: number };
+  assert.equal(count.count, 1);
+  db.close();
+});
+
+test("thread delete evicts runtime mirror without deleting the session row", () => {
+  const db = makeDb();
+  const mirror = new Map();
+  seedSession(db);
+  const { bb, handlers } = makeRuntimeBb();
+  registerSessionRuntime(bb as never, db, mirror, createLaunchBindingMirror());
+  mirrorSession(db, mirror, "thr_1");
+  handlers.get("thread.deleted")?.({ thread: makeThreadResponse({ id: "thr_1" }) } as never);
+  assert.equal(mirror.has("thr_1"), false);
+  const count = db.prepare("SELECT COUNT(*) AS count FROM sessions WHERE thread_id = ?").get("thr_1") as { count: number };
+  assert.equal(count.count, 1);
   db.close();
 });
 

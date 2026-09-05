@@ -5,7 +5,7 @@ import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { MIGRATIONS } from "../db";
 import { createDraftTask } from "../tasks";
 import { promoteStalePendingLaunchAttempts, resolveLaunchAttempt } from "../launch";
-import { createLaunchBindingMirror, type SessionMirrorRow } from "../sessions";
+import { bindPendingLaunch, createLaunchBindingMirror, registerPendingLaunch, type SessionMirrorRow } from "../sessions";
 
 function makeDb() {
   const db = new Database(":memory:");
@@ -85,5 +85,49 @@ test("stale pending launch attempts promote to uncertain", () => {
     { id: "attempt_new", status: "pending" },
     { id: "attempt_old", status: "uncertain" },
   ]);
+  db.close();
+});
+
+test("dismissed attempt clears pending binding", async () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  db.prepare("INSERT INTO launch_attempts (id, task_id, from_thread_id, skill_id, status, thread_id, created_at) VALUES (?, ?, NULL, NULL, 'pending', NULL, ?)")
+    .run("attempt_1", taskId, 1);
+  const bindings = createLaunchBindingMirror();
+  registerPendingLaunch(bindings, {
+    token: "attempt_1",
+    taskId,
+    fromThreadId: null,
+    skillId: null,
+    launchedBy: "user",
+    threadId: "thr_late",
+  });
+  await resolveLaunchAttempt({} as never, db, new Map(), bindings, "attempt_1", { type: "dismiss" });
+  assert.equal(bindings.pendingByToken.has("attempt_1"), false);
+  assert.equal(bindings.pendingByThread.has("thr_late"), false);
+  db.close();
+});
+
+test("late spawn return cannot bind a resolved attempt", () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  db.prepare("INSERT INTO launch_attempts (id, task_id, from_thread_id, skill_id, status, thread_id, created_at) VALUES (?, ?, NULL, NULL, 'failed', NULL, ?)")
+    .run("attempt_1", taskId, 1);
+  const mirror = new Map<string, SessionMirrorRow>();
+  const bindings = createLaunchBindingMirror();
+  registerPendingLaunch(bindings, {
+    token: "attempt_1",
+    taskId,
+    fromThreadId: null,
+    skillId: null,
+    launchedBy: "user",
+    threadId: "thr_late",
+  });
+  assert.equal(bindPendingLaunch(db, mirror, bindings, "attempt_1", "thr_late"), null);
+  assert.equal(mirror.has("thr_late"), false);
+  const count = db.prepare("SELECT COUNT(*) AS count FROM sessions WHERE thread_id = ?").get("thr_late") as { count: number };
+  assert.equal(count.count, 0);
+  assert.equal(bindings.pendingByToken.has("attempt_1"), false);
+  assert.equal(bindings.pendingByThread.has("thr_late"), false);
   db.close();
 });

@@ -6,6 +6,7 @@ import { nowMs, readRow, readRows, writeRow } from "./db";
 import { getTask } from "./tasks";
 import {
   bindPendingLaunch,
+  clearPendingLaunch,
   launchMarker,
   mirrorSession,
   notePendingLaunchThread,
@@ -179,7 +180,11 @@ export async function launchPhase(
       ...optionalExecution(task),
     });
     notePendingLaunchThread(bindings, attemptId, thread.id);
-    bindPendingLaunch(db, mirror, bindings, attemptId, thread.id);
+    const bound = bindPendingLaunch(db, mirror, bindings, attemptId, thread.id);
+    if (!bound) {
+      bb.log.warn(`HumanLayer launch attempt ${attemptId} returned thread ${thread.id} after it was resolved; leaving thread unbound.`);
+      return { threadId: thread.id };
+    }
     const hydratedThread = await bb.sdk.threads.get({ threadId: thread.id, include: "environment" });
     const environmentId = hydratedThread.environmentId ?? thread.environmentId ?? null;
     const timestamp = nowMs();
@@ -192,10 +197,7 @@ export async function launchPhase(
     return { threadId: thread.id };
   } catch (error) {
     claimAttempt(db, attemptId, "uncertain", null);
-    bindings.pendingByToken.delete(attemptId);
-    for (const [threadId, binding] of bindings.pendingByThread) {
-      if (binding.token === attemptId) bindings.pendingByThread.delete(threadId);
-    }
+    clearPendingLaunch(bindings, attemptId);
     bb.realtime.publish("hl:sessions", { taskId: task.id, threadId: null });
     throw error;
   }
@@ -292,6 +294,7 @@ export async function resolveLaunchAttempt(
   if (attempt.status !== "pending" && attempt.status !== "uncertain") return { threadId: attempt.threadId };
   if (action.type === "dismiss") {
     claimAttempt(db, id, "failed", attempt.threadId);
+    clearPendingLaunch(bindings, id);
     return { threadId: attempt.threadId };
   }
   if (action.type === "adopt") {
@@ -332,6 +335,7 @@ export async function resolveLaunchAttempt(
       );
       return { claimed: true, threadId: action.threadId };
     })();
+    clearPendingLaunch(bindings, id);
     if (!result.claimed) return { threadId: result.threadId };
     if (!task.baseEnvironmentId && environmentId) {
       writeRow(db, "UPDATE tasks SET base_environment_id = ?, updated_at = ? WHERE id = ?", environmentId, timestamp, task.id);
@@ -342,7 +346,9 @@ export async function resolveLaunchAttempt(
   }
   if (!claimAttempt(db, id, "failed", attempt.threadId)) {
     const current = readRow<{ threadId: string | null }>(db, "SELECT thread_id AS threadId FROM launch_attempts WHERE id = ?", id);
+    clearPendingLaunch(bindings, id);
     return { threadId: current?.threadId ?? null };
   }
+  clearPendingLaunch(bindings, id);
   return launchDraft(bb, db, mirror, bindings, attempt.taskId);
 }
