@@ -45,7 +45,8 @@
     "pretest": "npm run typecheck",
     "typecheck": "tsc --noEmit",
     "test": "node --test --import tsx",
-    "check:pack": "tsx scripts/check-pack.ts"
+    "check:pack": "tsx scripts/check-pack.ts",
+    "check:parity": "tsx scripts/check-parity.ts"
   },
   "devDependencies": {
     "@get-bb/plugin-sdk": "0.4.34",

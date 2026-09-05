@@ -10,17 +10,26 @@ verified against the code in this repository as of phase 8, not aspirational.
 - **omitted** - deliberately not shipped in v1, with a reason.
 - **N/A** - bb owns this surface, or HL's version has no local equivalent.
 
-**Recount (phase 8 review fixes).** A prior review pass counted 11 partial / 5
-omitted / 12 N/A rows in this file. A row-by-row recount after fixing the
-misclassifications and inconsistencies below (delete-confirm was `N/A` but is
-actually a deliberate `omitted`; the batch-queue row disagreed with itself
-between the Notifications and Settings tables; the Phase/UI toggles row
-claimed `full` for keys that either do not exist or are defined but never
-read) counts **89 status-bearing rows** across every table (a handful of rows
-mix two statuses in one cell, e.g. "N/A (bb owns X) / full (Y)"; those are
-counted once per status they actually name): **61 full, 14 partial, 9
-omitted, 16 N/A** (partial/omitted/N/A sum to more than the prior count
-because the prior pass undercounted, not because more was cut from v1).
+**Recount (phase 8 review fixes, round 2).** `npm run check:parity`
+(`scripts/parity-count.ts`, covered by `tests/parity.test.ts`) walks every
+markdown table in this file, finds each table's `status` (or `bb status`)
+column by header name, and tallies the named status word in that column for
+every data row. One row's status cell can name two statuses at once (e.g.
+"N/A (bb owns X) / full (Y)"); each named status is counted once, so that
+row counts toward both totals below and is the file's one **mixed row**
+(the palette row, `⌘K palette`: N/A because bb owns the palette, full for
+the rows this plugin contributes to it). The script's count, which this
+sentence must match (enforced by `tests/parity.test.ts`), is **90
+status-bearing rows, 1 of them mixed: 60 full, 12 partial, 7 omitted, 12
+N/A** (11 rows are `N/A`-only; the twelfth `N/A` is the mixed palette row's
+share). A prior pass undercounted because two rows in the auto-advance
+table were squeezed into fewer columns than that table's header (status
+landed in the `note` cell, invisible to a column-name lookup) and a
+Settings-table row blended an `N/A` group and a `partial` group under one
+"mostly N/A / partial" label; both are now split into their own rows
+(see the Executor & recovery notes table, and the Settings table's split
+Diff-viewer/theme/zoom/streaming vs. Diff-style/default-editor rows) so a
+mechanical column-name lookup lands on the right cell for every row.
 
 ## Tasks
 
@@ -63,6 +72,15 @@ because the prior pass undercounted, not because more was cut from v1).
 | plan | `aa_plan_to_worktree` | setup-worktree | worktree-setup | full | |
 | worktree-setup | `aa_worktree_to_implementation` | implement-plan | implementation | full | |
 | implementation | `aa_implementation_to_pr` | describe-pr | describe-pr | full | Default **off** (study ground truth: PR is typically a manual step). |
+
+## Executor & recovery notes
+
+(Split out of the auto-advance table: these two rows describe executor/recovery mechanics, not
+a phase transition, so they never fit that table's Next-skill/Target-phase columns; keeping them
+squeezed in there is what made the status column land in the wrong cell for a mechanical count.)
+
+| HL behavior | bb plugin behavior | status | where | note |
+|---|---|---|---|---|
 | Executor idempotency | Astra's intent-ledger/lease design not adopted; Fable's CAS (`advanced_at`) plus a minimal `launch_attempts` row instead | full (by design, decision §2.4) | `advance.ts`, `launch.ts` | Executor runs only after a completed turn (never a `user_question` idle). |
 | Recover-launch for `uncertain` spawns | Adopt / Retry / Dismiss row on the Sessions tab | full | `launch.ts`, `ui/humanlayer.tsx` `RecoverLaunchRow` | No time-based auto-release of a stuck attempt (plan §2.4: bb has no spawn idempotency key). |
 
@@ -137,7 +155,8 @@ because the prior pass undercounted, not because more was cut from v1).
 | Delete confirm | `confirmBeforeDeletingArtifacts` | omitted - a deliberate choice not to add a confirm dialog, not "no local equivalent" (recount, was wrongly N/A: deleting an artifact is very much a local concept here); delete/restore is already reversible via `.trash/` and the Artifacts tab | - |
 | Research subagents | `haikuResearchSubagentsEnabled` | full, as `researchModel` (a model id, not a boolean) | `contract.ts` `prefsDefaultsSchema` |
 | `experimentalSubagentsEnabled` | Not applicable: all 7 agent skills ship, none gated behind an experiment flag | N/A | - |
-| Diff/editor/theme/zoom | `diffStyle`, `diffStyleFullscreen`, `zoomLevel`, `theme`, `streamingRenderingEnabled`, `defaultEditor` | mostly N/A (bb owns diff viewer, theme, zoom, streaming rendering) / partial (`diffStyle`, `defaultEditor` kept as settings for parity but bb's own diff panel and file-open behavior are authoritative) | `server.ts` settings |
+| Diff viewer / theme / zoom / streaming | `diffStyleFullscreen`, `zoomLevel`, `theme`, `streamingRenderingEnabled` | N/A - bb owns the diff viewer, theme, zoom, and streaming rendering; no plugin-level equivalent | `server.ts` settings |
+| Diff style / default editor | `diffStyle`, `defaultEditor` | partial - kept as settings for parity, but bb's own diff panel and file-open behavior are authoritative | `server.ts` settings |
 | Cost | `showSessionCosts` | N/A | - | bb exposes no pricing; `$cost` is omitted everywhere (plan §2.8). |
 | Keybindings | `archiveKeybinding`, `sendMessageKeybinding` | partial - `⌘E` is hardcoded (not user-remappable); `⌘⏎` send is bb's own composer, not this plugin's concern | `ui/humanlayer.tsx` |
 | Multiplayer/thinking-verbs/nudges | `multiplayerPromptingLastDuration`, `thinkingVerbsDisabled`, `bypassNudgeSilenced`, `fastModeWarningAcknowledged` | N/A | - | Single-user; no multiplayer prompting, no bypass/fast-mode concepts distinct from bb's own permission-mode picker. |
@@ -154,7 +173,7 @@ because the prior pass undercounted, not because more was cut from v1).
 | `⌘B` sidebar, `S` toggle sidebar | bb's own sidebar | N/A | - | |
 | `⌘E` archive | `⌘E`, confirms first | full | `ui/humanlayer.tsx` `HumanLayerThreadHeaderAction` | |
 | `⌘⏎` send | bb's own composer | N/A | - | |
-| `⌘⇧J` jump to notified session | `⌘⇧U` (configurable) | partial (renamed, reason above) | `ui/humanlayer.tsx`, `notify.ts` | |
+| `⌘⇧J` jump to notified session | `⌘⇧U` (configurable) | partial (renamed, reason above) | `ui/humanlayer.tsx`, `notify.ts` | Two different mechanisms, stated so the difference doesn't read as an inconsistency: `T`/`g t`/`⌘E` are panel-scoped (`usePanelHotkeys`, listens on the panel's or action's own root element, only fires while focus is inside it), while `⌘⇧U` is intentionally global on `document` (capture, owner-queue) for as long as `HumanLayerNotificationBridge` is mounted, because jumping to a notified session must work regardless of what has focus when the notification arrives. |
 | `⌘J` terminal, `⌘⇧O` open dir in editor | bb's own terminal/file-open | N/A | - | |
 | `h/j/k/l`, `⇧H/⇧L` pane focus | bb's own pane navigation | N/A | - | |
 | `⏎` focus input, `esc` blur | bb's own composer | N/A | - | |
