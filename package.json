@@ -23,12 +23,14 @@
     "assets",
     "components",
     "components.json",
+    "dist",
     "hooks",
     "lib",
     "skills",
     "tsconfig.json",
     "ui",
     "LICENSE",
+    "PARITY.md",
     "README.md"
   ],
   "dependencies": {
@@ -42,7 +44,8 @@
     "build": "bb plugin build",
     "pretest": "npm run typecheck",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --import tsx"
+    "test": "node --test --import tsx",
+    "check:pack": "tsx scripts/check-pack.ts"
   },
   "devDependencies": {
     "@get-bb/plugin-sdk": "0.4.34",

@@ -94,9 +94,21 @@ test("every hl tool referenced by skills is registered", () => {
   }
 });
 
-test("rewritten skills and references do not contain HumanLayer reference shingles", () => {
+// docs/hl-reference/ is HumanLayer's original material (All Rights Reserved): it lives outside
+// this repo (see AGENTS.md item 6 / package.json `files`) at HL_REFERENCE_DIR, defaulting to a
+// sibling checkout so a plain clone never ships or copies it. When that directory is absent this
+// test skips loudly (not a silent pass) so CI without the sibling checkout still shows the gap.
+const HL_REFERENCE_DIR = process.env.HL_REFERENCE_DIR
+  ? path.resolve(process.env.HL_REFERENCE_DIR)
+  : path.resolve(root, "..", "bb-plugin-humanlayer-hl-reference");
+
+test("rewritten skills and references do not contain HumanLayer reference shingles", (t) => {
+  if (!fs.existsSync(HL_REFERENCE_DIR)) {
+    t.skip(`HL_REFERENCE_DIR not found at ${HL_REFERENCE_DIR}: shingle check against HumanLayer's reference material did NOT run. Set HL_REFERENCE_DIR or checkout the sibling dir to enforce this.`);
+    return;
+  }
   const referenceShingles = new Set<string>();
-  for (const file of listFiles(path.join(root, "docs", "hl-reference"))) {
+  for (const file of listFiles(HL_REFERENCE_DIR)) {
     for (const shingle of shingles(fs.readFileSync(file, "utf8"), 10)) referenceShingles.add(shingle);
   }
 

@@ -120,13 +120,21 @@ This repository's code and skills (`skills/rpi-*`) are original rewrites of
 HumanLayer's workflow shape (step order, "read fully", "do not leak intent",
 final-answer template rules) in this project's own words — see
 `docs/research/01-research-humanlayer-system.md` and the plan docs for the
-research this was built from. `docs/hl-reference/` holds HumanLayer's actual
-skill/agent/hook source, kept only as local reference material; it is **All
-Rights Reserved** and is never copied into `skills/`, and `package.json`'s
-`files` allowlist excludes `docs/` (along with `tests/`) from every published
-package — verify with `npm pack --dry-run` after changes to either. The
-notification chime (`assets/notification.mp3`) is synthesized for this
-project, not HumanLayer's asset.
+research this was built from. HumanLayer's own skill/agent/hook source, kept
+only for local reference during development, lives outside this repository
+entirely (a sibling checkout, default path
+`../bb-plugin-humanlayer-hl-reference/`, overridable with `HL_REFERENCE_DIR`;
+see `tests/skills.test.ts`). At HEAD, this repository does not contain that
+material: it is **All Rights Reserved**, is never copied into `skills/`, and
+`package.json`'s `files` allowlist excludes `docs/` (along with `tests/`)
+from every published package regardless — verify with `npm run check:pack`
+after changes to either. **Release step:** an earlier commit in this
+repository's history contained `docs/hl-reference/` before it was moved out;
+before any public push, a maintainer must purge that material from git
+history (e.g. `git filter-repo --path docs/hl-reference --invert-paths`) as a
+deliberate, documented, one-time step. Do not rewrite history as a side effect
+of unrelated work. The notification chime (`assets/notification.mp3`) is
+synthesized for this project, not HumanLayer's asset.
 
 ## Troubleshooting
 
