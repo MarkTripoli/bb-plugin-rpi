@@ -541,6 +541,7 @@ function RecoverLaunchRow({ attempt, onResolved }: { attempt: LaunchAttemptRecor
   const rpc = useRpc<RpcContract>();
   const [threadId, setThreadId] = useState("");
   const [busy, setBusy] = useState(false);
+  const isPending = attempt.status === "pending";
 
   const resolve = async (action: { type: "adopt"; threadId: string } | { type: "retry" } | { type: "dismiss" }) => {
     if (busy) return;
@@ -557,23 +558,25 @@ function RecoverLaunchRow({ attempt, onResolved }: { attempt: LaunchAttemptRecor
     <div className="rounded-lg border border-border bg-card/70 p-3">
       <div className="mb-3 flex items-center justify-between gap-3">
         <div className="space-y-1">
-          <div className="text-sm font-medium text-foreground">Recover launch</div>
+          <div className="text-sm font-medium text-foreground">{isPending ? "Launching..." : "Recover launch"}</div>
           <div className="text-xs text-muted-foreground">{attempt.id}</div>
         </div>
-        <span className={pillClassName("ghost")}>uncertain</span>
+        <span className={pillClassName("ghost")}>{isPending ? "launching..." : "uncertain"}</span>
       </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <Input value={threadId} onChange={(event) => setThreadId(event.target.value)} placeholder="Thread id to adopt" className="h-9 max-w-[220px]" />
-        <Button type="button" disabled={busy || threadId.trim() === ""} onClick={() => resolve({ type: "adopt", threadId: threadId.trim() })}>
-          Adopt
-        </Button>
-        <Button type="button" disabled={busy} onClick={() => resolve({ type: "retry" })}>
-          Retry
-        </Button>
-        <Button type="button" disabled={busy} variant="outline" onClick={() => resolve({ type: "dismiss" })}>
-          Dismiss
-        </Button>
-      </div>
+      {isPending ? null : (
+        <div className="flex flex-wrap items-center gap-2">
+          <Input value={threadId} onChange={(event) => setThreadId(event.target.value)} placeholder="Thread id to adopt" className="h-9 max-w-[220px]" />
+          <Button type="button" disabled={busy || threadId.trim() === ""} onClick={() => resolve({ type: "adopt", threadId: threadId.trim() })}>
+            Adopt
+          </Button>
+          <Button type="button" disabled={busy} onClick={() => resolve({ type: "retry" })}>
+            Retry
+          </Button>
+          <Button type="button" disabled={busy} variant="outline" onClick={() => resolve({ type: "dismiss" })}>
+            Dismiss
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -645,7 +648,7 @@ function TaskDetailPage({ taskId }: { taskId: string }) {
     return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
   }
 
-  const uncertain = workspace.launchAttempts.filter((attempt) => attempt.status === "uncertain");
+  const visibleAttempts = workspace.launchAttempts.filter((attempt) => attempt.status === "pending" || attempt.status === "uncertain");
 
   return (
     <div className="space-y-4">
@@ -680,9 +683,9 @@ function TaskDetailPage({ taskId }: { taskId: string }) {
         ) : null}
       </div>
       <div className="border-b border-border pb-2 text-xs font-medium uppercase tracking-[0.24em] text-foreground">Sessions</div>
-      {uncertain.length > 0 ? (
+      {visibleAttempts.length > 0 ? (
         <div className="space-y-2">
-          {uncertain.map((attempt) => <RecoverLaunchRow key={attempt.id} attempt={attempt} onResolved={refetch} />)}
+          {visibleAttempts.map((attempt) => <RecoverLaunchRow key={attempt.id} attempt={attempt} onResolved={refetch} />)}
         </div>
       ) : null}
       {sessions.length === 0 ? (

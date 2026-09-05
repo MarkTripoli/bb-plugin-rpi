@@ -16,9 +16,13 @@ test("migrations are idempotent", async () => {
   assert.ok(tables.includes("launch_attempts"));
   assert.ok(tables.includes("task_ui_state"));
   const taskColumns = db.prepare("PRAGMA table_info(tasks)").all().map((row) => (row as { name: string }).name);
+  const sessionColumns = db.prepare("PRAGMA table_info(sessions)").all().map((row) => (row as { name: string }).name);
   assert.ok(taskColumns.includes("base_environment_id"));
   assert.ok(taskColumns.includes("worktree_environment_id"));
   assert.ok(taskColumns.includes("aa_questions_to_research"));
+  assert.ok(sessionColumns.includes("last_reconcile_seq"));
+  assert.ok(sessionColumns.includes("last_summarized_turn_key"));
+  assert.ok(sessionColumns.includes("completed_turn_key"));
   const launchAttemptColumns = db
     .prepare("PRAGMA table_info(launch_attempts)")
     .all()

@@ -4,7 +4,16 @@ import type * as BetterSqlite3 from "better-sqlite3";
 import type { TaskRecord } from "./contract";
 import { nowMs, readRow, readRows, writeRow } from "./db";
 import { getTask } from "./tasks";
-import { mirrorSession, type SessionMirrorRow } from "./sessions";
+import {
+  bindPendingLaunch,
+  launchMarker,
+  mirrorSession,
+  notePendingLaunchThread,
+  reconcileSession,
+  registerPendingLaunch,
+  type LaunchBindingMirror,
+  type SessionMirrorRow,
+} from "./sessions";
 
 type Database = BetterSqlite3.Database;
 
@@ -72,8 +81,25 @@ function insertAttempt(db: Database, task: TaskRecord, fromThreadId: string | nu
   return id;
 }
 
-function markAttempt(db: Database, id: string, status: LaunchAttemptStatus, threadId: string | null) {
-  writeRow(db, "UPDATE launch_attempts SET status = ?, thread_id = ? WHERE id = ?", status, threadId, id);
+function claimAttempt(db: Database, id: string, status: LaunchAttemptStatus, threadId: string | null) {
+  return writeRow(
+    db,
+    "UPDATE launch_attempts SET status = ?, thread_id = ? WHERE id = ? AND status IN ('pending', 'uncertain')",
+    status,
+    threadId,
+    id,
+  ).changes === 1;
+}
+
+export function promoteStalePendingLaunchAttempts(db: Database, olderThanMs = 2 * 60_000) {
+  const cutoff = nowMs() - olderThanMs;
+  const rows = readRows<{ taskId: string }>(
+    db,
+    "SELECT DISTINCT task_id AS taskId FROM launch_attempts WHERE status = 'pending' AND created_at < ?",
+    cutoff,
+  );
+  writeRow(db, "UPDATE launch_attempts SET status = 'uncertain' WHERE status = 'pending' AND created_at < ?", cutoff);
+  return rows.map((row) => row.taskId);
 }
 
 function sdkPermissionMode(mode: TaskRecord["permissionMode"]): "accept-edits" | "auto" | "full" | undefined {
@@ -117,6 +143,7 @@ export async function launchPhase(
   bb: BbPluginApi,
   db: Database,
   mirror: Map<string, SessionMirrorRow>,
+  bindings: LaunchBindingMirror,
   task: TaskRecord,
   input: { skillId: string | null; prompt: string; launchedBy: string; fromThreadId: string | null },
 ) {
@@ -125,13 +152,21 @@ export async function launchPhase(
   if (existing) throw new Error(`Resolve launch attempt ${existing.id} before launching again.`);
 
   const attemptId = insertAttempt(db, task, input.fromThreadId, input.skillId);
+  registerPendingLaunch(bindings, {
+    token: attemptId,
+    taskId: task.id,
+    fromThreadId: input.fromThreadId,
+    skillId: input.skillId,
+    launchedBy: input.launchedBy,
+    threadId: null,
+  });
   try {
     const thread = await bb.sdk.threads.spawn({
       projectId: task.projectId,
       environment: task.baseEnvironmentId
         ? { type: "reuse", environmentId: task.baseEnvironmentId }
         : { type: "project-default" },
-      prompt: input.prompt,
+      prompt: `${launchMarker(attemptId)}\n${input.prompt}`,
       title: task.name,
       visibility: "visible",
       executionInputSources: {
@@ -143,44 +178,32 @@ export async function launchPhase(
       },
       ...optionalExecution(task),
     });
+    notePendingLaunchThread(bindings, attemptId, thread.id);
+    bindPendingLaunch(db, mirror, bindings, attemptId, thread.id);
     const hydratedThread = await bb.sdk.threads.get({ threadId: thread.id, include: "environment" });
     const environmentId = hydratedThread.environmentId ?? thread.environmentId ?? null;
     const timestamp = nowMs();
-    writeRow(
-      db,
-      `
-      INSERT INTO sessions (
-        thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
-        hl_status, hl_status_at, had_turn, interrupted, blocked_reason,
-        created_at, updated_at
-      ) VALUES (?, ?, NULL, NULL, ?, ?, 'launching', ?, 0, 0, NULL, ?, ?)
-      `,
-      thread.id,
-      task.id,
-      input.launchedBy,
-      input.fromThreadId,
-      timestamp,
-      timestamp,
-      timestamp,
-    );
     if (!task.baseEnvironmentId && environmentId) {
       writeRow(db, "UPDATE tasks SET base_environment_id = ?, updated_at = ? WHERE id = ?", environmentId, timestamp, task.id);
     }
-    markAttempt(db, attemptId, "spawned", thread.id);
     mirrorSession(db, mirror, thread.id);
     bb.realtime.publish("hl:sessions", { taskId: task.id, threadId: thread.id });
     bb.realtime.publish("tasks", { taskId: task.id });
     return { threadId: thread.id };
   } catch (error) {
-    markAttempt(db, attemptId, "uncertain", null);
+    claimAttempt(db, attemptId, "uncertain", null);
+    bindings.pendingByToken.delete(attemptId);
+    for (const [threadId, binding] of bindings.pendingByThread) {
+      if (binding.token === attemptId) bindings.pendingByThread.delete(threadId);
+    }
     bb.realtime.publish("hl:sessions", { taskId: task.id, threadId: null });
     throw error;
   }
 }
 
-export async function launchDraft(bb: BbPluginApi, db: Database, mirror: Map<string, SessionMirrorRow>, taskId: string) {
+export async function launchDraft(bb: BbPluginApi, db: Database, mirror: Map<string, SessionMirrorRow>, bindings: LaunchBindingMirror, taskId: string) {
   const task = readTaskOrThrow(db, taskId);
-  const result = await launchPhase(bb, db, mirror, task, {
+  const result = await launchPhase(bb, db, mirror, bindings, task, {
     skillId: null,
     prompt: task.draftPrompt,
     launchedBy: "user",
@@ -236,8 +259,6 @@ export async function forkSession(
 export async function interruptSession(bb: BbPluginApi, db: Database, mirror: Map<string, SessionMirrorRow>, threadId: string) {
   const source = mirror.get(threadId);
   if (!source) throw new Error(`No session found for thread ${threadId}`);
-  writeRow(db, "UPDATE sessions SET interrupted = 1, updated_at = ? WHERE thread_id = ?", nowMs(), threadId);
-  mirrorSession(db, mirror, threadId);
   await bb.sdk.threads.stop({ threadId });
   bb.realtime.publish("hl:sessions", { taskId: source.taskId, threadId });
   return { ok: true as const };
@@ -247,6 +268,7 @@ export async function resolveLaunchAttempt(
   bb: BbPluginApi,
   db: Database,
   mirror: Map<string, SessionMirrorRow>,
+  bindings: LaunchBindingMirror,
   id: string,
   action: { type: "adopt"; threadId: string } | { type: "retry" } | { type: "dismiss" },
 ) {
@@ -267,8 +289,9 @@ export async function resolveLaunchAttempt(
     id,
   );
   if (!attempt) throw new Error(`No launch attempt found for id ${id}`);
+  if (attempt.status !== "pending" && attempt.status !== "uncertain") return { threadId: attempt.threadId };
   if (action.type === "dismiss") {
-    markAttempt(db, id, "failed", attempt.threadId);
+    claimAttempt(db, id, "failed", attempt.threadId);
     return { threadId: attempt.threadId };
   }
   if (action.type === "adopt") {
@@ -280,27 +303,46 @@ export async function resolveLaunchAttempt(
     const found = candidates.find((thread) => thread.id === action.threadId && thread.createdAt >= attempt.createdAt);
     if (!found) throw new Error("Thread is not an adopt candidate for this attempt.");
     const task = readTaskOrThrow(db, attempt.taskId);
+    const hydratedThread = await bb.sdk.threads.get({ threadId: action.threadId, include: "environment" });
+    const environmentId = hydratedThread.environmentId ?? null;
     const timestamp = nowMs();
-    writeRow(
-      db,
-      `
-      INSERT OR IGNORE INTO sessions (
-        thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
-        hl_status, hl_status_at, had_turn, interrupted, blocked_reason,
-        created_at, updated_at
-      ) VALUES (?, ?, NULL, NULL, 'user', ?, 'launching', ?, 0, 0, NULL, ?, ?)
-      `,
-      action.threadId,
-      task.id,
-      attempt.fromThreadId,
-      timestamp,
-      timestamp,
-      timestamp,
-    );
-    markAttempt(db, id, "spawned", action.threadId);
+    const result = db.transaction(() => {
+      if (!claimAttempt(db, id, "spawned", action.threadId)) {
+        const current = readRow<{ threadId: string | null }>(db, "SELECT thread_id AS threadId FROM launch_attempts WHERE id = ?", id);
+        return { claimed: false, threadId: current?.threadId ?? null };
+      }
+      const existing = readRow<{ threadId: string }>(db, "SELECT thread_id AS threadId FROM sessions WHERE thread_id = ?", action.threadId);
+      if (existing) throw new Error("Thread is already bound to a HumanLayer session.");
+      writeRow(
+        db,
+        `
+        INSERT INTO sessions (
+          thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
+          hl_status, hl_status_at, had_turn, interrupted, blocked_reason,
+          created_at, updated_at
+        ) VALUES (?, ?, NULL, ?, 'user', ?, 'launching', ?, 0, 0, NULL, ?, ?)
+        `,
+        action.threadId,
+        task.id,
+        attempt.skillId,
+        attempt.fromThreadId,
+        timestamp,
+        timestamp,
+        timestamp,
+      );
+      return { claimed: true, threadId: action.threadId };
+    })();
+    if (!result.claimed) return { threadId: result.threadId };
+    if (!task.baseEnvironmentId && environmentId) {
+      writeRow(db, "UPDATE tasks SET base_environment_id = ?, updated_at = ? WHERE id = ?", environmentId, timestamp, task.id);
+    }
     mirrorSession(db, mirror, action.threadId);
+    await reconcileSession(bb, db, mirror, action.threadId);
     return { threadId: action.threadId };
   }
-  markAttempt(db, id, "failed", attempt.threadId);
-  return launchDraft(bb, db, mirror, attempt.taskId);
+  if (!claimAttempt(db, id, "failed", attempt.threadId)) {
+    const current = readRow<{ threadId: string | null }>(db, "SELECT thread_id AS threadId FROM launch_attempts WHERE id = ?", id);
+    return { threadId: current?.threadId ?? null };
+  }
+  return launchDraft(bb, db, mirror, bindings, attempt.taskId);
 }

@@ -1,14 +1,17 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { prefsSchema, prefsUpdateSchema, rpcContract } from "./contract";
-import { openPluginDatabase } from "./db";
+import { openPluginDatabase, parseJson } from "./db";
 import {
   forkSession,
   interruptSession,
   launchDraft,
   listLaunchAttempts,
+  promoteStalePendingLaunchAttempts,
   resolveLaunchAttempt,
 } from "./launch";
 import {
+  bindPendingThread,
+  createLaunchBindingMirror,
   listSessions,
   loadSessionMirror,
   readSession,
@@ -29,6 +32,11 @@ const PREFS_KEY = "prefs:structured-defaults";
 export default async function plugin(bb: BbPluginApi) {
   const db = openPluginDatabase(bb);
   const sessionMirror = loadSessionMirror(db);
+  const launchBindings = createLaunchBindingMirror();
+  for (const taskId of promoteStalePendingLaunchAttempts(db)) {
+    bb.realtime.publish("tasks", { taskId });
+    bb.realtime.publish("hl:sessions", { taskId, threadId: null });
+  }
   const settings = bb.settings.define({
     notificationSoundsEnabled: {
       type: "boolean",
@@ -134,7 +142,7 @@ export default async function plugin(bb: BbPluginApi) {
         if (request.workflowType !== "freeform" && request.workflowType !== "oneshot") {
           return { ...result, note: "available in a later release" };
         }
-        const launched = await launchDraft(bb, db, sessionMirror, result.taskId);
+        const launched = await launchDraft(bb, db, sessionMirror, launchBindings, result.taskId);
         return { ...result, threadId: launched.threadId };
       }
       return result;
@@ -149,7 +157,7 @@ export default async function plugin(bb: BbPluginApi) {
       bb.realtime.publish("tasks", { taskId });
       return { task };
     },
-    launchDraft: async ({ taskId }) => launchDraft(bb, db, sessionMirror, taskId),
+    launchDraft: async ({ taskId }) => launchDraft(bb, db, sessionMirror, launchBindings, taskId),
     listSessions: async ({ taskId }) => ({
       sessions: await Promise.all(listSessions(db, taskId ?? null).map((session) => sessionView(bb, session))),
     }),
@@ -160,7 +168,7 @@ export default async function plugin(bb: BbPluginApi) {
     forkSession: async ({ threadId, text }) => forkSession(bb, db, sessionMirror, threadId, text),
     interruptSession: async ({ threadId }) => interruptSession(bb, db, sessionMirror, threadId),
     listLaunchAttempts: async ({ taskId }) => ({ attempts: listLaunchAttempts(db, taskId) }),
-    resolveLaunchAttempt: async ({ id, action }) => resolveLaunchAttempt(bb, db, sessionMirror, id, action),
+    resolveLaunchAttempt: async ({ id, action }) => resolveLaunchAttempt(bb, db, sessionMirror, launchBindings, id, action),
     listProjects: async ({ includePersonal }) =>
       bb.sdk.projects.list({ includePersonal: includePersonal ?? true }).then((projects) =>
         projects.map((project) => ({
@@ -241,7 +249,7 @@ export default async function plugin(bb: BbPluginApi) {
             reasoningLevel: opts.effort ?? null,
             serviceTier: null,
           });
-          const launched = opts.launch === "true" ? await launchDraft(bb, db, sessionMirror, result.taskId) : null;
+          const launched = opts.launch === "true" ? await launchDraft(bb, db, sessionMirror, launchBindings, result.taskId) : null;
           const body = { ...result, ...(launched ?? {}) };
           return { exitCode: 0, stdout: json ? `${JSON.stringify(body)}\n` : `${body.taskId}${launched ? ` ${launched.threadId}` : ""}\n` };
         }
@@ -251,8 +259,10 @@ export default async function plugin(bb: BbPluginApi) {
         }
         if (argv[0] === "sessions" && argv[1] === "list") {
           const opts = parseArgs(argv.slice(2));
-          const sessions = listSessions(db, opts.task ?? null);
-          return { exitCode: 0, stdout: json ? `${JSON.stringify({ sessions })}\n` : sessions.map((session) => `${session.threadId}\t${session.hlStatus}\t${session.label ?? ""}`).join("\n") + "\n" };
+          const limit = parseBoundedInt(opts.limit, 50, 1, 200);
+          const offset = parseBoundedInt(opts.offset, 0, 0, 100000);
+          const sessions = listSessions(db, opts.task ?? null, { limit, offset }).map(sessionCliView);
+          return { exitCode: 0, stdout: json ? `${JSON.stringify({ sessions, limit, offset })}\n` : sessions.map((session) => `${session.threadId}\t${session.hlStatus}\t${session.label ?? ""}`).join("\n") + "\n" };
         }
         return { exitCode: 2, stderr: "usage: bb humanlayer {tasks|sessions} ...\n" };
       } catch (error) {
@@ -261,13 +271,28 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  bb.agents.configure((context) => (sessionMirror.has(context.thread.id) ? { tools: [], skills: [] } : { tools: [], skills: [] }));
+  bb.agents.configure((context) => {
+    bindPendingThread(db, sessionMirror, launchBindings, context.thread.id);
+    return sessionMirror.has(context.thread.id) ? { tools: [], skills: [] } : { tools: [], skills: [] };
+  });
   bb.agents.contributeInstructions(({ threadId }) => {
-    const row = sessionMirror.get(threadId);
+    const row = sessionMirror.get(threadId) ?? bindPendingThread(db, sessionMirror, launchBindings, threadId);
     return row ? taskInstructions(row) : null;
   });
 
-  registerSessionRuntime(bb, db, sessionMirror);
+  registerSessionRuntime(bb, db, sessionMirror, launchBindings);
+
+  bb.background.service("launch-attempt-sweep", {
+    async start(signal) {
+      while (!signal.aborted) {
+        for (const taskId of promoteStalePendingLaunchAttempts(db)) {
+          bb.realtime.publish("tasks", { taskId });
+          bb.realtime.publish("hl:sessions", { taskId, threadId: null });
+        }
+        await sleep(60_000, signal);
+      }
+    },
+  });
 
   bb.onDispose(() => {
     db.close();
@@ -296,6 +321,38 @@ function parseArgs(argv: string[]) {
     }
   }
   return result;
+}
+
+function parseBoundedInt(input: string | undefined, fallback: number, min: number, max: number) {
+  const value = input === undefined ? fallback : Number.parseInt(input, 10);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
+}
+
+function sessionCliView(session: ReturnType<typeof readSession> extends infer T ? NonNullable<T> : never) {
+  const summary = parseJson<{ summaryHistory?: string[] }>(session.summaryJson, {});
+  const summaryHistory = Array.isArray(summary.summaryHistory)
+    ? summary.summaryHistory.slice(-3).map((entry) => String(entry).slice(0, 200))
+    : [];
+  return { ...session, summaryJson: JSON.stringify({ ...summary, summaryHistory }) };
+}
+
+function sleep(ms: number, signal: AbortSignal) {
+  return new Promise<void>((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+  });
 }
 
 async function sessionView(bb: BbPluginApi, session: ReturnType<typeof readSession> extends infer T ? NonNullable<T> : never) {

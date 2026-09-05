@@ -251,6 +251,9 @@ export function getTask(db: Database, taskId: string) {
     summaryJson: string | null;
     advancedAt: number | null;
     hydratedAt: number | null;
+    lastReconcileSeq: number;
+    lastSummarizedTurnKey: string | null;
+    completedTurnKey: string | null;
     createdAt: number;
     updatedAt: number;
   }>(
@@ -272,6 +275,9 @@ export function getTask(db: Database, taskId: string) {
       summary_json AS summaryJson,
       advanced_at AS advancedAt,
       hydrated_at AS hydratedAt,
+      last_reconcile_seq AS lastReconcileSeq,
+      last_summarized_turn_key AS lastSummarizedTurnKey,
+      completed_turn_key AS completedTurnKey,
       created_at AS createdAt,
       updated_at AS updatedAt
     FROM sessions

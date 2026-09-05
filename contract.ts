@@ -94,6 +94,9 @@ export const sessionRowSchema = z
     summaryJson: z.string().nullable(),
     advancedAt: z.number().int().nullable(),
     hydratedAt: z.number().int().nullable(),
+    lastReconcileSeq: z.number().int(),
+    lastSummarizedTurnKey: z.string().nullable(),
+    completedTurnKey: z.string().nullable(),
     createdAt: z.number().int(),
     updatedAt: z.number().int(),
   })
