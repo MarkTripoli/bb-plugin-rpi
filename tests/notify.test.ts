@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { MIGRATIONS } from "../db";
+import { createDraftTask } from "../tasks";
 import {
   DEFAULT_NOTIFICATION_PREFS,
   approvalFromInteractions,
@@ -12,6 +13,8 @@ import {
   normalizeNotificationPrefs,
   notificationDedupeKey,
   notificationKind,
+  sweepOldNotifications,
+  sweepOldSuppressions,
   type NotificationEvent,
   type NotificationState,
 } from "../notify";
@@ -156,5 +159,54 @@ test("adapter records decisions and consumes auto-advance suppression once", asy
   });
   assert.equal(secondTurn.reason, "notify");
   assert.equal(published.length, 1);
+  db.close();
+});
+
+function seedSessionForRetention(db: Database.Database, threadId: string, archived: boolean) {
+  const taskId = createDraftTask(db, {
+    projectId: "proj_1",
+    prompt: "prompt",
+    name: "Task",
+    workflowType: "freeform",
+    worktreeTiming: "never",
+    permissionMode: "default",
+    autoAdvance: false,
+    providerId: null,
+    model: null,
+    reasoningLevel: null,
+    serviceTier: null,
+  }).taskId;
+  if (archived) db.prepare("UPDATE tasks SET archived = 1 WHERE id = ?").run(taskId);
+  db.prepare(`
+    INSERT INTO sessions (
+      thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
+      hl_status, hl_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at
+    ) VALUES (?, ?, NULL, NULL, 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, 1, 1)
+  `).run(threadId, taskId);
+}
+
+test("retention sweeps only archived-task notifications and suppressions once old enough", () => {
+  const db = makeDb();
+  const oldCreatedAt = 1;
+  const recentCreatedAt = Date.now();
+  seedSessionForRetention(db, "thr_archived", true);
+  seedSessionForRetention(db, "thr_active", false);
+
+  db.prepare("INSERT INTO notifications (id, thread_id, kind, dedupe_key, reason, sound, created_at) VALUES ('n1', 'thr_archived', 'ready_for_input', 'ready:thr_archived:1', 'notify', 0, ?)").run(oldCreatedAt);
+  db.prepare("INSERT INTO notifications (id, thread_id, kind, dedupe_key, reason, sound, created_at) VALUES ('n2', 'thr_active', 'ready_for_input', 'ready:thr_active:1', 'notify', 0, ?)").run(oldCreatedAt);
+  db.prepare("INSERT INTO notifications (id, thread_id, kind, dedupe_key, reason, sound, created_at) VALUES ('n3', 'thr_archived', 'ready_for_input', 'ready:thr_archived:2', 'notify', 0, ?)").run(recentCreatedAt);
+
+  db.prepare("INSERT INTO notification_suppressions (thread_id, completed_turn_key, reason, created_at, consumed_at) VALUES ('thr_active', 'turn_consumed', 'auto_advance', ?, ?)").run(oldCreatedAt, oldCreatedAt);
+  db.prepare("INSERT INTO notification_suppressions (thread_id, completed_turn_key, reason, created_at, consumed_at) VALUES ('thr_active', 'turn_unconsumed', 'auto_advance', ?, NULL)").run(oldCreatedAt);
+  db.prepare("INSERT INTO notification_suppressions (thread_id, completed_turn_key, reason, created_at, consumed_at) VALUES ('thr_archived', 'turn_old_unconsumed', 'auto_advance', ?, NULL)").run(oldCreatedAt);
+
+  sweepOldNotifications(db, 24 * 60 * 60 * 1000);
+  sweepOldSuppressions(db, 24 * 60 * 60 * 1000);
+
+  const notificationIds = (db.prepare("SELECT id FROM notifications ORDER BY id").all() as Array<{ id: string }>).map((row) => row.id);
+  assert.deepEqual(notificationIds, ["n2", "n3"]);
+
+  const suppressionKeys = (db.prepare("SELECT thread_id AS threadId, completed_turn_key AS completedTurnKey FROM notification_suppressions ORDER BY completed_turn_key").all() as Array<{ threadId: string; completedTurnKey: string }>);
+  assert.deepEqual(suppressionKeys, [{ threadId: "thr_active", completedTurnKey: "turn_unconsumed" }]);
   db.close();
 });

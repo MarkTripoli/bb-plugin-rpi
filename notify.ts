@@ -422,6 +422,47 @@ export async function recoverReadyAfterFailedAdvance(
   return { sound, toast };
 }
 
+/**
+ * CLI "notifications test" path. Uses a dedicated `test:<thread>:<ts>` dedupe namespace that can
+ * never collide with a real ready/approval dedupe key, so it never marks a real completed turn or
+ * approval id as already-notified, and never consumes a real notification_suppressions row.
+ * Publishes with `synthetic: true` so the UI can label the resulting toast "Test".
+ */
+export function publishSyntheticTestNotification(
+  bb: BbPluginApi,
+  db: Database,
+  prefs: NotificationPrefs,
+  params: { threadId: string; title: string; body: string | null },
+): NotificationDecision {
+  const dedupeKey = `test:${params.threadId}:${nowMs()}`;
+  const sound = prefs.enabled && prefs.sound.ready_for_input;
+  const toastAllowed = prefs.enabled && prefs.toast.ready_for_input;
+  const toast: NotificationToast | null = toastAllowed
+    ? { title: params.title, body: params.body ?? `Session ${params.threadId.slice(0, 8)}`, threadId: params.threadId }
+    : null;
+  const decision: NotificationDecision = { sound, toast, reason: "notify" };
+  recordNotificationDecision(
+    db,
+    { type: "status_transition", threadId: params.threadId, previousStatus: "running", nextStatus: "ready_for_input", completedTurnKey: dedupeKey },
+    "ready_for_input",
+    dedupeKey,
+    decision,
+  );
+  if (sound || toast) {
+    bb.realtime.publish("hl:notify", {
+      id: dedupeKey,
+      kind: "ready_for_input",
+      threadId: params.threadId,
+      sound,
+      toast,
+      volume: prefs.volume,
+      reason: "notify",
+      synthetic: true,
+    });
+  }
+  return decision;
+}
+
 export function notificationSummaryFromSession(session: SessionRow) {
   if (!session.summaryJson) return null;
   try {

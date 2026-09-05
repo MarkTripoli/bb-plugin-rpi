@@ -37,6 +37,51 @@ test("sessions list CLI paginates and truncates summaries", async () => {
   await harness.lifecycle.dispose();
 });
 
+test("notifications CLI validates args and the test path never touches real dedupe or suppression rows", async () => {
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "humanlayer",
+    sdk: { subscribe: () => () => undefined },
+  });
+  await plugin(bb);
+  const created = await harness.behavior.callRpc("createTask", {
+    request: { text: "prompt", projectId: "proj_1", workflowType: "freeform", worktreeTiming: "never", permissionMode: "default", autoAdvance: false },
+    name: "Task",
+    draft: true,
+  }) as { taskId: string };
+  const db = bb.storage.database();
+  db.prepare(`
+    INSERT INTO sessions (
+      thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
+      hl_status, hl_status_at, had_turn, interrupted, blocked_reason,
+      completed_turn_key, created_at, updated_at
+    ) VALUES ('thr_test', ?, NULL, NULL, 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, 'turn_real', 1, 1)
+  `).run(created.taskId);
+  db.prepare(`
+    INSERT INTO notification_suppressions (thread_id, completed_turn_key, reason, created_at, consumed_at)
+    VALUES ('thr_test', 'turn_real', 'auto_advance', 1, NULL)
+  `).run();
+
+  const badLimit = await harness.behavior.runCli(["notifications", "list", "--limit", "abc"]);
+  assert.equal(badLimit.exitCode, 2);
+
+  const missingThread = await harness.behavior.runCli(["notifications", "test"]);
+  assert.equal(missingThread.exitCode, 2);
+
+  const result = await harness.behavior.runCli(["notifications", "test", "--thread", "thr_test", "--json"]);
+  assert.equal(result.exitCode, 0);
+  const body = JSON.parse(result.stdout) as { decision: { reason: string } };
+  assert.equal(body.decision.reason, "notify");
+
+  const rows = db.prepare("SELECT dedupe_key AS dedupeKey FROM notifications WHERE thread_id = 'thr_test'").all() as Array<{ dedupeKey: string }>;
+  assert.equal(rows.length, 1);
+  assert.match(rows[0]!.dedupeKey, /^test:thr_test:/);
+  assert.equal(rows.some((row) => row.dedupeKey === "ready:thr_test:turn_real"), false);
+
+  const suppression = db.prepare("SELECT consumed_at AS consumedAt FROM notification_suppressions WHERE thread_id = 'thr_test'").get() as { consumedAt: number | null };
+  assert.equal(suppression.consumedAt, null, "the CLI test path must never consume a real suppression row");
+  await harness.lifecycle.dispose();
+});
+
 test("artifact route forces attachment for html and sets security headers", async () => {
   const { bb, harness } = createFakePluginHost({
     pluginId: "humanlayer",

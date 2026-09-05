@@ -60,10 +60,19 @@ import {
   listNotificationRecords,
   normalizeNotificationPrefs,
   notificationSummaryFromSession,
+  publishSyntheticTestNotification,
   recoverReadyAfterFailedAdvance,
   sweepOldNotifications,
   sweepOldSuppressions,
 } from "./notify";
+import { z } from "zod";
+
+const notificationsListArgsSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(20),
+}).strict();
+const notificationsTestArgsSchema = z.object({
+  thread: z.string().min(1),
+}).strict();
 import {
   archiveTask,
   createDraftTask,
@@ -865,27 +874,22 @@ export default async function plugin(bb: BbPluginApi) {
         }
         if (argv[0] === "notifications" && argv[1] === "list") {
           const opts = parseArgs(argv.slice(2));
-          const limit = parseBoundedInt(opts.limit, 20, 1, 200);
-          const notifications = listNotificationRecords(db, limit);
-          return { exitCode: 0, stdout: json ? `${JSON.stringify({ notifications, limit })}\n` : notifications.map((row) => `${row.createdAt}\t${row.kind}\t${row.threadId}\t${row.reason}`).join("\n") + (notifications.length ? "\n" : "") };
+          const parsed = notificationsListArgsSchema.safeParse({ limit: opts.limit });
+          if (!parsed.success) return { exitCode: 2, stderr: "usage: bb humanlayer notifications list [--limit N] [--json]\n" };
+          const notifications = listNotificationRecords(db, parsed.data.limit);
+          return { exitCode: 0, stdout: json ? `${JSON.stringify({ notifications, limit: parsed.data.limit })}\n` : notifications.map((row) => `${row.createdAt}\t${row.kind}\t${row.threadId}\t${row.reason}`).join("\n") + (notifications.length ? "\n" : "") };
         }
         if (argv[0] === "notifications" && argv[1] === "test") {
           const opts = parseArgs(argv.slice(2));
-          if (!opts.thread) return { exitCode: 2, stderr: "usage: bb humanlayer notifications test --thread <threadId> [--json]\n" };
-          const session = readSession(db, opts.thread);
+          const parsed = notificationsTestArgsSchema.safeParse({ thread: opts.thread });
+          if (!parsed.success) return { exitCode: 2, stderr: "usage: bb humanlayer notifications test --thread <threadId> [--json]\n" };
+          const session = readSession(db, parsed.data.thread);
           if (!session) return { exitCode: 1, stderr: "session not found\n" };
-          const decision = await decideAndPublishNotification(bb, db, {
-            type: "status_transition",
+          // Synthetic namespace: never touches real ready/approval dedupe keys or suppression rows.
+          const decision = publishSyntheticTestNotification(bb, db, await currentNotificationPrefs(), {
             threadId: session.threadId,
-            previousStatus: "running",
-            nextStatus: "ready_for_input",
-            completedTurnKey: session.completedTurnKey ?? "cli-test",
             title: notificationSummaryFromSession(session) ?? `Session ${session.threadId.slice(0, 8)}`,
-            summary: notificationSummaryFromSession(session),
-          }, {
-            prefs: await currentNotificationPrefs(),
-            owner: "unknown",
-            viewing: viewingSessions.has(session.threadId),
+            body: notificationSummaryFromSession(session),
           });
           return { exitCode: 0, stdout: json ? `${JSON.stringify({ decision })}\n` : `${decision.reason}\tsound=${decision.sound}\ttoast=${decision.toast ? "yes" : "no"}\n` };
         }
