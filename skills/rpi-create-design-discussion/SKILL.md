@@ -1,28 +1,111 @@
 ---
 name: rpi-create-design-discussion
-description: Only use when the user explicitly invokes /rpi-create-design-discussion. Write a design discussion.
+description: Only use when the user explicitly invokes /rpi-create-design-discussion. Create a design discussion artifact from task and research context.
 ---
 
-# Create Design Discussion
+# Design Discussion Phase
 
-## Steps
+You are in the design discussion phase. Convert the task request and completed research into a decision document the user can review before the implementation outline. The document should explain the current product behavior, the desired user-facing outcome, the proposed design shape, the open choices, and the codebase patterns that should constrain the work. This phase decides direction; it does not implement code.
 
-0. Call hl_task_context and read its output before any file read. Use the returned task directory, task slug, artifact list, and model hints.
-1. Read task.md or ticket.md from the task directory, plus every explicit @-mentioned file in full.
-2. If an artifact number is needed, call hl_next_artifact_number and use the returned number in NN-design-discussion-short-slug.md.
-3. Read references/design_discussion_template.md and draft the artifact in that shape.
-4. Write or update the artifact under .humanlayer/tasks/<slug>/.
-5. Call hl_artifact_save with the artifact file name immediately after writing. Save the returned ::hl-artifact{...} line for your final answer.
-6. Read references/design_discussion_final_answer.md and answer using that structure exactly. The final answer must end with one fenced text block containing /rpi-create-structure-outline.
+## bb Task Setup
 
-## Rules
+0. Call `hl_task_context` before reading files, spawning child threads, or choosing an artifact path. Use its task directory, task slug, artifact manifest, repository, branch, thread id, provider, and model preferences. If it fails, stop.
+1. Use the task directory returned by the tool. Do not guess a sibling under `.humanlayer/tasks` from an old session or a remembered slug.
+2. Locate this installed skill through the skills tier listing, then read reference files relative to this skill directory: `references/design_discussion_template.md`, `references/show-me.md`, `references/artifact_template.html`, `references/design_discussion_final_answer.md`, `references/design_discussion_final_answer.md`.
+3. After every artifact write or edit, call `hl_artifact_save` with the relative file name and keep the returned `::hl-artifact{...}` directive for the final answer.
 
-- Do not open unrelated task artifacts. Use only task.md, ticket.md, @ files, and comments the user asked you to inspect.
-- For child research, spawn codebase-locator, codebase-analyzer, codebase-pattern-finder, and web-search-researcher as useful. Use:
+## Work sequence after the request arrives
 
-  bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <cheap research model from hl_task_context prefs> --prompt "/rpi-agent-<role> <short assignment>"
-  bb thread wait <id>
-  bb thread output <id>
+1. **Read the task inputs and completed research**:
+   - List the task directory from `hl_task_context` with `ls -La`.
+   - Read `task.md` or `ticket.md` if present.
+   - Read completed research artifacts, usually named `NN-research-*.md`.
+   - Read every explicit `@file` or path the user supplied.
+   - Exclude research-question artifacts unless the user specifically asks you to audit the research setup.
+   - Do not start child research until you have read the primary task artifacts yourself.
 
-- Spawn all independent child threads first, then wait for each one and summarize only their results.
-- Treat tool or CLI errors as blockers, not as permission to write untracked side files.
+2. **Check for related task content**:
+   - If the user mentions another path inside the task directory, list that directory with `ls -La` and read the relevant files fully.
+   - Use the artifact manifest before trying wider discovery.
+   - Read prior design discussion artifacts only when they are directly relevant to the new design decision.
+
+3. **Run follow-up research only when the design needs more evidence**:
+
+Use child threads only when a missing fact would change the artifact. Spawn independent assignments first, then wait for them and read their final messages:
+
+```text
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-codebase-locator <assignment>"
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-codebase-analyzer <assignment>"
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-codebase-pattern-finder <assignment>"
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from hl_task_context preferences> --prompt "/rpi-agent-web-search-researcher <assignment>"
+bb thread wait <thread-id>
+bb thread output <thread-id>
+```
+
+Role mapping: locator finds files and tests, analyzer explains current behavior, pattern finder finds local precedents, and web researcher checks external behavior or current documentation. The child thread's final message is the deliverable. Use only findings you have read from `bb thread output`.
+
+4. **Read the templates and visual guide**:
+   - Read `references/design_discussion_template.md`.
+   - Read `references/show-me.md`.
+   - If a focused HTML visual would make a dense concept clearer, read `references/artifact_template.html` and use its minimal visual language.
+   - Use the fewest views needed. A diagram, pseudocode block, component tree, file tree, or HTML artifact belongs beside the prose it clarifies.
+
+5. **Write the design discussion**:
+   - Call `hl_next_artifact_number`.
+   - Write `NN-design-discussion-<slug>.md` in the task directory.
+   - Keep frontmatter fields compatible with the template: task, type, repo, branch, and sha.
+   - Include Summary of change request, Current State, Desired End State, What we're not doing, Proposed End State Architecture, Design Questions, Resolved Design Questions, and Patterns to follow.
+
+<content_guidance>
+
+**High-level product spec**
+- Describe what the user experiences today and what will be true after the change.
+- Keep this section about behavior and user value. File names and function names belong in patterns or architecture, not in user-facing current-state bullets.
+
+**Proposed end state architecture**
+- Show how the intended behavior fits together.
+- Use a before/after view, Mermaid, pseudocode, a component tree, or a compact file responsibility tree when it improves the decision.
+- Prefer `diff` blocks when the important fact is the change from an existing shape.
+
+**Design decisions**
+- Put unresolved decisions under Design Questions.
+- For each major choice, show options, tradeoffs, and a recommendation grounded in research or local conventions.
+- If research found testing patterns, include the testing approach briefly with file references.
+
+**Question state is binding**
+- Initial questions stay open.
+- Do not move a question to Resolved Design Questions because you think the answer is obvious.
+- Only a clear user decision, user approval, or a decision already recorded in a newer artifact can resolve a question.
+- When a question is resolved, record the chosen option, the rationale, and why the meaningful alternatives were not selected.
+
+**Patterns to follow**
+- Include local patterns that implementation should copy.
+- Use file locations and short snippets. Do not paste large source blocks.
+
+</content_guidance>
+
+6. **Choose the final answer template**:
+   - If any design question remains open, read `references/design_discussion_review_answer.md`.
+   - If every design question is resolved, read `references/design_discussion_final_answer.md`.
+   - Follow the selected template exactly and include the saved artifact directive.
+
+## Artifact and Reading Rules
+
+- Read task artifacts fully. Do not use partial reads for task files, user-mentioned files, or the artifact you are editing.
+- List task directories with `ls -La <task-dir>`. Avoid plain `ls`, `ls -l`, search, and glob expansion inside `.humanlayer/tasks` because the path may be a linked directory.
+- Do not read research-question artifacts during design, outline, or plan work. They guide the research phase only; use completed research instead.
+- Do not inspect unrelated task directories unless the user explicitly asks.
+- Treat failed artifact saves, failed comment calls, or unavailable task context as blockers. Do not work around them by writing untracked side files.
+- Use `hl_next_artifact_number` when creating a new numbered artifact. The file name format is `NN-<type>-<2-4-word-kebab-slug>.md`.
+
+## Markdown Formatting
+
+When an artifact needs to show markdown that itself contains fenced code, wrap the outer example in four backticks so inner three-backtick blocks remain valid.
+
+## Document Precedence
+
+When documents disagree, the latest phase artifact wins:
+
+**design discussion > research > ticket**
+
+Earlier material provides context. The artifact from this phase records the current decision and should absorb later user feedback instead of leaving contradictions in place.
