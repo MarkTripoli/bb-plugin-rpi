@@ -124,3 +124,61 @@ bb plugin list
 
 - UI behavior was typechecked and bundled, but not screenshot-tested in a browser session.
 - Diff comments remain out of scope for this phase.
+
+## Review fixes
+
+Fixed all eleven Phase 4 review findings.
+
+- Reworked re-anchor precedence: exact block plus full context, unique exact block, exact duplicates with one-sided context or a narrow old-index fallback, then fuzzy only with a single high-confidence candidate and clear runner-up margin.
+- Built comment XML from artifact-wide id prefixes, stripped XML-invalid code points, accounted for the full envelope in byte budgets, paginated by root comments without skipping omitted threads, and marked single oversized threads with `truncated="true"` plus an offset hint.
+- Changed send-to-session to use exactly the requested root ids, exclude resolved roots unless explicitly included, split oversized selections into ordered messages, reject single-thread oversize before sending, persist `send_receipts(request_id)`, and resolve only roots delivered through a successful send.
+- Added restore support for `deleted:false`, root-only resolve and unresolve failures for replies, server validation for artifact version ownership, reply roots, anchor block range, user edit ownership, and typed `hl:comments` realtime event kinds.
+- Moved markdown block segmentation into `blocks.ts` for both backend and UI use; the rail now uses paginated comment loading, load-more, pending send disablement, and anchor refetches on artifact version signals.
+
+Verification:
+
+```text
+npm test
+tests 60
+pass 60
+fail 0
+
+npx tsc --noEmit
+passed with no output
+
+bb plugin build
+dist/server.js
+dist/server.js.map
+dist/server.meta.json
+dist/app.js
+dist/app.css
+dist/app.meta.json
+```
+
+Live check:
+
+```text
+bb plugin install . --yes
+humanlayer@0.1.0 running
+
+bb plugin reload humanlayer
+humanlayer@0.1.0 running
+```
+
+Created task `d11e5bf8-53c0-469a-be3e-4b731517220d`, thread `thr_ht5xfu65ny`, and artifact `live-comments.md`. Sent two selected root comments through live RPC:
+
+```text
+{"ok":true,"result":{"sent":2}}
+```
+
+Then `bb humanlayer comments list --resolved --json` showed roots `2fba98f4` and `6630b9f1` resolved, while root `cc15f804` remained unresolved.
+
+For the east/west re-anchor check, `live-reanchor.md` was changed from the original exact block to two similar blocks, `wind changed east marker` and `wind changed west marker`. Listing comments showed comment `cffd2962` with `anchor.orphaned: true`.
+
+Cleanup:
+
+```text
+bb thread stop thr_ht5xfu65ny
+bb thread archive thr_ht5xfu65ny
+bb plugin remove humanlayer
+```
