@@ -4,7 +4,7 @@ Artifact saved:
 Summary:
 {summary}
 
-No automatic next phase follows this skill. Use this command only when another visual pass is needed:
+No automatic next phase follows this PR gate. Use this manual command only when another visual pass is needed:
 
 ```text
 /rpi-show-me

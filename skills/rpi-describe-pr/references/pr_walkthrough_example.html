@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{PR_TITLE} Walkthrough</title>
+  <style>
+    :root { color-scheme: dark; --bg: #11131a; --panel: #191c24; --text: #e6e8ef; --muted: #9aa3b2; --line: #2a2f3a; --accent: #78dce8; --ok: #8bd49c; --warn: #ffd866; }
+    body { margin: 0; font: 15px/1.6 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+    header { position: sticky; top: 0; padding: 12px 20px; border-bottom: 1px solid var(--line); background: rgba(17,19,26,.96); }
+    h1 { margin: 0; font-size: 16px; }
+    main { max-width: 980px; margin: 0 auto; padding: 24px 20px 80px; }
+    section { border: 1px solid var(--line); background: var(--panel); padding: 18px; margin: 14px 0; }
+    h2 { margin: 0 0 8px; font-size: 15px; color: var(--accent); }
+    .meta { color: var(--muted); }
+    .badge { display: inline-block; margin-right: 8px; padding: 2px 6px; border: 1px solid var(--line); color: var(--warn); font: 12px ui-monospace, monospace; }
+    pre { overflow-x: auto; padding: 12px; background: #0d0f15; border: 1px solid var(--line); }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>{PR_TITLE}</h1>
+    <div class="meta">{PR_URL}</div>
+  </header>
+  <main>
+    <section>
+      <h2>Why this PR exists</h2>
+      <p>{Two or three sentences explaining the problem and the resulting behavior.}</p>
+    </section>
+    <section>
+      <h2>Change map</h2>
+      <p><span class="badge">1</span>{First reviewer-relevant step.}</p>
+      <p><span class="badge">2</span>{Second reviewer-relevant step.}</p>
+      <p><span class="badge">3</span>{Verification or shipping note.}</p>
+    </section>
+    <section>
+      <h2>Key diff</h2>
+      <pre>{Paste a focused diff or structural sketch here.}</pre>
+      <p><a href="{PR_FILES_URL}">Open full PR diff</a></p>
+    </section>
+  </main>
+</body>
+</html>
