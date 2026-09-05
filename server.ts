@@ -55,7 +55,7 @@ import {
   taskInstructions,
 } from "./sessions";
 import {
-  approvalFromInteractions,
+  approvalsFromInteractions,
   decideAndPublishNotification,
   listNotificationRecords,
   normalizeNotificationPrefs,
@@ -67,12 +67,23 @@ import {
 } from "./notify";
 import { z } from "zod";
 
+// .strict() runs on the raw parsed CLI options (every flag the user passed, including --json)
+// before projecting to the fields the command actually uses, so an unrecognized flag fails
+// instead of silently being dropped by the projection.
+const notificationsListRawArgsSchema = z.object({
+  limit: z.string().optional(),
+  json: z.string().optional(),
+}).strict();
 const notificationsListArgsSchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(20),
+});
+const notificationsTestRawArgsSchema = z.object({
+  thread: z.string().optional(),
+  json: z.string().optional(),
 }).strict();
 const notificationsTestArgsSchema = z.object({
   thread: z.string().min(1),
-}).strict();
+});
 import {
   archiveTask,
   createDraftTask,
@@ -365,8 +376,9 @@ export default async function plugin(bb: BbPluginApi) {
     if (!row) return;
     const prefs = await currentNotificationPrefs();
     const context = { prefs, owner: "unknown" as const, viewing: viewingSessions.has(threadId) };
-    const approval = approvalFromInteractions(interactions);
-    if (approval) {
+    // Every pending approval id in the snapshot notifies (deduped per id), not just the first, so
+    // two simultaneously pending approvals both surface instead of the second being dropped.
+    for (const approval of approvalsFromInteractions(interactions)) {
       await decideAndPublishNotification(bb, db, {
         type: "status_transition",
         threadId,
@@ -874,14 +886,18 @@ export default async function plugin(bb: BbPluginApi) {
         }
         if (argv[0] === "notifications" && argv[1] === "list") {
           const opts = parseArgs(argv.slice(2));
-          const parsed = notificationsListArgsSchema.safeParse({ limit: opts.limit });
+          const raw = notificationsListRawArgsSchema.safeParse(opts);
+          if (!raw.success) return { exitCode: 2, stderr: "usage: bb humanlayer notifications list [--limit N] [--json]\n" };
+          const parsed = notificationsListArgsSchema.safeParse({ limit: raw.data.limit });
           if (!parsed.success) return { exitCode: 2, stderr: "usage: bb humanlayer notifications list [--limit N] [--json]\n" };
           const notifications = listNotificationRecords(db, parsed.data.limit);
-          return { exitCode: 0, stdout: json ? `${JSON.stringify({ notifications, limit: parsed.data.limit })}\n` : notifications.map((row) => `${row.createdAt}\t${row.kind}\t${row.threadId}\t${row.reason}`).join("\n") + (notifications.length ? "\n" : "") };
+          return { exitCode: 0, stdout: json ? `${JSON.stringify({ notifications, limit: parsed.data.limit })}\n` : notifications.map((row) => `${row.createdAt}\t${row.kind}${row.synthetic ? " [test]" : ""}${row.supersededAt ? " [superseded]" : ""}\t${row.threadId}\t${row.reason}`).join("\n") + (notifications.length ? "\n" : "") };
         }
         if (argv[0] === "notifications" && argv[1] === "test") {
           const opts = parseArgs(argv.slice(2));
-          const parsed = notificationsTestArgsSchema.safeParse({ thread: opts.thread });
+          const raw = notificationsTestRawArgsSchema.safeParse(opts);
+          if (!raw.success) return { exitCode: 2, stderr: "usage: bb humanlayer notifications test --thread <threadId> [--json]\n" };
+          const parsed = notificationsTestArgsSchema.safeParse({ thread: raw.data.thread });
           if (!parsed.success) return { exitCode: 2, stderr: "usage: bb humanlayer notifications test --thread <threadId> [--json]\n" };
           const session = readSession(db, parsed.data.thread);
           if (!session) return { exitCode: 1, stderr: "session not found\n" };

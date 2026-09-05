@@ -67,6 +67,13 @@ test("notifications CLI validates args and the test path never touches real dedu
   const missingThread = await harness.behavior.runCli(["notifications", "test"]);
   assert.equal(missingThread.exitCode, 2);
 
+  // Unknown flags are rejected by .strict() on the raw parsed options, before projection to the
+  // fields the command actually reads, instead of being silently dropped.
+  const unknownFlag = await harness.behavior.runCli(["notifications", "list", "--limit", "5", "--bogus", "x"]);
+  assert.equal(unknownFlag.exitCode, 2);
+  const unknownTestFlag = await harness.behavior.runCli(["notifications", "test", "--thread", "thr_test", "--bogus", "x"]);
+  assert.equal(unknownTestFlag.exitCode, 2);
+
   const result = await harness.behavior.runCli(["notifications", "test", "--thread", "thr_test", "--json"]);
   assert.equal(result.exitCode, 0);
   const body = JSON.parse(result.stdout) as { decision: { reason: string } };
