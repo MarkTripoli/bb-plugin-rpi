@@ -540,6 +540,49 @@ export function listRecentDrafts(db: Database, limit = 5) {
   return listTasks(db, { archived: false }).filter((task) => task.isDraft).slice(0, limit);
 }
 
+// Precedence for one execution field at task creation: an explicit request value (including an
+// explicit `null`, i.e. "clear this") always wins; an omitted (`undefined`) request field falls
+// through to that workflow type's stored default, then to the workflow-agnostic global default.
+// serviceTier and permissionMode's workflow tier only cover the fields workflowOverrideSchema
+// actually declares (permissionMode has no global-default counterpart, so it stops at the
+// fallback argument instead).
+function resolveField<T>(explicit: T | null | undefined, workflowValue: T | null | undefined, globalValue: T | null | undefined, fallback: T | null = null): T | null {
+  if (explicit !== undefined) return explicit;
+  if (workflowValue !== undefined) return workflowValue;
+  return globalValue ?? fallback;
+}
+
+export function resolveTaskExecutionDefaults(
+  request: {
+    providerId?: string | null;
+    model?: string | null;
+    reasoningLevel?: string | null;
+    serviceTier?: string | null;
+    permissionMode?: string | null;
+  },
+  workflowType: WorkflowType,
+  prefs: Prefs,
+): {
+  providerId: string | null;
+  model: string | null;
+  reasoningLevel: string | null;
+  serviceTier: string | null;
+  permissionMode: string | null;
+} {
+  const workflowDefault = prefs.workflowDefaults[workflowType] ?? {};
+  return {
+    providerId: resolveField(request.providerId, workflowDefault.providerId, prefs.defaults.providerId),
+    model: resolveField(request.model, workflowDefault.model, prefs.defaults.model),
+    reasoningLevel: resolveField(request.reasoningLevel, workflowDefault.reasoningLevel, prefs.defaults.reasoningLevel),
+    // workflowOverrideSchema has no serviceTier override; only the global default applies.
+    serviceTier: resolveField(request.serviceTier, undefined, prefs.defaults.serviceTier),
+    // permissionMode has no global default in prefsDefaultsSchema; the resolved fallback is
+    // "default" (no override) rather than null so a freshly created task never lands on a
+    // meaningless bare null.
+    permissionMode: resolveField(request.permissionMode, workflowDefault.permissionMode, undefined, "default"),
+  };
+}
+
 export function defaultTaskPrefs(input: {
   providerId?: string | null;
   model?: string | null;

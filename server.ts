@@ -90,6 +90,7 @@ import {
   defaultTaskPrefs,
   getTask,
   listTasks,
+  resolveTaskExecutionDefaults,
   updateTask,
 } from "./tasks";
 import { ARTIFACT_TOOL_NAMES, registerArtifactTools } from "./tools";
@@ -504,6 +505,9 @@ export default async function plugin(bb: BbPluginApi) {
         defaultDirectory: request.defaultDirectory ?? null,
         worktreeTiming: request.worktreeTiming,
       });
+      // Precedence: explicit request field (including an explicit clearing `null`) > that
+      // workflow type's stored default > the workflow-agnostic global default.
+      const resolved = resolveTaskExecutionDefaults(request, request.workflowType, prefs);
       const result = createDraftTask(db, {
         projectId: request.projectId,
         prompt: request.text,
@@ -512,12 +516,8 @@ export default async function plugin(bb: BbPluginApi) {
         defaultDirectory: request.defaultDirectory ?? null,
         workflowType: request.workflowType,
         worktreeTiming: request.worktreeTiming,
-        permissionMode: request.permissionMode,
         autoAdvance: request.autoAdvance,
-        providerId: prefs.defaults.providerId ?? null,
-        model: prefs.defaults.model ?? null,
-        reasoningLevel: prefs.defaults.reasoningLevel ?? null,
-        serviceTier: prefs.defaults.serviceTier ?? null,
+        ...resolved,
       });
       bb.realtime.publish("tasks", { taskId: result.taskId });
       if (!draft) {

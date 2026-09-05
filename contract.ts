@@ -335,7 +335,15 @@ export const taskCreateRequestSchema = z
     defaultDirectory: z.string().trim().min(1).nullable().optional(),
     workflowType: composerWorkflowTypeSchema.default("rpi"),
     worktreeTiming: worktreeTimingSchema.default("later"),
-    permissionMode: permissionModeSchema.default("default"),
+    // Omitted (undefined) falls through to the workflow-type default then the global default
+    // (resolveTaskExecutionDefaults in tasks.ts); explicit null clears any default and always
+    // wins, exactly like an explicit value. Precedence: explicit request > workflow default >
+    // global default.
+    permissionMode: permissionModeSchema.nullable().optional(),
+    providerId: z.string().nullable().optional(),
+    model: z.string().nullable().optional(),
+    reasoningLevel: z.string().nullable().optional(),
+    serviceTier: z.string().nullable().optional(),
     autoAdvance: z.boolean().default(false),
   })
   .strict();
