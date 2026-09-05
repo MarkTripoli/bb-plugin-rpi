@@ -1,29 +1,142 @@
 ---
 name: rpi-implement-plan
-description: Only use when the user explicitly invokes /rpi-implement-plan. Implement from a plan.
+description: Only use when the user explicitly invokes /rpi-implement-plan. Orchestrate phased implementation from a saved plan artifact.
 ---
 
-# Implement Plan
+# Plan Implementation Orchestrator
 
-## Steps
+You coordinate an approved plan artifact in `.humanlayer/tasks/<slug>/`. Do not do bulk implementation inline. Launch focused child threads, verify them, preserve the human gate, and hand off after implementation is complete.
 
-0. Call hl_task_context and read its output before any file read. Use the returned task directory, task slug, artifact list, and model hints.
-1. Read task.md or ticket.md from the task directory, plus every explicit @-mentioned file in full.
-2. If an artifact number is needed, call hl_next_artifact_number and use the returned number in NN-implementation-notes-short-slug.md.
-3. Read references/implementation_template.md and draft the artifact in that shape.
-4. Write or update the artifact under .humanlayer/tasks/<slug>/.
-5. Call hl_artifact_save with the artifact file name immediately after writing. Save the returned ::hl-artifact{...} line for your final answer.
-6. Read references/implementation_final_answer.md and answer using that structure exactly. The final answer must end with one fenced text block containing /rpi-ci-commit.
+## Workflow
 
-## Rules
+### 0. Load task context and locate the plan
 
-- Do not open unrelated task artifacts. Use only task.md, ticket.md, @ files, and comments the user asked you to inspect.
-- Run the orchestrator loop: child implementer, child implementation reviewer, then pause for commit and proceed approval. The child prompt is short and points at the plan or outline file.
-- For child research, spawn codebase-locator, codebase-analyzer, codebase-pattern-finder, and web-search-researcher as useful. Use:
+Call `hl_task_context` before any file read. Use its task directory, slug, artifact list, bb environment, provider, model preferences, and artifact links as the source of truth.
 
-  bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <cheap research model from hl_task_context prefs> --prompt "/rpi-agent-<role> <short assignment>"
-  bb thread wait <id>
-  bb thread output <id>
+If the user supplied a specific plan path or `@file`, use that file. If they supplied only a task directory, list it with:
 
-- Spawn all independent child threads first, then wait for each one and summarize only their results.
-- Treat tool or CLI errors as blockers, not as permission to write untracked side files.
+```bash
+ls -La .humanlayer/tasks/<task-slug>
+```
+
+Use `ls -La` because the task path may be a symlink. Do not use lowercase `-l`, glob-only discovery, or broad repository search. Select the current `*-plan-*.md` unless the user named another file.
+
+Read the selected plan fully. Read `task.md` or `ticket.md` only when needed for ticket identity, manual checks, or acceptance language. Do not read unrelated task artifacts unless the plan or user points at them.
+
+If no plan is found, ask for the plan path and stop.
+
+### 1. Launch the implementer child thread
+
+For each phase that still needs work, spawn one implementation child thread. Keep the prompt short: point to the plan and phase number instead of copying plan content.
+
+Use this bb-native pattern:
+
+```bash
+bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same provider> --model <implementation model from hl_task_context prefs, or current model> --prompt "/rpi-agent-implementer Implement Phase [N] of the plan at .humanlayer/tasks/<task-slug>/<plan-file>. Focus only on Phase [N]. Stop after automated verification and report manual checks."
+```
+
+Then collect the result:
+
+```bash
+bb thread wait <thread-id>
+bb thread output <thread-id>
+```
+
+The child thread's final answer is its deliverable. Read it and compare it with the plan.
+
+### 2. Review the child output
+
+Inspect the implementer report and confirm:
+
+- Which files changed.
+- Which plan items were completed.
+- Which automated checks ran and their results.
+- Which manual checks are still needed.
+- Whether the child reported mismatches, blockers, or intentionally skipped work.
+
+If the child says the plan cannot be followed, present that mismatch to the user instead of improvising a new direction.
+
+### 3. Run missed automated checks
+
+Run checks the child missed and checks the plan makes mandatory: build, test, lint, typecheck, generated-code verification, or focused acceptance scripts. Use existing repository commands and keep enough output to prove pass or fail.
+
+### 4. Report the phase to the human
+
+After a phase is implemented and automated verification is complete, summarize exactly what is ready for human validation:
+
+```markdown
+## Phase [N] Implementation Summary
+
+**Completed by child thread:**
+- [completed work]
+
+**Automated verification:**
+- [command] -> [result]
+
+**Manual verification required:**
+- [manual check]
+
+Ready for Phase [N+1] after you confirm manual verification, or send the issue you want addressed.
+```
+
+### 5. Wait for human confirmation
+
+Pause unless the user explicitly requested multiple phases in one run. Wait for confirmation, an issue report, or approval to move on.
+
+### 6. Commit changes after approval
+
+When the user confirms the phase and asks you to commit, create a focused commit. Do not commit `.humanlayer/tasks/` or generated task mirrors. Use explicit paths with `git add`; never stage the whole repository. In the normal RPI flow, `/rpi-ci-commit` owns this handoff.
+
+### 7. Repeat for the next phase
+
+Repeat the same child-thread, review, verification, human gate, and commit handoff. If the user asked for several phases, still use a separate child thread per phase and verify between phases.
+
+## Special Instructions
+
+### Resuming Work
+
+If the plan already has progress markers, read them before launching a child thread.
+
+- Treat checked items as complete unless the diff, test result, or user report makes that unsafe.
+- Resume at the first unchecked phase or item.
+- Ask the child to continue from that point, not to restart the whole plan.
+
+### Handling Issues
+
+When a child thread or local verification finds a mismatch, stop the phase loop and present:
+
+```markdown
+Issue in Phase [N]
+
+Expected: [what the plan called for]
+Found: [what the repository actually contains]
+Why it matters: [impact]
+
+How should I proceed?
+```
+
+Do not patch around unclear plan drift without user direction.
+
+### Multiple Phases
+
+When the user explicitly asks for multiple phases, spawn a fresh implementer child for each phase, verify between phases, collect manual checks, and report them after the final requested phase. Do not mark manual checks complete unless the user confirms them.
+
+### Artifact Notes
+
+If you write an implementation receipt or update the plan artifact, call `hl_next_artifact_number` for a new `NN-implementation-*.md` file. After every task-directory write, call `hl_artifact_save` and keep the returned `::hl-artifact{...}` directive.
+
+Read references relative to this skill directory. Locate the directory through the skills tier listing, then read `references/implementation_template.md` and `references/implementation_final_answer.md`.
+
+## Workflow Checklist
+
+- [ ] Call `hl_task_context`.
+- [ ] Read the plan artifact.
+- [ ] Launch `/rpi-agent-implementer`.
+- [ ] Read `bb thread output`.
+- [ ] Verify against the plan.
+- [ ] Ask for manual verification.
+- [ ] Commit only after approval, or hand off to `/rpi-ci-commit`.
+
+## After Final Phase Completion
+
+When every phase is complete, automated checks pass, and the human gate is satisfied, save changed task artifacts, read `references/implementation_final_answer.md`, and respond with that template only.

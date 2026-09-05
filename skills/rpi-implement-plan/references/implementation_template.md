@@ -1,19 +1,24 @@
-# Implementation Notes
+# Implementation Receipt
 
-## Source Artifact
-- file:
-- version:
+## Source
+- task:
+- plan artifact:
+- phase range:
 
 ## Child Threads
 - implementer:
 - reviewer:
 
-## Changes
+## Completed Work
 -
 
-## Verification
+## Automated Verification
 - command:
 - result:
+- evidence:
 
-## Human Gate
-State whether the code is ready for commit and proceed approval.
+## Manual Verification
+-
+
+## Commit Handoff
+State whether implementation is ready for `/rpi-ci-commit`, or name the blocker.
