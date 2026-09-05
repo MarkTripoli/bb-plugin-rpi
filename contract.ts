@@ -169,6 +169,9 @@ export const sessionViewSchema = sessionRowSchema
     // bb exposes context-window usage from `threads.timeline({summaryOnly:"true"})`; null when the
     // provider bridge has not reported usage yet (e.g. before the first turn) or the lookup failed.
     contextUsage: contextUsageSchema.nullable(),
+    // The owning task's workflow type, needed client-side to compute the Suggested-next
+    // affordance (autoAdvanceTransition(label, workflowType) is workflow-type-specific).
+    workflowType: workflowTypeSchema,
   })
   .strict();
 export type SessionView = z.infer<typeof sessionViewSchema>;

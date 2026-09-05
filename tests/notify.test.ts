@@ -6,6 +6,7 @@ import { createDraftTask } from "../tasks";
 import {
   DEFAULT_NOTIFICATION_PREFS,
   approvalFromInteractions,
+  buildToast,
   clampVolume,
   decideAndPublishNotification,
   decideNotification,
@@ -227,4 +228,26 @@ test("retention also sweeps individually archived threads (task open) and rows w
   const notificationIds = (db.prepare("SELECT id FROM notifications ORDER BY id").all() as Array<{ id: string }>).map((row) => row.id);
   assert.deepEqual(notificationIds, ["n1"]);
   db.close();
+});
+
+test("buildToast appends the suggested-next hint to a ready_for_input toast body, and never for other kinds", () => {
+  const base: NotificationEvent = {
+    type: "status_transition",
+    threadId: "thr_1",
+    previousStatus: "running",
+    nextStatus: "ready_for_input",
+    completedTurnKey: "turn_1",
+    title: "My task",
+    summary: "Done",
+  };
+  const withoutHint = buildToast(base, "ready_for_input");
+  assert.equal(withoutHint.body, "My task");
+
+  const withHint = buildToast({ ...base, suggestedNextHint: "Suggested next: proceed to research" }, "ready_for_input");
+  assert.equal(withHint.body, "My task - Suggested next: proceed to research");
+  assert.equal(withHint.body.includes("\u2014"), false, "no em dashes in notification copy");
+
+  // needs_approval never carries the ready_for_input suggested-next hint.
+  const approvalToast = buildToast({ ...base, nextStatus: "needs_approval", suggestedNextHint: "Suggested next: proceed to research", approval: { id: "a1", toolName: "Bash", toolInput: "ls" } }, "needs_approval");
+  assert.equal(approvalToast.body.includes("Suggested next"), false);
 });

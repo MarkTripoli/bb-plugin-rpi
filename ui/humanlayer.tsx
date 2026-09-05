@@ -29,7 +29,7 @@ import type {
   WorkspaceViewRecord,
   CommentThreadRecord,
 } from "../contract";
-import { AUTO_ADVANCE, BOARD_COLUMNS, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS } from "../transitions";
+import { AUTO_ADVANCE, BOARD_COLUMNS, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS, computeSuggestedNext, normalizePhaseLabel, type PhaseLabel, type SuggestedNext, type SuggestedNextExtraction } from "../transitions";
 import { markdownBlocks } from "../blocks";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -467,6 +467,31 @@ function nextStep(session: Pick<SessionView, "nextStepJson">) {
   } catch {
     return null;
   }
+}
+
+function parsedExtraction(session: Pick<SessionView, "nextStepJson">): SuggestedNextExtraction {
+  if (!session.nextStepJson) return null;
+  try {
+    const parsed = JSON.parse(session.nextStepJson) as NextStepSuggestionsRecord;
+    return parsed.extraction.type === "next_step_found"
+      ? { type: "next_step_found", nextStepType: parsed.extraction.nextStepType }
+      : { type: "no_next_step" };
+  } catch {
+    return null;
+  }
+}
+
+// Suggested-next precondition (plan §2.9): the session must actually be at rest — ready for
+// input, nothing blocking it, and its completed turn already fully processed (summarized) —
+// before computeSuggestedNext's extraction-vs-workflow comparison means anything. A
+// mid-processing or blocked session has no meaningful "suggested next" yet.
+function suggestedNextFor(session: Pick<SessionView, "hlStatus" | "blockedReason" | "completedTurnKey" | "lastSummarizedTurnKey" | "label" | "workflowType" | "nextStepJson">): SuggestedNext | null {
+  if (session.hlStatus !== "ready_for_input") return null;
+  if (session.blockedReason) return null;
+  if (!session.completedTurnKey || session.completedTurnKey !== session.lastSummarizedTurnKey) return null;
+  const label = normalizePhaseLabel(session.label) as PhaseLabel | null;
+  const result = computeSuggestedNext(label, session.workflowType, parsedExtraction(session));
+  return result.visible ? result : null;
 }
 
 function TaskTable({ tasks }: { tasks: TaskRow[] }) {
@@ -2508,10 +2533,20 @@ export function HumanLayerThreadHeaderAction({ threadId }: { threadId: string; p
   const [session, setSession] = useState<SessionView | null>(null);
   const [uiState, setUiState] = useState<TaskUiState>({});
 
+  const [hasPendingLaunchAttempt, setHasPendingLaunchAttempt] = useState(false);
+
   const refetch = () => {
     rpc.call("getSession", { threadId }).then(({ session: next }) => {
       setSession(next);
-      if (next) rpc.call("getTaskUiState", { taskId: next.taskId }).then(setUiState);
+      if (next) {
+        rpc.call("getTaskUiState", { taskId: next.taskId }).then(setUiState);
+        // Duplicate-launch guard for the Suggested-next button: disable it while a launch_attempt
+        // for this task is still pending/uncertain/retrying, same statuses launchPhase's own
+        // activeLaunchAttempt check treats as "already launching".
+        rpc.call("listLaunchAttempts", { taskId: next.taskId }).then(({ attempts }) =>
+          setHasPendingLaunchAttempt(attempts.some((attempt) => attempt.status === "pending" || attempt.status === "uncertain" || attempt.status === "retrying")),
+        );
+      }
     });
   };
 
@@ -2548,6 +2583,7 @@ export function HumanLayerThreadHeaderAction({ threadId }: { threadId: string; p
 
   if (!session) return null;
   const extracted = nextStep(session);
+  const suggested = suggestedNextFor(session);
   const gauge = contextGaugeText(session.contextUsage);
   const contextWarningDismissed = Boolean(uiState.contextWarningDismissed?.[threadId]);
 
@@ -2591,6 +2627,27 @@ export function HumanLayerThreadHeaderAction({ threadId }: { threadId: string; p
       >
         {extracted?.nextStepSummary ?? "Proceed"}
       </Button>
+      {suggested ? (
+        <span className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            className="h-7 px-2 text-xs"
+            disabled={hasPendingLaunchAttempt}
+            onClick={async () => {
+              const result = await rpc.call("launchSkill", { taskId: session.taskId, skillId: suggested.skillId! });
+              navigate.toThread(result.threadId);
+            }}
+          >
+            Suggested next: {suggested.buttonText}
+          </Button>
+          {suggested.mismatch ? (
+            <span className="text-xs text-muted-foreground">
+              Agent suggested {suggested.extractedSkillId}; workflow expects {suggested.skillId}
+            </span>
+          ) : null}
+        </span>
+      ) : null}
       <Button
         type="button"
         variant="outline"

@@ -178,3 +178,41 @@ export function labelToStepLabel(currentLabel: string | null | undefined, isDraf
   if (isDraft || !currentLabel) return "Draft";
   return normalizePhaseLabel(currentLabel) ?? currentLabel;
 }
+
+export type SuggestedNextExtraction =
+  | { type: "next_step_found"; nextStepType: string }
+  | { type: "no_next_step" }
+  | null;
+
+export type SuggestedNext = {
+  visible: boolean;
+  // Workflow's own canonical next skill for this label (autoAdvanceTransition(...).next), the one
+  // the button launches. Null when the label has no defined transition (e.g. a terminal phase).
+  skillId: SkillId | null;
+  buttonText: string | null;
+  // True when the agent's own extraction found a next step, but it differs from `skillId` — shows
+  // "Agent suggested X; workflow expects Y" instead of the single-hint copy.
+  mismatch: boolean;
+  extractedSkillId: string | null;
+};
+
+// Suggested-next affordance (plan §2.9 / phase 8 review): visible whenever the agent's own
+// extraction did not find a next step, or found one that disagrees with what this workflow type
+// defines as the canonical next skill for this label — uniformly, whether or not the label is a
+// human gate (a human-gated label never auto-advances, but still gets the same one-click launch
+// when its own extraction is missing or wrong). Comparison against `transition.next` is a raw
+// string equality on the same two fields advanceSession's auto-advance gate already compares, so
+// this never disagrees with what auto-advance itself would have matched.
+export function computeSuggestedNext(label: PhaseLabel | null, workflowType: string, extraction: SuggestedNextExtraction): SuggestedNext {
+  const empty: SuggestedNext = { visible: false, skillId: null, buttonText: null, mismatch: false, extractedSkillId: null };
+  if (!label) return empty;
+  const transition = autoAdvanceTransition(label, workflowType);
+  if (!transition) return empty;
+  const info = SKILL_BY_ID[transition.next];
+  const buttonText = info?.buttonText ?? transition.next;
+  if (!extraction || extraction.type === "no_next_step") {
+    return { visible: true, skillId: transition.next, buttonText, mismatch: false, extractedSkillId: null };
+  }
+  const mismatch = extraction.nextStepType !== transition.next;
+  return { visible: mismatch, skillId: transition.next, buttonText, mismatch, extractedSkillId: extraction.nextStepType };
+}

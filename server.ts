@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { prefsSchema, prefsUpdateSchema, proceedInputSchema, rpcContract, taskUiStateSchema, taskUpdateInputSchema } from "./contract";
+import { prefsSchema, prefsUpdateSchema, proceedInputSchema, rpcContract, taskUiStateSchema, taskUpdateInputSchema, type WorkflowType } from "./contract";
 import { nowMs, openPluginDatabase, parseJson, readRow, writeRow } from "./db";
 import {
   artifactPermalink,
@@ -53,6 +53,7 @@ import {
   readSession,
   registerSessionRuntime,
   taskInstructions,
+  type SessionMirrorRow,
   type ThreadLike,
 } from "./sessions";
 import {
@@ -95,7 +96,7 @@ import {
   updateTask,
 } from "./tasks";
 import { ARTIFACT_TOOL_NAMES, registerArtifactTools } from "./tools";
-import { RPI_AGENT_SKILL_IDS, SKILLS } from "./transitions";
+import { RPI_AGENT_SKILL_IDS, SKILLS, computeSuggestedNext, normalizePhaseLabel, type PhaseLabel } from "./transitions";
 import { getWorkspaceView, rerunWorkspaceSetup, validateWorkspaceForWorktreeLaunch } from "./workspace";
 
 const PREFS_KEY = "prefs:structured-defaults";
@@ -395,6 +396,31 @@ export default async function plugin(bb: BbPluginApi) {
     return notificationPrefs;
   }
 
+  // Suggested-next hint (item 5 / plan §2.9), rendered to the same short string whether it ends
+  // up in the ready_for_input toast body (here) or the Suggested-next button. Only meaningful once
+  // the completed turn is actually processed (completedTurnKey caught up to the last summarized
+  // turn), which notifySnapshot's own ready_for_input branch already gates on.
+  function suggestedNextHintFor(row: SessionMirrorRow) {
+    if (!row.completedTurnKey || row.completedTurnKey !== row.lastSummarizedTurnKey) return null;
+    const label = normalizePhaseLabel(row.label) as PhaseLabel | null;
+    let extraction: Parameters<typeof computeSuggestedNext>[2] = null;
+    try {
+      const parsed = row.nextStepJson ? (JSON.parse(row.nextStepJson) as { extraction?: { type: string; nextStepType?: string } }) : null;
+      if (parsed?.extraction?.type === "next_step_found" && parsed.extraction.nextStepType) {
+        extraction = { type: "next_step_found", nextStepType: parsed.extraction.nextStepType };
+      } else if (parsed?.extraction?.type === "no_next_step") {
+        extraction = { type: "no_next_step" };
+      }
+    } catch {
+      extraction = null;
+    }
+    const result = computeSuggestedNext(label, row.workflowType, extraction);
+    if (!result.visible) return null;
+    return result.mismatch
+      ? `Agent suggested ${result.extractedSkillId}; workflow expects ${result.buttonText}`
+      : `Suggested next: ${result.buttonText}`;
+  }
+
   // Evaluated on every derived snapshot (not just when hlStatus changed), so:
   // - ready_for_input is delivered exactly once from the persisted, final completed_turn_key,
   //   whichever caller (idle completion or a racing reconcile) observes it last.
@@ -429,6 +455,7 @@ export default async function plugin(bb: BbPluginApi) {
         completedTurnKey: row.completedTurnKey,
         title: row.taskName,
         summary: notificationSummaryFromSession(row),
+        suggestedNextHint: suggestedNextHintFor(row),
       }, context);
     }
   }
@@ -551,11 +578,11 @@ export default async function plugin(bb: BbPluginApi) {
 	      return iterateInFreshSession(bb, db, sessionMirror, launchBindings, threadId);
 	    },
     listSessions: async ({ taskId }) => ({
-      sessions: listSessions(db, taskId ?? null).map((session) => cachedSessionView(threadInfoCache, session)),
+      sessions: listSessions(db, taskId ?? null).map((session) => cachedSessionView(db, threadInfoCache, session)),
     }),
     getSession: async ({ threadId }) => {
       const session = readSession(db, threadId);
-      return { session: session ? await sessionView(bb, session) : null };
+      return { session: session ? await sessionView(bb, db, session) : null };
     },
     forkSession: async ({ threadId, text }) => forkSession(bb, db, sessionMirror, threadId, text),
     interruptSession: async ({ threadId }) => interruptSession(bb, db, sessionMirror, threadId),
@@ -1254,7 +1281,11 @@ function sleep(ms: number, signal: AbortSignal) {
   });
 }
 
-async function sessionView(bb: BbPluginApi, session: ReturnType<typeof readSession> extends infer T ? NonNullable<T> : never) {
+function sessionWorkflowType(db: ReturnType<typeof openPluginDatabase>, taskId: string) {
+  return readRow<{ workflowType: string }>(db, "SELECT workflow_type AS workflowType FROM tasks WHERE id = ?", taskId)?.workflowType ?? "freeform";
+}
+
+async function sessionView(bb: BbPluginApi, db: ReturnType<typeof openPluginDatabase>, session: ReturnType<typeof readSession> extends infer T ? NonNullable<T> : never) {
   let title: string | null = null;
   let workingDirectory: string | null = null;
   let threadUpdatedAt: number | null = null;
@@ -1267,7 +1298,7 @@ async function sessionView(bb: BbPluginApi, session: ReturnType<typeof readSessi
   } catch {
     // Thread lookup failed (e.g. archived/host offline): fall back to nulls, same as before.
   }
-  return { ...session, title, workingDirectory, threadUpdatedAt, contextUsage: await readContextUsage(bb, session.threadId) };
+  return { ...session, title, workingDirectory, threadUpdatedAt, contextUsage: await readContextUsage(bb, session.threadId), workflowType: sessionWorkflowType(db, session.taskId) as WorkflowType };
 }
 
 type ThreadInfoCacheEntry = {
@@ -1299,7 +1330,7 @@ function cacheThreadSnapshot(bb: BbPluginApi, cache: ThreadInfoCache, threadId: 
   });
 }
 
-function cachedSessionView(cache: ThreadInfoCache, session: ReturnType<typeof readSession> extends infer T ? NonNullable<T> : never) {
+function cachedSessionView(db: ReturnType<typeof openPluginDatabase>, cache: ThreadInfoCache, session: ReturnType<typeof readSession> extends infer T ? NonNullable<T> : never) {
   const cached = cache.get(session.threadId);
   return {
     ...session,
@@ -1307,6 +1338,7 @@ function cachedSessionView(cache: ThreadInfoCache, session: ReturnType<typeof re
     workingDirectory: cached?.workingDirectory ?? null,
     threadUpdatedAt: cached?.threadUpdatedAt ?? null,
     contextUsage: cached?.contextUsage ?? null,
+    workflowType: sessionWorkflowType(db, session.taskId) as WorkflowType,
   };
 }
 

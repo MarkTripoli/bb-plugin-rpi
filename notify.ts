@@ -50,6 +50,10 @@ export type NotificationEvent =
       title?: string | null;
       summary?: string | null;
       approval?: ApprovalNotificationInfo | null;
+      // Suggested-next hint (transitions.ts computeSuggestedNext), already rendered to a short
+      // string by the caller. Only ever set for ready_for_input; carried into the toast body so
+      // the hl:notify toast surfaces the same "here's what to do next" affordance the UI shows.
+      suggestedNextHint?: string | null;
     }
   | {
       type: "comment";
@@ -174,7 +178,8 @@ export function buildToast(event: NotificationEvent, kind: NotificationKind): No
       threadId: event.threadId,
     };
   }
-  return { title: "ready_for_input", body, threadId: event.threadId };
+  const hint = event.type === "status_transition" ? event.suggestedNextHint : null;
+  return { title: "ready_for_input", body: hint ? `${body} - ${hint}` : body, threadId: event.threadId };
 }
 
 export function formatToolName(input: string) {

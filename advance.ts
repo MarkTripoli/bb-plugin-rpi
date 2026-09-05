@@ -76,14 +76,27 @@ export async function launchSkill(
 ) {
   const info = skillInfo(skillId);
   if (!info) throw new Error(`Unknown skill ${skillId}`);
-  const task = taskRecord(db, taskId);
-  const result = await launchPhase(bb, db, mirror, bindings, task, {
-    skillId,
-    commandLine: commandLine ?? info.command,
-    launchedBy: "user",
-    fromThreadId: null,
+  // Same per-task mutex as proceed/auto-advance/retry (Phase 5, launch.ts withTaskLock): keeps
+  // this call's read-check-then-insert of the task's launch_attempts state from interleaving with
+  // another in-flight call for the same task (retry/adopt/proceed already run under this lock;
+  // the plain "launch a skill" entry point did not). launchPhase's own activeLaunchAttempt check
+  // still does the actual rejection — "disable while a launch_attempt for that task is pending"
+  // (item 5's Suggested-next button) — whenever a prior attempt for this task has not yet
+  // resolved to spawned/failed.
+  return withTaskLock(taskId, async () => {
+    const task = taskRecord(db, taskId);
+    const result = await launchPhase(bb, db, mirror, bindings, task, {
+      skillId,
+      commandLine: commandLine ?? info.command,
+      launchedBy: "user",
+      fromThreadId: null,
+    });
+    writeRow(db, "UPDATE tasks SET is_draft = 0, updated_at = ? WHERE id = ?", Date.now(), taskId);
+    return finishLaunchSkill(bb, taskId, result);
   });
-  writeRow(db, "UPDATE tasks SET is_draft = 0, updated_at = ? WHERE id = ?", Date.now(), taskId);
+}
+
+async function finishLaunchSkill(bb: BbPluginApi, taskId: string, result: { threadId: string }) {
   bb.realtime.publish("tasks", { taskId });
   return result;
 }

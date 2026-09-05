@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ALIASES, AUTO_ADVANCE, HELPERS, SKILLS, WORKFLOW_GRAPHS, autoAdvanceTransition, deriveBoardColumn } from "../transitions";
+import { ALIASES, AUTO_ADVANCE, HELPERS, SKILLS, WORKFLOW_GRAPHS, autoAdvanceTransition, computeSuggestedNext, deriveBoardColumn } from "../transitions";
 
 test("skills table keeps labels and button text", () => {
   assert.equal(SKILLS.length, 22);
@@ -43,4 +43,43 @@ test("board column derives from the current label", () => {
   assert.equal(deriveBoardColumn("research", false), "research_design");
   assert.equal(deriveBoardColumn("plan", false), "planning");
   assert.equal(deriveBoardColumn("implementation", false), "implementation");
+});
+
+test("computeSuggestedNext visibility matrix: found+match, found+mismatch, none, and human gates", () => {
+  // found+match: extraction agrees with the workflow's canonical next skill -> not visible, the
+  // existing Proceed button already covers this case.
+  const match = computeSuggestedNext("research-questions", "rpi", { type: "next_step_found", nextStepType: "create-research" });
+  assert.equal(match.visible, false);
+  assert.equal(match.skillId, "create-research");
+
+  // found+mismatch: extraction found a different skill than the workflow expects -> visible with
+  // both hints (agent-suggested vs workflow-expected).
+  const mismatch = computeSuggestedNext("research-questions", "rpi", { type: "next_step_found", nextStepType: "create-design-discussion" });
+  assert.equal(mismatch.visible, true);
+  assert.equal(mismatch.mismatch, true);
+  assert.equal(mismatch.skillId, "create-research");
+  assert.equal(mismatch.extractedSkillId, "create-design-discussion");
+  assert.equal(mismatch.buttonText, "proceed to research");
+
+  // none: no_next_step -> visible with the single workflow-expected hint, no mismatch banner.
+  const none = computeSuggestedNext("research-questions", "rpi", { type: "no_next_step" });
+  assert.equal(none.visible, true);
+  assert.equal(none.mismatch, false);
+  assert.equal(none.extractedSkillId, null);
+  assert.equal(none.skillId, "create-research");
+
+  // gate: a human-gated label (flag: null, e.g. "design") follows the exact same rule, not a
+  // special always-on or always-off case. Matching extraction on a gate -> still not visible...
+  const gateMatch = computeSuggestedNext("design", "rpi", { type: "next_step_found", nextStepType: "create-plan" });
+  assert.equal(gateMatch.visible, false);
+  // ...but a missing/mismatched extraction on that same gate label -> visible, exactly like any
+  // other label ("it is manual anyway" does not mean it is exempt from the visibility rule).
+  const gateNone = computeSuggestedNext("design", "rpi", { type: "no_next_step" });
+  assert.equal(gateNone.visible, true);
+  assert.equal(gateNone.skillId, "create-plan");
+
+  // A label with no defined transition (terminal phases like "describe-pr", or no label at all)
+  // never shows the affordance.
+  assert.equal(computeSuggestedNext(null, "rpi", { type: "no_next_step" }).visible, false);
+  assert.equal(computeSuggestedNext("describe-pr", "rpi", { type: "no_next_step" }).visible, false);
 });

@@ -273,3 +273,50 @@ test("listSessions never makes a per-session SDK call; getSession still fetches 
 
   await harness.lifecycle.dispose();
 });
+
+test("launchSkill rejects while a launch_attempt for the task is already pending (item 5 duplicate-launch guard)", async () => {
+  let spawns = 0;
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "humanlayer",
+    sdk: {
+      subscribe: () => () => undefined,
+      projects: {
+        get: async ({ projectId }: { projectId: string }) => ({
+          id: projectId,
+          name: "Proj",
+          kind: "standard" as const,
+          gitRemoteUrl: null,
+          createdAt: 1,
+          updatedAt: 1,
+          sources: [{ id: "src_1", projectId, hostId: "host_seed", path: "/repo", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 }],
+        }),
+      },
+      threads: {
+        spawn: async () => {
+          spawns += 1;
+          return { id: `thr_launch_${spawns}`, environmentId: "env_1" };
+        },
+        get: async ({ threadId }: { threadId: string }) => ({ id: threadId, environmentId: "env_1", title: "thread", titleFallback: null, updatedAt: 1, environment: { path: "/repo" } }),
+        interactions: { list: async () => [] },
+      },
+    },
+  });
+  await plugin(bb);
+  const created = await harness.behavior.callRpc("createTask", {
+    request: { text: "prompt", projectId: "proj_1", workflowType: "freeform", worktreeTiming: "never", permissionMode: "default", autoAdvance: false },
+    name: "Task",
+    draft: true,
+  }) as { taskId: string };
+
+  // Simulate "a launch_attempt for this task is already pending": exactly the state
+  // listLaunchAttempts surfaces to the Suggested-next button so it can disable itself.
+  const db = bb.storage.database();
+  db.prepare("INSERT INTO launch_attempts (id, task_id, from_thread_id, skill_id, status, thread_id, created_at) VALUES (?, ?, NULL, 'create-research', 'pending', NULL, ?)").run("attempt_1", created.taskId, Date.now());
+
+  await assert.rejects(
+    harness.behavior.callRpc("launchSkill", { taskId: created.taskId, skillId: "create-research" }),
+    /Resolve launch attempt/,
+  );
+  assert.equal(spawns, 0, "launchSkill must not spawn while a launch_attempt for this task is pending");
+  await harness.lifecycle.dispose();
+});
