@@ -193,6 +193,8 @@ export const artifactVersionSchema = z
   .strict();
 export type ArtifactVersionRecord = z.infer<typeof artifactVersionSchema>;
 
+export const mirrorOutcomeSchema = z.enum(["moved", "skipped", "conflict"]);
+
 export const taskCreateRequestSchema = z
   .object({
     text: z.string().trim().max(10000),
@@ -388,11 +390,11 @@ export const rpcContract = defineRpcContract({
   },
   deleteArtifact: {
     input: artifactFileInputSchema,
-    output: z.object({ artifact: artifactRowSchema.nullable() }).strict(),
+    output: z.object({ artifact: artifactRowSchema.nullable(), mirror: mirrorOutcomeSchema }).strict(),
   },
   restoreArtifact: {
     input: artifactFileInputSchema,
-    output: z.object({ artifact: artifactRowSchema.nullable() }).strict(),
+    output: z.object({ artifact: artifactRowSchema.nullable(), mirror: mirrorOutcomeSchema }).strict(),
   },
   hydrateNow: {
     input: artifactTaskInputSchema,

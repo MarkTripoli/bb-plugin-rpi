@@ -704,6 +704,10 @@ function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileN
   const [url, setUrl] = useState<string | null>(null);
 
   useEffect(() => {
+    setVersion(null);
+  }, [taskId, fileName]);
+
+  useEffect(() => {
     let cancelled = false;
     Promise.all([
       rpc.call("listArtifactVersions", { taskId, fileName }),
@@ -721,6 +725,20 @@ function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileN
       cancelled = true;
     };
   }, [fileName, taskId, version, rpc]);
+  useRealtime("hl:artifacts", (payload) => {
+    if (!payload || typeof payload !== "object" || (payload as { taskId?: unknown }).taskId !== taskId) return;
+    void Promise.all([
+      rpc.call("listArtifactVersions", { taskId, fileName }),
+      rpc.call("getArtifact", { taskId, fileName, version }),
+    ]).then(([versionResult, artifactResult]) => {
+      setVersions(versionResult.versions);
+      setArtifact(artifactResult.artifact);
+      setContent(artifactResult.content);
+      setIsBinary(artifactResult.isBinary);
+      setUrl(artifactResult.url);
+      setVersion(artifactResult.version?.version ?? null);
+    });
+  });
 
   if (!artifact) return <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">Select an artifact.</div>;
 
@@ -752,8 +770,10 @@ function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileN
         </div>
       ) : null}
       <div className="min-h-[260px] flex-1 overflow-auto rounded-md border border-border bg-background p-3">
-        {mode === "preview" && artifact.contentType.startsWith("image/") && url ? (
+        {mode === "preview" && isRasterPreview(artifact.contentType) && url ? (
           <img src={url} alt={artifact.fileName} className="max-h-full max-w-full rounded-md" />
+        ) : mode === "preview" && isSandboxedPreview(artifact.contentType) && content !== null ? (
+          <iframe title={artifact.fileName} sandbox="" srcDoc={content} className="h-full min-h-[240px] w-full rounded-md border-0 bg-background" />
         ) : mode === "preview" && !isBinary && content !== null ? (
           <Markdown content={content} />
         ) : isBinary ? (
@@ -766,6 +786,14 @@ function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileN
   );
 }
 
+function isRasterPreview(contentType: string) {
+  return ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(contentType.toLowerCase());
+}
+
+function isSandboxedPreview(contentType: string) {
+  return ["text/html", "application/xhtml+xml", "image/svg+xml"].includes(contentType.toLowerCase());
+}
+
 function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFileName?: string | null }) {
   const rpc = useRpc<RpcContract>();
   const [artifacts, setArtifacts] = useState<ArtifactRecord[]>([]);
@@ -776,7 +804,11 @@ function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFi
   const refetch = () => {
     rpc.call("listArtifacts", { taskId, includeDeleted: true }).then(({ artifacts: next }) => {
       setArtifacts(next);
-      setSelected((current) => current ?? initialFileName ?? next[0]?.fileName ?? null);
+      setSelected((current) => {
+        if (current && next.some((artifact) => artifact.fileName === current)) return current;
+        if (initialFileName && next.some((artifact) => artifact.fileName === initialFileName)) return initialFileName;
+        return next.find((artifact) => !artifact.isDeleted)?.fileName ?? next[0]?.fileName ?? null;
+      });
     });
   };
 
@@ -784,11 +816,14 @@ function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFi
     refetch();
   }, [taskId, initialFileName]);
   useRealtime("artifacts", refetch);
+  useRealtime("hl:artifacts", refetch);
 
+  const liveArtifacts = useMemo(() => artifacts.filter((artifact) => !artifact.isDeleted), [artifacts]);
+  const deletedArtifacts = useMemo(() => artifacts.filter((artifact) => artifact.isDeleted), [artifacts]);
   const groups = useMemo(() => ARTIFACT_GROUP_ORDER.map((group) => ({
     group,
-    artifacts: artifacts.filter((artifact) => artifact.groupType === group),
-  })).filter((group) => group.artifacts.length > 0 || group.group === "other"), [artifacts]);
+    artifacts: liveArtifacts.filter((artifact) => artifact.groupType === group),
+  })).filter((group) => group.artifacts.length > 0 || group.group === "other"), [liveArtifacts]);
 
   const mutate = async (action: "deleteArtifact" | "restoreArtifact", fileName: string) => {
     await rpc.call(action, { taskId, fileName });
@@ -836,14 +871,30 @@ function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFi
           {artifacts.length === 0 ? (
             <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">No artifacts yet.</div>
           ) : grouped ? (
-            groups.map((group) => (
-              <section key={group.group} className="space-y-2">
-                <div className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">{group.group.replaceAll("-", " ")} ({group.artifacts.length})</div>
-                <div className="space-y-2">{rows(group.artifacts)}</div>
-              </section>
-            ))
+            <>
+              {groups.map((group) => (
+                <section key={group.group} className="space-y-2">
+                  <div className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">{group.group.replaceAll("-", " ")} ({group.artifacts.length})</div>
+                  <div className="space-y-2">{rows(group.artifacts)}</div>
+                </section>
+              ))}
+              {deletedArtifacts.length > 0 ? (
+                <section className="space-y-2">
+                  <div className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">DELETED ({deletedArtifacts.length})</div>
+                  <div className="space-y-2">{rows(deletedArtifacts)}</div>
+                </section>
+              ) : null}
+            </>
           ) : (
-            <div className="space-y-2">{rows(artifacts)}</div>
+            <div className="space-y-3">
+              <div className="space-y-2">{rows(liveArtifacts)}</div>
+              {deletedArtifacts.length > 0 ? (
+                <section className="space-y-2">
+                  <div className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">DELETED ({deletedArtifacts.length})</div>
+                  <div className="space-y-2">{rows(deletedArtifacts)}</div>
+                </section>
+              ) : null}
+            </div>
           )}
         </div>
         {selected ? <ArtifactViewer taskId={taskId} fileName={selected} onRestore={() => void mutate("restoreArtifact", selected)} /> : null}

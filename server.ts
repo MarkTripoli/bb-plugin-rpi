@@ -8,6 +8,7 @@ import {
   isTextArtifact,
   listArtifactVersions,
   listArtifacts,
+  mimeFor,
   restoreArtifact,
   upsertArtifact,
 } from "./artifacts";
@@ -19,7 +20,7 @@ import {
   promoteStalePendingLaunchAttempts,
   resolveLaunchAttempt,
 } from "./launch";
-import { hydrate, ingest, latestTaskThread } from "./mirror";
+import { hydrate, ingest, latestTaskThread, mirrorDeletedArtifact, mirrorRestoredArtifact, type MirrorFileOutcome } from "./mirror";
 import {
   bindPendingThread,
   createLaunchBindingMirror,
@@ -40,6 +41,24 @@ import {
 import { ARTIFACT_TOOL_NAMES, registerArtifactTools } from "./tools";
 
 const PREFS_KEY = "prefs:structured-defaults";
+const SECURITY_HEADERS = {
+  "x-content-type-options": "nosniff",
+  "cache-control": "no-store",
+  "content-security-policy": "sandbox; default-src 'none'",
+};
+
+function publishArtifacts(bb: BbPluginApi, taskId: string) {
+  bb.realtime.publish("artifacts", { taskId });
+  bb.realtime.publish("hl:artifacts", { taskId });
+}
+
+function isInlineSafeContentType(contentType: string) {
+  return ["image/png", "image/jpeg", "image/gif", "image/webp", "text/plain", "text/markdown"].includes(contentType.toLowerCase());
+}
+
+function attachmentFileName(fileName: string) {
+  return fileName.replaceAll("\\", "_").replaceAll("\"", "_").replaceAll("\r", "_").replaceAll("\n", "_");
+}
 
 export default async function plugin(bb: BbPluginApi) {
   const db = openPluginDatabase(bb);
@@ -185,13 +204,14 @@ export default async function plugin(bb: BbPluginApi) {
     getArtifact: async ({ taskId, fileName, version }) => {
       const result = getArtifactVersion(db, taskId, fileName, version ?? null);
       if (!result) return { artifact: null, version: null, content: null, isBinary: false, url: null };
-      const isBinary = !isTextArtifact(result.artifact.fileName, result.artifact.contentType);
+      const contentType = mimeFor(result.artifact.fileName);
+      const isBinary = !isTextArtifact(result.artifact.fileName, contentType);
       return {
-        artifact: result.artifact,
+        artifact: { ...result.artifact, contentType },
         version: versionView(result.version),
         content: isBinary ? null : result.version.content.toString("utf8"),
         isBinary,
-        url: `/api/v1/plugins/humanlayer/http/artifact?task=${encodeURIComponent(taskId)}&file=${encodeURIComponent(fileName)}&version=${result.version.version}`,
+        url: `/api/v1/plugins/humanlayer/http/artifact?task=${encodeURIComponent(taskId)}&file=${encodeURIComponent(fileName)}&version=${result.version.version}&inline=1`,
       };
     },
     listArtifactVersions: async ({ taskId, fileName }) => ({
@@ -201,24 +221,32 @@ export default async function plugin(bb: BbPluginApi) {
       const result = upsertArtifact(db, taskId, fileName, content, {
         createdBy: "ui",
         operation: "ui",
-        contentType: "text/markdown",
+        contentType: mimeFor(fileName),
       });
-      bb.realtime.publish("artifacts", { taskId });
+      publishArtifacts(bb, taskId);
       return { artifact: result.artifact, version: result.version, permalink: artifactPermalink(taskId, fileName) };
     },
     deleteArtifact: async ({ taskId, fileName }) => {
       const artifact = deleteArtifact(db, taskId, fileName);
       const threadId = latestTaskThread(db, taskId);
-      if (threadId) await hydrate(bb, db, taskId, threadId).catch((error) => bb.log.warn(`Failed to move deleted HumanLayer artifact: ${String(error)}`));
-      bb.realtime.publish("artifacts", { taskId });
-      return { artifact };
+      let mirror: MirrorFileOutcome = "skipped";
+      if (threadId) mirror = await mirrorDeletedArtifact(bb, db, taskId, threadId, fileName).catch((error) => {
+        bb.log.warn(`Failed to move deleted HumanLayer artifact: ${String(error)}`);
+        return "conflict" as const;
+      });
+      publishArtifacts(bb, taskId);
+      return { artifact, mirror };
     },
     restoreArtifact: async ({ taskId, fileName }) => {
-      const artifact = restoreArtifact(db, taskId, fileName);
       const threadId = latestTaskThread(db, taskId);
-      if (threadId) await hydrate(bb, db, taskId, threadId).catch((error) => bb.log.warn(`Failed to restore HumanLayer artifact: ${String(error)}`));
-      bb.realtime.publish("artifacts", { taskId });
-      return { artifact };
+      let mirror: MirrorFileOutcome = "skipped";
+      if (threadId) mirror = await mirrorRestoredArtifact(bb, db, taskId, threadId, fileName).catch((error) => {
+        bb.log.warn(`Failed to restore HumanLayer artifact: ${String(error)}`);
+        return "conflict" as const;
+      });
+      const artifact = restoreArtifact(db, taskId, fileName);
+      publishArtifacts(bb, taskId);
+      return { artifact, mirror };
     },
     hydrateNow: async ({ taskId }) => {
       const threadId = latestTaskThread(db, taskId);
@@ -363,9 +391,9 @@ export default async function plugin(bb: BbPluginApi) {
           if (!opts.task || !opts.file) return { exitCode: 2, stderr: "usage: bb humanlayer artifacts get --task <taskId> --file <fileName>\n" };
           const result = getArtifactVersion(db, opts.task, opts.file, opts.version ? Number.parseInt(opts.version, 10) : null);
           if (!result) return { exitCode: 1, stderr: "artifact not found\n" };
-          const isBinary = !isTextArtifact(result.artifact.fileName, result.artifact.contentType);
+          const isBinary = !isTextArtifact(result.artifact.fileName, mimeFor(result.artifact.fileName));
           if (json) {
-            return { exitCode: 0, stdout: `${JSON.stringify({ artifact: result.artifact, version: versionView(result.version), content: isBinary ? null : result.version.content.toString("utf8"), isBinary })}\n` };
+            return { exitCode: 0, stdout: `${JSON.stringify({ artifact: { ...result.artifact, contentType: mimeFor(result.artifact.fileName) }, version: versionView(result.version), content: isBinary ? null : result.version.content.toString("utf8"), isBinary })}\n` };
           }
           if (isBinary) return { exitCode: 1, stderr: "artifact is binary; use the HTTP route\n" };
           return { exitCode: 0, stdout: result.version.content.toString("utf8") };
@@ -390,10 +418,10 @@ export default async function plugin(bb: BbPluginApi) {
           const result = upsertArtifact(db, opts.task, opts.file, opts.content, {
             createdBy: "cli",
             operation: "cli",
-            contentType: "text/markdown",
+            contentType: mimeFor(opts.file),
           });
           const body = { artifact: result.artifact, version: result.version, permalink: artifactPermalink(opts.task, opts.file) };
-          bb.realtime.publish("artifacts", { taskId: opts.task });
+          publishArtifacts(bb, opts.task);
           return { exitCode: 0, stdout: json ? `${JSON.stringify(body)}\n` : `v${result.version}\t${body.permalink}\n` };
         }
         return { exitCode: 2, stderr: "usage: bb humanlayer {tasks|sessions|artifacts} ...\n" };
@@ -407,13 +435,17 @@ export default async function plugin(bb: BbPluginApi) {
     const taskId = context.req.query("task");
     const fileName = context.req.query("file");
     const versionInput = context.req.query("version");
-    if (!taskId || !fileName) return new Response("missing task or file", { status: 400 });
+    if (!taskId || !fileName) return new Response("missing task or file", { status: 400, headers: SECURITY_HEADERS });
     const result = getArtifactVersion(db, taskId, fileName, versionInput ? Number.parseInt(versionInput, 10) : null);
-    if (!result) return new Response("not found", { status: 404 });
+    if (!result) return new Response("not found", { status: 404, headers: SECURITY_HEADERS });
+    const contentType = mimeFor(result.artifact.fileName);
+    const inline = context.req.query("inline") === "1" && isInlineSafeContentType(contentType);
     return new Response(new Uint8Array(result.version.content), {
       headers: {
-        "content-type": result.artifact.contentType,
+        ...SECURITY_HEADERS,
+        "content-type": contentType,
         "content-length": String(result.version.sizeBytes),
+        ...(inline ? {} : { "content-disposition": `attachment; filename="${attachmentFileName(result.artifact.fileName)}"` }),
       },
     });
   }, { auth: "local" });

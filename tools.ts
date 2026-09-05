@@ -41,14 +41,15 @@ export function registerArtifactTools(bb: BbPluginApi, db: Database, mirror: Map
         await hydrate(bb, db, row.taskId, threadId);
         mirrorSession(db, mirror, threadId);
       }
-      const artifacts = listArtifacts(db, row.taskId).map((artifact) => ({
-        fileName: artifact.fileName,
+      const allArtifacts = listArtifacts(db, row.taskId);
+      const artifacts = allArtifacts.slice(0, 200).map((artifact) => ({
+        name: artifact.fileName,
         type: artifact.type,
-        groupType: artifact.groupType,
         version: artifact.currentVersion,
-        permalink: artifactPermalink(row.taskId, artifact.fileName),
-        path: artifactPanelPath(row.taskId, artifact.fileName),
       }));
+      if (allArtifacts.length > artifacts.length) {
+        artifacts.push({ name: "[truncated]", type: "other", version: 0 });
+      }
       const task = getArtifactVersion(db, row.taskId, "task.md");
       return JSON.stringify({
         task: {

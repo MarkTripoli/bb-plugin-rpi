@@ -4,7 +4,8 @@ import Database from "better-sqlite3";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { MIGRATIONS } from "../db";
 import { createDraftTask } from "../tasks";
-import { promoteStalePendingLaunchAttempts, resolveLaunchAttempt } from "../launch";
+import { launchPhase, promoteStalePendingLaunchAttempts, resolveLaunchAttempt } from "../launch";
+import { TASK_CONTEXT_FIRST_ACTION } from "../instructions";
 import { bindPendingLaunch, createLaunchBindingMirror, registerPendingLaunch, type SessionMirrorRow } from "../sessions";
 
 function makeDb() {
@@ -38,6 +39,58 @@ test("resolved launch attempts are no-ops", async () => {
   const mirror = new Map<string, SessionMirrorRow>();
   const result = await resolveLaunchAttempt({} as never, db, mirror, createLaunchBindingMirror(), "attempt_1", { type: "retry" });
   assert.deepEqual(result, { threadId: "thr_existing" });
+  db.close();
+});
+
+test("launchPhase prompts start with marker then task context first-action line", async () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId);
+  let prompt = "";
+  const bb = {
+    realtime: { publish: () => undefined },
+    sdk: {
+      threads: {
+        spawn: async (input: { prompt: string }) => {
+          prompt = input.prompt;
+          return makeThreadResponse({ id: "thr_new", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" });
+        },
+        get: async () => makeThreadResponse({ id: "thr_new", environmentId: "env_1", projectId: "proj_1", originPluginId: "humanlayer" }),
+      },
+    },
+    log: { warn: () => undefined },
+  };
+  await launchPhase(bb as never, db, new Map(), createLaunchBindingMirror(), {
+    id: (task as { id: string }).id,
+    projectId: "proj_1",
+    name: "Task",
+    slug: "task",
+    draftPrompt: "prompt",
+    workflowType: "freeform",
+    worktreeTiming: "never",
+    isDraft: true,
+    archived: false,
+    hostId: null,
+    baseEnvironmentId: null,
+    worktreeEnvironmentId: null,
+    defaultDirectory: null,
+    providerId: null,
+    model: null,
+    reasoningLevel: null,
+    serviceTier: null,
+    permissionMode: "default",
+    autoAdvance: false,
+    aa_questions_to_research: true,
+    aa_research_to_design: true,
+    aa_plan_to_worktree: true,
+    aa_worktree_to_implementation: true,
+    aa_implementation_to_pr: false,
+    createdAt: 1,
+    updatedAt: 1,
+  }, { skillId: null, prompt: "do work", launchedBy: "user", fromThreadId: null });
+  const lines = prompt.split("\n");
+  assert.match(lines[0]!, /^<!-- hl:launch:/);
+  assert.equal(lines[1], TASK_CONTEXT_FIRST_ACTION);
   db.close();
 });
 

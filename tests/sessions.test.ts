@@ -13,7 +13,9 @@ import {
   mirrorSession,
   recordIdleCompletion,
   registerSessionRuntime,
+  taskInstructions,
 } from "../sessions";
+import { TASK_CONTEXT_FIRST_ACTION } from "../instructions";
 
 const row = { hadTurn: false, interrupted: false };
 
@@ -109,6 +111,20 @@ test("deriveStatus covers Fable 5.1 rows in order", () => {
   assert.equal(deriveStatus(thread({ status: "error", runtime: { displayStatus: "error" } }), [], row).hlStatus, "failed");
   assert.equal(deriveStatus(thread({ status: "idle", runtime: { displayStatus: "idle" } }), [], { ...row, interrupted: true }).hlStatus, "interrupted");
   assert.equal(deriveStatus(thread({ status: "idle", runtime: { displayStatus: "idle" } }), [], row).hlStatus, "ready_for_input");
+});
+
+test("contributed task instructions start with task context first-action line", () => {
+  const text = taskInstructions({
+    threadId: "thr_1",
+    taskId: "task_1",
+    taskName: "Task",
+    taskSlug: "task",
+    label: null,
+    skillId: null,
+    workflowType: "freeform",
+    hydratedAt: null,
+  } as never);
+  assert.equal(text.split("\n")[0], TASK_CONTEXT_FIRST_ACTION);
 });
 
 test("lost is only derived from runtime displayStatus evidence", () => {

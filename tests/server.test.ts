@@ -36,3 +36,29 @@ test("sessions list CLI paginates and truncates summaries", async () => {
   assert.equal(summary.summaryHistory[0]!.length, 200);
   await harness.lifecycle.dispose();
 });
+
+test("artifact route forces attachment for html and sets security headers", async () => {
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "humanlayer",
+    sdk: { subscribe: () => () => undefined },
+  });
+  await plugin(bb);
+  const created = await harness.behavior.callRpc("createTask", {
+    request: { text: "prompt", projectId: "proj_1", workflowType: "freeform", worktreeTiming: "never", permissionMode: "default", autoAdvance: false },
+    name: "Task",
+    draft: true,
+  }) as { taskId: string };
+  await harness.behavior.callRpc("saveArtifact", {
+    taskId: created.taskId,
+    fileName: "preview.html",
+    content: "<h1>unsafe</h1>",
+  });
+  const response = await harness.behavior.fetchHttp("GET", `/artifact?task=${created.taskId}&file=preview.html&inline=1`);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "text/html");
+  assert.equal(response.headers.get("content-disposition"), "attachment; filename=\"preview.html\"");
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(response.headers.get("content-security-policy"), "sandbox; default-src 'none'");
+  await harness.lifecycle.dispose();
+});

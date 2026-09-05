@@ -3,6 +3,7 @@ import type * as BetterSqlite3 from "better-sqlite3";
 import { nowMs, parseJson, readRow, readRows, stringifyJson, writeRow } from "./db";
 import { hydrate, ingest } from "./mirror";
 import type { SessionRow } from "./contract";
+import { TASK_CONTEXT_FIRST_ACTION } from "./instructions";
 
 type Database = BetterSqlite3.Database;
 type ThreadLike = {
@@ -742,6 +743,7 @@ export function registerSessionRuntime(bb: BbPluginApi, db: Database, mirror: Ma
 
 export function taskInstructions(row: SessionMirrorRow) {
   return [
+    TASK_CONTEXT_FIRST_ACTION,
     `HumanLayer task: ${row.taskName} (slug ${row.taskSlug}). Task artifact directory: .humanlayer/tasks/${row.taskSlug} (relative to the workspace root; a real directory, not a symlink).`,
     `Current phase: ${row.label ?? "none"}. Workflow: ${row.workflowType}.`,
     "After writing or editing any file in the task artifact directory, call hl_artifact_save with its file name and include the returned permalink line in your final answer.",

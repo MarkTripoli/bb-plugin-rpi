@@ -15,6 +15,7 @@ import {
   type LaunchBindingMirror,
   type SessionMirrorRow,
 } from "./sessions";
+import { TASK_CONTEXT_FIRST_ACTION } from "./instructions";
 
 type Database = BetterSqlite3.Database;
 
@@ -170,7 +171,7 @@ export async function launchPhase(
     const thread = await bb.sdk.threads.spawn({
       projectId: task.projectId,
       environment,
-      prompt: `${launchMarker(attemptId)}\n${input.prompt}`,
+      prompt: `${launchMarker(attemptId)}\n${TASK_CONTEXT_FIRST_ACTION}\n${input.prompt}`,
       title: task.name,
       visibility: "visible",
       executionInputSources: {
