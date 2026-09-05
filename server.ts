@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { prefsSchema, prefsUpdateSchema, proceedInputSchema, rpcContract, taskUiStateSchema, taskUpdateInputSchema } from "./contract";
-import { openPluginDatabase, parseJson, readRow, writeRow } from "./db";
+import { nowMs, openPluginDatabase, parseJson, readRow, writeRow } from "./db";
 import {
   artifactPermalink,
   deleteArtifact,
@@ -165,15 +165,29 @@ function stripCommentPage(page: ReturnType<typeof listComments>) {
 function readTaskUiState(db: ReturnType<typeof openPluginDatabase>, taskId: string) {
   const row = readRow<{ json: string }>(db, "SELECT json FROM task_ui_state WHERE task_id = ?", taskId);
   const parsed = taskUiStateSchema.safeParse(parseJson<unknown>(row?.json, {}));
-  return parsed.success ? parsed.data : {};
+  const state = parsed.success ? parsed.data : {};
+  // Scratch text lives in its own row (autosaved on every debounce tick) so a keystroke never
+  // rewrites the dismissedTips/contextWarningDismissed blob.
+  const scratchRow = readRow<{ text: string }>(db, "SELECT text FROM scratch_pads WHERE task_id = ?", taskId);
+  return { ...state, scratch: scratchRow?.text ?? "" };
 }
 
-function writeTaskUiState(db: ReturnType<typeof openPluginDatabase>, taskId: string, state: { dismissedTips?: Record<string, boolean> }) {
+function writeTaskUiState(db: ReturnType<typeof openPluginDatabase>, taskId: string, state: { dismissedTips?: Record<string, boolean>; contextWarningDismissed?: Record<string, boolean> }) {
   writeRow(
     db,
     "INSERT INTO task_ui_state (task_id, json) VALUES (?, ?) ON CONFLICT(task_id) DO UPDATE SET json = excluded.json",
     taskId,
-    JSON.stringify({ dismissedTips: state.dismissedTips ?? {} }),
+    JSON.stringify({ dismissedTips: state.dismissedTips ?? {}, contextWarningDismissed: state.contextWarningDismissed ?? {} }),
+  );
+}
+
+function writeScratchPad(db: ReturnType<typeof openPluginDatabase>, taskId: string, text: string) {
+  writeRow(
+    db,
+    "INSERT INTO scratch_pads (task_id, text, updated_at) VALUES (?, ?, ?) ON CONFLICT(task_id) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at",
+    taskId,
+    text,
+    nowMs(),
   );
 }
 
@@ -452,6 +466,18 @@ export default async function plugin(bb: BbPluginApi) {
       bb.realtime.publish("hl:ui-state", { taskId });
       return next;
     },
+    saveScratchPad: async ({ taskId, text }) => {
+      writeScratchPad(db, taskId, text);
+      bb.realtime.publish("hl:ui-state", { taskId });
+      return readTaskUiState(db, taskId);
+    },
+    dismissContextWarning: async ({ taskId, threadId }) => {
+      const state = readTaskUiState(db, taskId);
+      const next = { ...state, contextWarningDismissed: { ...(state.contextWarningDismissed ?? {}), [threadId]: true } };
+      writeTaskUiState(db, taskId, next);
+      bb.realtime.publish("hl:ui-state", { taskId });
+      return next;
+    },
     setViewingSession: async ({ threadId, viewing }) => {
       if (viewing) viewingSessions.add(threadId);
       else viewingSessions.delete(threadId);
@@ -673,6 +699,10 @@ export default async function plugin(bb: BbPluginApi) {
       const currentPrefs = await bb.storage.kv.get<unknown>(PREFS_KEY);
       const current = prefsSchema.parse(currentPrefs ?? defaultTaskPrefs({}));
       const patch = prefsUpdateSchema.parse(input);
+      const workflowDefaults = { ...current.workflowDefaults };
+      for (const [workflowType, override] of Object.entries(patch.workflowDefaults ?? {})) {
+        workflowDefaults[workflowType as keyof typeof workflowDefaults] = { ...workflowDefaults[workflowType as keyof typeof workflowDefaults], ...override };
+      }
       const next = {
         defaults: {
           providerId: patch.defaults?.providerId ?? current.defaults.providerId ?? null,
@@ -681,6 +711,7 @@ export default async function plugin(bb: BbPluginApi) {
           reasoningLevel: patch.defaults?.reasoningLevel ?? current.defaults.reasoningLevel ?? null,
           serviceTier: patch.defaults?.serviceTier ?? current.defaults.serviceTier ?? null,
         },
+        workflowDefaults,
         notifications: normalizeNotificationPrefs({
           ...current.notifications,
           ...patch.notifications,
@@ -1208,21 +1239,36 @@ function sleep(ms: number, signal: AbortSignal) {
 }
 
 async function sessionView(bb: BbPluginApi, session: ReturnType<typeof readSession> extends infer T ? NonNullable<T> : never) {
+  let title: string | null = null;
+  let workingDirectory: string | null = null;
+  let threadUpdatedAt: number | null = null;
   try {
     const thread = await bb.sdk.threads.get({ threadId: session.threadId, include: "environment" });
     const environment = "environment" in thread ? thread.environment : null;
+    title = thread.title ?? thread.titleFallback ?? null;
+    workingDirectory = environment?.path ?? null;
+    threadUpdatedAt = thread.updatedAt ?? null;
+  } catch {
+    // Thread lookup failed (e.g. archived/host offline): fall back to nulls, same as before.
+  }
+  return { ...session, title, workingDirectory, threadUpdatedAt, contextUsage: await readContextUsage(bb, session.threadId) };
+}
+
+// Context gauge (plan §2.8): bb reports usage via `threads.timeline({summaryOnly:"true"})`, which
+// skips fetching full timeline rows. Failure (no usage reported yet, thread gone) degrades to null
+// rather than breaking the session row.
+async function readContextUsage(bb: BbPluginApi, threadId: string) {
+  try {
+    const timeline = await bb.sdk.threads.timeline({ threadId, summaryOnly: "true" });
+    const usage = timeline.contextWindowUsage;
+    if (!usage || usage.modelContextWindow <= 0) return null;
     return {
-      ...session,
-      title: thread.title ?? thread.titleFallback ?? null,
-      workingDirectory: environment?.path ?? null,
-      threadUpdatedAt: thread.updatedAt ?? null,
+      usedTokens: usage.usedTokens,
+      modelContextWindow: usage.modelContextWindow,
+      percent: usage.usedTokens / usage.modelContextWindow,
+      estimated: usage.estimated,
     };
   } catch {
-    return {
-      ...session,
-      title: null,
-      workingDirectory: null,
-      threadUpdatedAt: null,
-    };
+    return null;
   }
 }

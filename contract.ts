@@ -151,11 +151,24 @@ export const nextStepSuggestionsSchema = z.object({
 }).strict();
 export type NextStepSuggestionsRecord = z.infer<typeof nextStepSuggestionsSchema>;
 
+export const contextUsageSchema = z
+  .object({
+    usedTokens: z.number().int().nonnegative(),
+    modelContextWindow: z.number().int().positive(),
+    percent: z.number().min(0),
+    estimated: z.boolean(),
+  })
+  .strict();
+export type ContextUsageRecord = z.infer<typeof contextUsageSchema>;
+
 export const sessionViewSchema = sessionRowSchema
   .extend({
     title: z.string().nullable(),
     workingDirectory: z.string().nullable(),
     threadUpdatedAt: z.number().int().nullable(),
+    // bb exposes context-window usage from `threads.timeline({summaryOnly:"true"})`; null when the
+    // provider bridge has not reported usage yet (e.g. before the first turn) or the lookup failed.
+    contextUsage: contextUsageSchema.nullable(),
   })
   .strict();
 export type SessionView = z.infer<typeof sessionViewSchema>;
@@ -374,6 +387,19 @@ const prefsDefaultsSchema = z
   })
   .strict();
 
+// Per-workflow-type default overrides (Settings → Defaults). Unset fields fall back to
+// `prefsDefaultsSchema` above, which stays the workflow-agnostic fallback used at task creation.
+const workflowOverrideSchema = z
+  .object({
+    providerId: z.string().nullable().optional(),
+    model: z.string().nullable().optional(),
+    reasoningLevel: z.string().nullable().optional(),
+    permissionMode: permissionModeSchema.nullable().optional(),
+  })
+  .strict();
+export type WorkflowOverride = z.infer<typeof workflowOverrideSchema>;
+const workflowDefaultsSchema = z.partialRecord(workflowTypeSchema, workflowOverrideSchema);
+
 export const notificationPrefsSchema = z.object({
   enabled: z.boolean().default(true),
   sound: z.object({
@@ -394,6 +420,7 @@ export type NotificationPrefsRecord = z.infer<typeof notificationPrefsSchema>;
 export const prefsSchema = z
   .object({
     defaults: prefsDefaultsSchema,
+    workflowDefaults: workflowDefaultsSchema.default({}),
     notifications: notificationPrefsSchema.default({
       enabled: true,
       sound: { ready_for_input: true, needs_approval: true, comment: true },
@@ -408,6 +435,7 @@ export type Prefs = z.infer<typeof prefsSchema>;
 export const prefsUpdateSchema = z
   .object({
     defaults: prefsDefaultsSchema.partial().optional(),
+    workflowDefaults: workflowDefaultsSchema.optional(),
     notifications: notificationPrefsSchema.partial().optional(),
   })
   .strict();
@@ -491,10 +519,18 @@ export const sendCommentsInputSchema = commentIdsInputSchema.extend({
 }).strict();
 export const taskUiStateSchema = z.object({
   dismissedTips: z.record(z.string(), z.boolean()).optional(),
+  // threadId -> dismissed, so dismissing the context-warning banner on one session thread does not
+  // hide it on a sibling session thread of the same task.
+  contextWarningDismissed: z.record(z.string(), z.boolean()).optional(),
+  // Backed by the dedicated `scratch_pads` table (see db.ts), merged in here for the client so one
+  // RPC returns every per-task UI state field.
+  scratch: z.string().optional(),
 }).strict();
 export type TaskUiState = z.infer<typeof taskUiStateSchema>;
 export const dismissTaskTipInputSchema = z.object({ taskId: z.string().min(1), label: z.string().min(1) }).strict();
 export const viewingSessionInputSchema = z.object({ threadId: z.string().min(1), viewing: z.boolean() }).strict();
+export const saveScratchPadInputSchema = z.object({ taskId: z.string().min(1), text: z.string().max(20000) }).strict();
+export const dismissContextWarningInputSchema = z.object({ taskId: z.string().min(1), threadId: z.string().min(1) }).strict();
 
 export const rpcContract = defineRpcContract({
   listTasks: {
@@ -511,6 +547,14 @@ export const rpcContract = defineRpcContract({
   },
   dismissTaskTip: {
     input: dismissTaskTipInputSchema,
+    output: taskUiStateSchema,
+  },
+  saveScratchPad: {
+    input: saveScratchPadInputSchema,
+    output: taskUiStateSchema,
+  },
+  dismissContextWarning: {
+    input: dismissContextWarningInputSchema,
     output: taskUiStateSchema,
   },
   setViewingSession: {

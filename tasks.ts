@@ -555,6 +555,7 @@ export function defaultTaskPrefs(input: {
       reasoningLevel: input.reasoningLevel ?? null,
       serviceTier: input.serviceTier ?? null,
     },
+    workflowDefaults: {},
     notifications: {
       enabled: true,
       sound: { ready_for_input: true, needs_approval: true, comment: true },
