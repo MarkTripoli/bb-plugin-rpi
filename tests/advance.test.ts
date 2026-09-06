@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import { latestLaunchAttemptLabel, onCompletedTurn } from "../advance";
+import { iterateSkillForLabel, latestLaunchAttemptLabel, onCompletedTurn } from "../advance";
 import { MIGRATIONS, stringifyJson } from "../db";
 import { createDraftTask } from "../tasks";
 import { proceed } from "../advance";
@@ -265,4 +265,11 @@ test("reload with pending attempt and stamped advance keeps launch blocked witho
   assert.equal(attempt.status, "uncertain");
   assert.equal(spawns.length, 0);
   db.close();
+});
+
+test("iterateSkillForLabel resolves a label's iterate skill or null when it has none", () => {
+  assert.equal(iterateSkillForLabel("research"), "iterate-research");
+  assert.equal(iterateSkillForLabel("plan"), "iterate-plan");
+  assert.equal(iterateSkillForLabel(null), null);
+  assert.equal(iterateSkillForLabel("describe-pr"), null);
 });

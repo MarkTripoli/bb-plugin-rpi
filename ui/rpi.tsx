@@ -2781,8 +2781,12 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
     // showIterateConfirmation (item 8: wired, was stored-but-unread): true is bb's own default, so
     // omitted/unloaded settings keep today's confirm-first behavior.
     if (settings?.showIterateConfirmation !== false && !window.confirm("Start a fresh session from here? The current session keeps running.")) return;
-    const result = await rpc.call("iterateInFreshSession", { threadId });
-    navigate.toThread(result.threadId);
+    try {
+      const result = await rpc.call("iterateInFreshSession", { threadId });
+      navigate.toThread(result.threadId);
+    } catch (error) {
+      reportLaunchError(error);
+    }
   };
   const { session } = useRpiSessionState(threadId);
 
@@ -2886,8 +2890,12 @@ export function RpiComposerBanner() {
 
   const iterate = async () => {
     if (settings?.showIterateConfirmation !== false && !window.confirm("Start a fresh session from here? The current session keeps running.")) return;
-    const result = await rpc.call("iterateInFreshSession", { threadId });
-    navigate.toThread(result.threadId);
+    try {
+      const result = await rpc.call("iterateInFreshSession", { threadId });
+      navigate.toThread(result.threadId);
+    } catch (error) {
+      reportLaunchError(error);
+    }
   };
 
   return (

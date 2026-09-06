@@ -131,6 +131,38 @@ itself.
   opposite sign from the list divider (dragging right grows the list). Noted
   inline at each call site.
 
+## Live check
+
+Manually verified against the running plugin at a 1200px window width:
+
+- The 71% context-usage banner rendered correctly in the composer banner
+  (context high, "Iterate in fresh session" link, dismiss X), not the
+  header.
+- The header cluster stayed a single 28px row with no overlap against bb's
+  own VS Code / side-panel buttons at the right edge of the header.
+
+**Pre-existing defect found and fixed in this pass**: clicking "Iterate in
+ fresh session" on a freeform session threw "No iterate skill is available
+ for this session." (`iterateInFreshSession`, `advance.ts`, for any label
+ with no `ITERATE_SKILL_BY_LABEL` entry: freeform, oneshot, describe-pr,
+ review, worktree-setup). Both `iterate` closures in `ui/rpi.tsx` (header
+ popover and composer banner) had no `try`/`catch` around the RPC call, so
+ the rejection was silent and the button appeared to do nothing.
+
+  Fixed by:
+  - `advance.ts`: `iterateSkillForLabel(label)` (pure, exported, tested in
+    `tests/advance.test.ts`) resolves a label to its iterate skill or
+    `null`. `iterateInFreshSession` no longer throws on `null`; it launches
+    a plain continuation in the same task instead
+    (`UNLABELED_ITERATE_PROMPT`, `skillId: null`), the same `launchPhase`
+    path `launchDraft` already uses for a freeform/oneshot task's first
+    launch, so `TASK_CONTEXT_FIRST_ACTION` and the task artifact directory
+    still prepend to the prompt.
+  - `ui/rpi.tsx`: both `iterate` closures wrap the RPC call in
+    `try`/`catch` calling `reportLaunchError` (the same helper Proceed and
+    Suggested next already use), so any future launch failure surfaces a
+    toast instead of silently doing nothing.
+
 ## Open items for the reviewer checklist
 
 - No visual/manual pass was done in the bb desktop app or an environment

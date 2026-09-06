@@ -108,15 +108,38 @@ export async function iterateInFreshSession(
   );
   if (!session) throw new Error(`No session found for thread ${threadId}`);
   const label = normalizePhaseLabel(session.label) as PhaseLabel | null;
-  const skillId = label ? ITERATE_SKILL_BY_LABEL[label] ?? null : null;
-  if (!skillId || !skillInfo(skillId)) throw new Error("No iterate skill is available for this session.");
+  const skillId = iterateSkillForLabel(label);
   const task = taskRecord(db, session.taskId);
+  // A label with no ITERATE_SKILL_BY_LABEL entry (freeform, oneshot, describe-pr, review,
+  // worktree-setup) has no dedicated phase skill to re-run, but a fresh session still helps: it
+  // resets context usage and gives the agent a clean turn to re-read the task artifacts from.
+  // launchPhase already supports skillId: null with a prompt (see launchDraft) and always prepends
+  // TASK_CONTEXT_FIRST_ACTION, so the artifact directory instruction still carries over.
+  if (!skillId) {
+    return launchPhase(bb, db, mirror, bindings, task, {
+      skillId: null,
+      prompt: UNLABELED_ITERATE_PROMPT,
+      launchedBy: "iterate",
+      fromThreadId: threadId,
+    });
+  }
   return launchPhase(bb, db, mirror, bindings, task, {
     skillId,
     commandLine: skillInfo(skillId)!.command,
     launchedBy: "iterate",
     fromThreadId: threadId,
   });
+}
+
+export const UNLABELED_ITERATE_PROMPT =
+  "Continue this task in a fresh session. Read the task artifacts first, then pick up where the previous session left off.";
+
+// Resolves a session's label to its iterate skill, or null when the label has no dedicated
+// iterate skill (freeform, oneshot, describe-pr, review, worktree-setup) or is unrecognized. Pure;
+// covered by tests/advance.test.ts.
+export function iterateSkillForLabel(label: PhaseLabel | null) {
+  const skillId = label ? ITERATE_SKILL_BY_LABEL[label] ?? null : null;
+  return skillId && skillInfo(skillId) ? skillId : null;
 }
 
 function advanceSession(
