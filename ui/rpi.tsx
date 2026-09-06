@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, RefObject } from "react";
 import {
   Markdown,
@@ -6,6 +6,7 @@ import {
   experimental_useSidebarThreads,
   useBbContext,
   useBbNavigate,
+  useComposerView,
   useRealtime,
   useRpc,
   useSettings,
@@ -29,13 +30,15 @@ import type {
   WorkspaceViewRecord,
   CommentThreadRecord,
 } from "../contract";
-import { AUTO_ADVANCE, BOARD_COLUMNS, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS, suggestedNextForSession, type SuggestedNext } from "../transitions";
+import { AUTO_ADVANCE, BOARD_COLUMNS, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS, shouldShowComposerBanner, suggestedNextForSession, type SuggestedNext } from "../transitions";
+import { ARTIFACT_COMMENTS_WIDTH_RANGE, ARTIFACT_LIST_WIDTH_RANGE, ARTIFACT_PANEL_STACK_BREAKPOINT, artifactLayoutMode, clampWidth } from "../artifact-layout";
 import { markdownBlocks } from "../blocks";
 import { ScratchPadSync } from "../scratch-pad-sync";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 
 // Launch RPCs (launchDraft, launchSkill, proceed, resolveLaunchAttempt retry) can reject with a
@@ -482,6 +485,52 @@ function nextStep(session: Pick<SessionView, "nextStepJson">) {
 // tests/transitions.test.ts; this is just the UI's call site.
 function suggestedNextFor(session: Pick<SessionView, "rpiStatus" | "blockedReason" | "completedTurnKey" | "lastSummarizedTurnKey" | "label" | "workflowType" | "nextStepJson">): SuggestedNext | null {
   return suggestedNextForSession(session);
+}
+
+// Shared session-state fetch (session row, per-task UI state, pending-launch-attempt guard) for
+// the thread-header cluster and the composer banner (phase 10 header/composer split): both need
+// the same three RPC round trips and the same two realtime channels, so the fetch lives here once
+// instead of being duplicated in each component. `threadId` is null for composer scopes that are
+// not a thread (queued-message, side-chat, new-thread), in which case this resolves to "no RPI
+// session" without calling the server.
+function useRpiSessionState(threadId: string | null) {
+  const rpc = useRpc<RpcContract>();
+  const [session, setSession] = useState<SessionView | null>(null);
+  const [uiState, setUiState] = useState<TaskUiState>({});
+  const [hasPendingLaunchAttempt, setHasPendingLaunchAttempt] = useState(false);
+
+  const refetch = () => {
+    if (!threadId) {
+      setSession(null);
+      setUiState({});
+      setHasPendingLaunchAttempt(false);
+      return;
+    }
+    rpc.call("getSession", { threadId }).then(({ session: next }) => {
+      setSession(next);
+      if (next) {
+        rpc.call("getTaskUiState", { taskId: next.taskId }).then(setUiState);
+        // Duplicate-launch guard for the Suggested-next button: disable it while a launch_attempt
+        // for this task is still pending/uncertain/retrying, same statuses launchPhase's own
+        // activeLaunchAttempt check treats as "already launching".
+        rpc.call("listLaunchAttempts", { taskId: next.taskId }).then(({ attempts }) =>
+          setHasPendingLaunchAttempt(attempts.some((attempt) => attempt.status === "pending" || attempt.status === "uncertain" || attempt.status === "retrying")),
+        );
+      } else {
+        setUiState({});
+        setHasPendingLaunchAttempt(false);
+      }
+    });
+  };
+
+  useEffect(() => {
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threadId]);
+  useRealtime("rpi:sessions", refetch);
+  useRealtime("rpi:ui-state", refetch);
+
+  return { session, uiState, setUiState, hasPendingLaunchAttempt, refetch };
 }
 
 function TaskTable({ tasks }: { tasks: TaskRow[] }) {
@@ -1520,7 +1569,104 @@ function ArtifactRow({
   );
 }
 
-function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileName: string; onRestore: () => void }) {
+// Panel-width-driven layout for the Artifacts panel (phase 10 header/composer split, part B):
+// measures the panel's own rendered width instead of reading a Tailwind `lg:` viewport breakpoint,
+// so a wide window with a narrow side panel does not get the desktop three-column layout squeezed
+// into ~150px. `useLayoutEffect` (not `useEffect`) measures before first paint so there is no
+// one-frame flash at the wrong width.
+function useElementWidth(ref: RefObject<HTMLElement | null>) {
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    setWidth(node.getBoundingClientRect().width);
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) setWidth(entry.contentRect.width);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [ref]);
+  return width;
+}
+
+function readPersistedWidth(key: string, fallback: number, range: { min: number; max: number }) {
+  if (typeof window === "undefined") return fallback;
+  const parsed = Number.parseInt(window.localStorage.getItem(key) ?? "", 10);
+  return Number.isFinite(parsed) ? clampWidth(parsed, range) : fallback;
+}
+
+// Draggable-divider width, persisted to localStorage (no generic `task_ui_state` key path exists
+// for this; see docs/phases/10-header-composer.md). `drag` updates in-memory state only (many
+// calls per pointermove); `commit`/`step` also persist, matching the pointerup-persists,
+// keyboard-steps-and-persists contract SplitHandle drives this with.
+function usePersistedWidth(key: string, fallback: number, range: { min: number; max: number }) {
+  const [width, setWidth] = useState(() => readPersistedWidth(key, fallback, range));
+  const apply = (delta: number, persist: boolean) => {
+    setWidth((current) => {
+      const next = clampWidth(current + delta, range);
+      if (persist && typeof window !== "undefined") window.localStorage.setItem(key, String(next));
+      return next;
+    });
+  };
+  return {
+    width,
+    drag: (delta: number) => apply(delta, false),
+    step: (delta: number) => apply(delta, true),
+    commit: () => apply(0, true),
+  };
+}
+
+// Draggable divider: plain pointer events (no drag-and-drop API) on a 6px `cursor-col-resize`
+// handle. `onDrag` runs during the pointer move (in-memory only); `onCommit` persists once on
+// pointerup, or immediately after each keyboard step. Keyboard: `role="separator"`
+// `aria-orientation="vertical"`, arrow keys move 16px per press.
+function SplitHandle({
+  ariaLabel,
+  onDrag,
+  onStep,
+  onCommit,
+}: {
+  ariaLabel: string;
+  onDrag: (deltaPx: number) => void;
+  onStep: (deltaPx: number) => void;
+  onCommit: () => void;
+}) {
+  const draggingRef = useRef<{ lastX: number } | null>(null);
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={ariaLabel}
+      tabIndex={0}
+      className="w-1.5 shrink-0 cursor-col-resize touch-none rounded bg-transparent hover:bg-border focus-visible:bg-border focus-visible:outline-none"
+      onPointerDown={(event) => {
+        event.currentTarget.setPointerCapture(event.pointerId);
+        draggingRef.current = { lastX: event.clientX };
+      }}
+      onPointerMove={(event) => {
+        const dragging = draggingRef.current;
+        if (!dragging) return;
+        onDrag(event.clientX - dragging.lastX);
+        dragging.lastX = event.clientX;
+      }}
+      onPointerUp={(event) => {
+        if (!draggingRef.current) return;
+        draggingRef.current = null;
+        event.currentTarget.releasePointerCapture(event.pointerId);
+        onCommit();
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "ArrowLeft") onStep(-16);
+        else if (event.key === "ArrowRight") onStep(16);
+        else return;
+        event.preventDefault();
+      }}
+    />
+  );
+}
+
+function ArtifactViewer({ taskId, fileName, onRestore, panelWidth }: { taskId: string; fileName: string; onRestore: () => void; panelWidth: number }) {
   const rpc = useRpc<RpcContract>();
   const { values: settings } = useSettings();
   const [mode, setMode] = useState<"preview" | "raw">("preview");
@@ -1539,6 +1685,10 @@ function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileN
   const [sessions, setSessions] = useState<SessionView[]>([]);
   const [sendThreadId, setSendThreadId] = useState("");
   const [sendMode, setSendMode] = useState<"send" | "send-and-resolve">("send-and-resolve");
+  const viewerRootRef = useRef<HTMLDivElement | null>(null);
+  const viewerWidth = useElementWidth(viewerRootRef);
+  const layoutMode = artifactLayoutMode(panelWidth, viewerWidth);
+  const commentsWidth = usePersistedWidth("rpi.artifacts.split.comments", 320, ARTIFACT_COMMENTS_WIDTH_RANGE);
 
   useEffect(() => {
     setVersion(null);
@@ -1635,8 +1785,76 @@ function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileN
     setCommentsNextOffset(result.nextOffset);
   };
 
+  const previewNode = (
+    <>
+      {mode === "preview" && isRasterPreview(artifact.contentType) && url ? (
+        <img src={url} alt={artifact.fileName} className="max-h-full max-w-full rounded-md" />
+      ) : mode === "preview" && isSandboxedPreview(artifact.contentType) && content !== null ? (
+        <iframe title={artifact.fileName} sandbox="" srcDoc={content} className="h-full min-h-[240px] w-full rounded-md border-0 bg-background" />
+      ) : mode === "preview" && !isBinary && content !== null ? (
+        <div className="space-y-2">
+          {blocks.map((block) => (
+            <div key={block.index} className="group grid grid-cols-[28px_minmax(0,1fr)] gap-2 rounded-md border border-transparent hover:border-border">
+              <button
+                type="button"
+                aria-label="Add comment"
+                title="Add comment"
+                onClick={() => {
+                  setComposingBlock(block.index);
+                  setComposerText("");
+                }}
+                className="mt-2 flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground opacity-0 transition hover:text-foreground group-hover:opacity-100"
+              >
+                <Icon name="Plus" className="size-4" />
+              </button>
+              <div className="min-w-0">
+                <Markdown content={block.text} />
+                {composingBlock === block.index ? (
+                  <div className="mb-2 space-y-2 rounded-md border border-border bg-card p-2">
+                    <textarea value={composerText} onChange={(event) => setComposerText(event.target.value)} className="min-h-20 w-full rounded-md border border-border bg-background p-2 text-sm text-foreground" />
+                    <div className="flex justify-end gap-2">
+                      <Button type="button" variant="outline" className="h-8" onClick={() => setComposingBlock(null)}>Cancel</Button>
+                      <Button type="button" className="h-8" onClick={() => void saveComment(block)}>Save</Button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : isBinary ? (
+        <div className="text-sm text-muted-foreground">Binary preview is available through the HTTP route.</div>
+      ) : (
+        <SourceCode content={content ?? ""} path={artifact.fileName} overflow="wrap" />
+      )}
+    </>
+  );
+
+  const commentRailNode = (
+    <CommentRail
+      artifact={artifact}
+      threads={commentThreads}
+      showResolved={showResolved}
+      setShowResolved={setShowResolved}
+      sessions={sessions}
+      sendThreadId={sendThreadId}
+      setSendThreadId={setSendThreadId}
+      sendMode={sendMode}
+      setSendMode={setSendMode}
+      nextOffset={commentsNextOffset}
+      refetch={() => rpc.call("listComments", { artifactId: artifact.id, includeResolved: showResolved, offset: 0 }).then((result) => {
+        setCommentThreads(result.threads);
+        setCommentsNextOffset(result.nextOffset);
+      })}
+      loadMore={() => commentsNextOffset === null ? Promise.resolve() : rpc.call("listComments", { artifactId: artifact.id, includeResolved: showResolved, offset: commentsNextOffset }).then((result) => {
+        setCommentThreads((current) => [...current, ...result.threads]);
+        setCommentsNextOffset(result.nextOffset);
+      })}
+    />
+  );
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3 rounded-md border border-border bg-card p-3">
+    <div ref={viewerRootRef} className="flex min-h-0 flex-1 flex-col gap-3 rounded-md border border-border bg-card p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
           <h3 className="truncate text-sm font-semibold text-foreground">{artifact.fileName}</h3>
@@ -1661,70 +1879,28 @@ function ArtifactViewer({ taskId, fileName, onRestore }: { taskId: string; fileN
           <Button type="button" variant="outline" className="h-8" onClick={onRestore}>Restore</Button>
         </div>
       ) : null}
-      <div className="grid min-h-[260px] flex-1 gap-3 overflow-hidden lg:grid-cols-[minmax(0,1fr)_320px]">
-        <div className="min-h-0 overflow-auto rounded-md border border-border bg-background p-3">
-          {mode === "preview" && isRasterPreview(artifact.contentType) && url ? (
-            <img src={url} alt={artifact.fileName} className="max-h-full max-w-full rounded-md" />
-          ) : mode === "preview" && isSandboxedPreview(artifact.contentType) && content !== null ? (
-            <iframe title={artifact.fileName} sandbox="" srcDoc={content} className="h-full min-h-[240px] w-full rounded-md border-0 bg-background" />
-          ) : mode === "preview" && !isBinary && content !== null ? (
-            <div className="space-y-2">
-              {blocks.map((block) => (
-                <div key={block.index} className="group grid grid-cols-[28px_minmax(0,1fr)] gap-2 rounded-md border border-transparent hover:border-border">
-                  <button
-                    type="button"
-                    aria-label="Add comment"
-                    title="Add comment"
-                    onClick={() => {
-                      setComposingBlock(block.index);
-                      setComposerText("");
-                    }}
-                    className="mt-2 flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground opacity-0 transition hover:text-foreground group-hover:opacity-100"
-                  >
-                    <Icon name="Plus" className="size-4" />
-                  </button>
-                  <div className="min-w-0">
-                    <Markdown content={block.text} />
-                    {composingBlock === block.index ? (
-                      <div className="mb-2 space-y-2 rounded-md border border-border bg-card p-2">
-                        <textarea value={composerText} onChange={(event) => setComposerText(event.target.value)} className="min-h-20 w-full rounded-md border border-border bg-background p-2 text-sm text-foreground" />
-                        <div className="flex justify-end gap-2">
-                          <Button type="button" variant="outline" className="h-8" onClick={() => setComposingBlock(null)}>Cancel</Button>
-                          <Button type="button" className="h-8" onClick={() => void saveComment(block)}>Save</Button>
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : isBinary ? (
-            <div className="text-sm text-muted-foreground">Binary preview is available through the HTTP route.</div>
-          ) : (
-            <SourceCode content={content ?? ""} path={artifact.fileName} overflow="wrap" />
-          )}
+      {layoutMode === "split-rail" ? (
+        <div className="flex min-h-[260px] flex-1 gap-0 overflow-hidden">
+          <div className="min-h-0 min-w-0 flex-1 overflow-auto rounded-md border border-border bg-background p-3">{previewNode}</div>
+          <SplitHandle
+            ariaLabel="Resize comments rail"
+            onDrag={(delta) => commentsWidth.drag(-delta)}
+            onStep={(delta) => commentsWidth.step(-delta)}
+            onCommit={commentsWidth.commit}
+          />
+          <div style={{ width: commentsWidth.width }} className="min-h-0 min-w-0 shrink-0">{commentRailNode}</div>
         </div>
-        <CommentRail
-          artifact={artifact}
-          threads={commentThreads}
-          showResolved={showResolved}
-          setShowResolved={setShowResolved}
-          sessions={sessions}
-          sendThreadId={sendThreadId}
-          setSendThreadId={setSendThreadId}
-          sendMode={sendMode}
-          setSendMode={setSendMode}
-          nextOffset={commentsNextOffset}
-          refetch={() => rpc.call("listComments", { artifactId: artifact.id, includeResolved: showResolved, offset: 0 }).then((result) => {
-            setCommentThreads(result.threads);
-            setCommentsNextOffset(result.nextOffset);
-          })}
-          loadMore={() => commentsNextOffset === null ? Promise.resolve() : rpc.call("listComments", { artifactId: artifact.id, includeResolved: showResolved, offset: commentsNextOffset }).then((result) => {
-            setCommentThreads((current) => [...current, ...result.threads]);
-            setCommentsNextOffset(result.nextOffset);
-          })}
-        />
-      </div>
+      ) : (
+        <div className="flex min-h-[260px] flex-1 flex-col gap-3 overflow-auto">
+          <div className="min-h-0 flex-1 overflow-auto rounded-md border border-border bg-background p-3">{previewNode}</div>
+          <details className="min-w-0 rounded-md border border-border" open>
+            <summary className="cursor-pointer select-none rounded-md px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+              Comments ({commentThreads.length})
+            </summary>
+            <div className="min-w-0 p-3 pt-0">{commentRailNode}</div>
+          </details>
+        </div>
+      )}
     </div>
   );
 }
@@ -1784,7 +1960,7 @@ function CommentRail({
   };
 
   return (
-    <aside className="min-h-0 overflow-auto rounded-md border border-border bg-background p-3">
+    <aside className="min-h-0 min-w-0 overflow-auto rounded-md border border-border bg-background p-3">
       <div className="mb-3 flex items-center justify-between gap-2">
         <h4 className="text-sm font-semibold text-foreground">Comments</h4>
         <label className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -1890,6 +2066,11 @@ function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFi
   const [grouped, setGrouped] = useState(true);
   const [selected, setSelected] = useState<string | null>(initialFileName ?? null);
   const [busy, setBusy] = useState(false);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const panelWidth = useElementWidth(panelRef);
+  // Forced stacked below the breakpoint regardless of viewer width; see artifact-layout.ts.
+  const stacked = panelWidth > 0 && panelWidth < ARTIFACT_PANEL_STACK_BREAKPOINT;
+  const listWidth = usePersistedWidth("rpi.artifacts.split.list", 300, ARTIFACT_LIST_WIDTH_RANGE);
 
   const refetch = () => {
     rpc.call("listArtifacts", { taskId, includeDeleted: true }).then(({ artifacts: next }) => {
@@ -1942,8 +2123,45 @@ function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFi
     />
   ));
 
+  const listNode = (
+    <div className="min-h-0 min-w-0 space-y-3 overflow-auto">
+      {artifacts.length === 0 ? (
+        <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">No artifacts yet.</div>
+      ) : grouped ? (
+        <>
+          {groups.map((group) => (
+            <section key={group.group} className="space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">{group.group.replaceAll("-", " ")} ({group.artifacts.length})</div>
+              <div className="space-y-2">{rows(group.artifacts)}</div>
+            </section>
+          ))}
+          {deletedArtifacts.length > 0 ? (
+            <section className="space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">DELETED ({deletedArtifacts.length})</div>
+              <div className="space-y-2">{rows(deletedArtifacts)}</div>
+            </section>
+          ) : null}
+        </>
+      ) : (
+        <div className="space-y-3">
+          <div className="space-y-2">{rows(liveArtifacts)}</div>
+          {deletedArtifacts.length > 0 ? (
+            <section className="space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">DELETED ({deletedArtifacts.length})</div>
+              <div className="space-y-2">{rows(deletedArtifacts)}</div>
+            </section>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+
+  const viewerNode = selected ? (
+    <ArtifactViewer taskId={taskId} fileName={selected} panelWidth={panelWidth} onRestore={() => void mutate("restoreArtifact", selected)} />
+  ) : null;
+
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3">
+    <div ref={panelRef} className="flex h-full min-h-0 flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <button type="button" onClick={() => setGrouped((value) => !value)} className={cn("inline-flex h-9 items-center gap-2 rounded-md border px-3 text-xs uppercase tracking-[0.2em]", grouped ? "border-foreground text-foreground" : "border-border text-muted-foreground")}>
@@ -1956,39 +2174,23 @@ function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFi
           Hydrate now
         </Button>
       </div>
-      <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(220px,360px)_minmax(0,1fr)]">
-        <div className="min-h-0 space-y-3 overflow-auto">
-          {artifacts.length === 0 ? (
-            <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">No artifacts yet.</div>
-          ) : grouped ? (
-            <>
-              {groups.map((group) => (
-                <section key={group.group} className="space-y-2">
-                  <div className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">{group.group.replaceAll("-", " ")} ({group.artifacts.length})</div>
-                  <div className="space-y-2">{rows(group.artifacts)}</div>
-                </section>
-              ))}
-              {deletedArtifacts.length > 0 ? (
-                <section className="space-y-2">
-                  <div className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">DELETED ({deletedArtifacts.length})</div>
-                  <div className="space-y-2">{rows(deletedArtifacts)}</div>
-                </section>
-              ) : null}
-            </>
-          ) : (
-            <div className="space-y-3">
-              <div className="space-y-2">{rows(liveArtifacts)}</div>
-              {deletedArtifacts.length > 0 ? (
-                <section className="space-y-2">
-                  <div className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">DELETED ({deletedArtifacts.length})</div>
-                  <div className="space-y-2">{rows(deletedArtifacts)}</div>
-                </section>
-              ) : null}
-            </div>
-          )}
+      {stacked ? (
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto">
+          <details className="rounded-md border border-border" open>
+            <summary className="cursor-pointer select-none rounded-md px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+              Artifacts ({artifacts.length})
+            </summary>
+            <div className="p-3 pt-0">{listNode}</div>
+          </details>
+          {viewerNode}
         </div>
-        {selected ? <ArtifactViewer taskId={taskId} fileName={selected} onRestore={() => void mutate("restoreArtifact", selected)} /> : null}
-      </div>
+      ) : (
+        <div className="flex min-h-0 flex-1 gap-0">
+          <div style={{ width: listWidth.width }} className="min-h-0 min-w-0 shrink-0">{listNode}</div>
+          <SplitHandle ariaLabel="Resize artifact list" onDrag={listWidth.drag} onStep={listWidth.step} onCommit={listWidth.commit} />
+          <div className="min-h-0 min-w-0 flex-1">{viewerNode}</div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2563,6 +2765,14 @@ export function RpiDefaultsSettings() {
   );
 }
 
+// Thread-header contract (frontend-registration.md "A control in the thread header"): the row is
+// 48px chrome with 28px controls, and it wants ONE inline control with taller content in a
+// portalled popover. This renders exactly that: phase pill + status + context gauge + a single
+// `h-7` "⋯" button opening a portalled Popover (components/ui/popover.tsx) for Iterate/Fork/
+// Interrupt. Proceed, Suggested next, and the context-high notice moved to RpiComposerBanner
+// (registered via app.composer.customize in app.tsx) since those need more room than a 28px
+// control has, per the same contract's "put taller content in a portalled popover" (a composer
+// banner, not the header, is where a wide button belongs).
 export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectId: string; isCompactViewport: boolean }) {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
@@ -2574,37 +2784,16 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
     const result = await rpc.call("iterateInFreshSession", { threadId });
     navigate.toThread(result.threadId);
   };
-  const [session, setSession] = useState<SessionView | null>(null);
-  const [uiState, setUiState] = useState<TaskUiState>({});
-
-  const [hasPendingLaunchAttempt, setHasPendingLaunchAttempt] = useState(false);
-
-  const refetch = () => {
-    rpc.call("getSession", { threadId }).then(({ session: next }) => {
-      setSession(next);
-      if (next) {
-        rpc.call("getTaskUiState", { taskId: next.taskId }).then(setUiState);
-        // Duplicate-launch guard for the Suggested-next button: disable it while a launch_attempt
-        // for this task is still pending/uncertain/retrying, same statuses launchPhase's own
-        // activeLaunchAttempt check treats as "already launching".
-        rpc.call("listLaunchAttempts", { taskId: next.taskId }).then(({ attempts }) =>
-          setHasPendingLaunchAttempt(attempts.some((attempt) => attempt.status === "pending" || attempt.status === "uncertain" || attempt.status === "retrying")),
-        );
-      }
-    });
-  };
+  const { session } = useRpiSessionState(threadId);
 
   useEffect(() => {
     viewing.add(threadId);
     void rpc.call("setViewingSession", { threadId, viewing: true });
-    refetch();
     return () => {
       viewing.delete(threadId);
       void rpc.call("setViewingSession", { threadId, viewing: false });
     };
   }, [threadId]);
-  useRealtime("rpi:sessions", refetch);
-  useRealtime("rpi:ui-state", refetch);
 
   // Archive-current-task hotkey (⌘E), gated on `session` so it is only live while an RPI
   // task session is the thread actually being viewed. Scoped to this component's own rendered
@@ -2625,21 +2814,86 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
   }, [session, jumpHotkeyForArchive, rpc, navigate]);
 
   if (!session) return null;
-  const extracted = nextStep(session);
-  const suggested = suggestedNextFor(session);
-  const gauge = contextGaugeText(session.contextUsage);
-  const contextWarningDismissed = Boolean(uiState.contextWarningDismissed?.[threadId]);
 
   return (
-    <div ref={actionRootRef} className="flex items-center gap-2">
+    <div ref={actionRootRef} className="flex h-7 items-center gap-2">
       <RpiNotificationBridge />
       {settings?.showTaskPhaseLabels === false ? null : (
         <span className={pillClassName(session.label ? "step" : "ghost")}>{session.label ?? "freeform"}</span>
       )}
       <SessionStatus status={session.rpiStatus} />
       <ContextGauge usage={session.contextUsage} />
-      {gauge?.warn && !contextWarningDismissed ? (
-        <span className="inline-flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning">
+      <Popover>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            aria-label="RPI session actions"
+            className="flex size-7 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-foreground"
+          >
+            <Icon name="MoreHorizontal" className="size-4" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent>
+          <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted" onClick={iterate}>
+            Iterate
+          </button>
+          <button
+            type="button"
+            className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted"
+            onClick={async () => {
+              const result = await rpc.call("forkSession", { threadId });
+              navigate.toThread(result.threadId);
+            }}
+          >
+            Fork
+          </button>
+          <button
+            type="button"
+            className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted"
+            onClick={() => void rpc.call("interruptSession", { threadId })}
+          >
+            Interrupt
+          </button>
+        </PopoverContent>
+      </Popover>
+    </div>
+  );
+}
+
+// Registered as the "next-step" banner in app.composer.customize's `rpi-session` customization
+// (app.tsx), scope "thread" only. Carries the affordances that moved out of the 28px header
+// control: the context-high notice, Proceed, and Suggested next, none of which fit a 28px control
+// per the thread-header contract. Renders null for every other composer scope kind and for a
+// non-RPI thread (`getSession` returns null), and hides entirely for a quiet session (no
+// extraction, no suggestion, no context warning) via the pure `shouldShowComposerBanner`
+// (transitions.ts) so a session with nothing to say shows no banner at all.
+export function RpiComposerBanner() {
+  const rpc = useRpc<RpcContract>();
+  const navigate = useBbNavigate();
+  const { values: settings } = useSettings();
+  const view = useComposerView();
+  const threadId = view.scope.kind === "thread" ? view.scope.threadId : null;
+  const { session, uiState, setUiState, hasPendingLaunchAttempt } = useRpiSessionState(threadId);
+
+  if (!threadId || !session) return null;
+
+  const extracted = nextStep(session);
+  const suggested = suggestedNextFor(session);
+  const gauge = contextGaugeText(session.contextUsage);
+  const contextWarningDismissed = Boolean(uiState.contextWarningDismissed?.[threadId]);
+  const contextWarn = Boolean(gauge?.warn);
+  if (!shouldShowComposerBanner({ extracted, suggested, contextWarn, dismissed: contextWarningDismissed })) return null;
+
+  const iterate = async () => {
+    if (settings?.showIterateConfirmation !== false && !window.confirm("Start a fresh session from here? The current session keeps running.")) return;
+    const result = await rpc.call("iterateInFreshSession", { threadId });
+    navigate.toThread(result.threadId);
+  };
+
+  return (
+    <div className="flex w-full flex-wrap items-center justify-end gap-2">
+      {contextWarn && !contextWarningDismissed ? (
+        <span className="inline-flex h-7 items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-2 text-xs text-warning">
           Context high
           <button type="button" className="font-semibold underline" onClick={iterate}>
             Iterate in fresh session
@@ -2694,28 +2948,6 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
           ) : null}
         </span>
       ) : null}
-      <Button type="button" variant="outline" className="h-7 px-2 text-xs" onClick={iterate}>
-        Iterate
-      </Button>
-      <Button
-        type="button"
-        variant="outline"
-        className="h-7 px-2 text-xs"
-        onClick={async () => {
-          const result = await rpc.call("forkSession", { threadId });
-          navigate.toThread(result.threadId);
-        }}
-      >
-        Fork
-      </Button>
-      <Button
-        type="button"
-        variant="outline"
-        className="h-7 px-2 text-xs"
-        onClick={() => void rpc.call("interruptSession", { threadId })}
-      >
-        Interrupt
-      </Button>
     </div>
   );
 }

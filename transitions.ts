@@ -268,3 +268,13 @@ export function suggestedNextHint(session: SuggestedNextSessionFields): string |
     ? `Agent suggested ${result.extractedSkillId}; workflow expects ${result.buttonText}`
     : `Suggested next: ${result.buttonText}`;
 }
+
+// Composer banner visibility (phase 10 header/composer split): the banner (Proceed +
+// Suggested-next) hides entirely for a quiet session (no extraction, no suggestion), but the
+// context-high notice is an independent affordance and still shows the banner even when the
+// session is otherwise quiet. Shared by RpiComposerBanner (ui/rpi.tsx); pure so it is unit-tested
+// without mounting the composer.
+export function shouldShowComposerBanner(input: { extracted: unknown; suggested: unknown; contextWarn: boolean; dismissed: boolean }): boolean {
+  if (input.contextWarn && !input.dismissed) return true;
+  return Boolean(input.extracted) || Boolean(input.suggested);
+}

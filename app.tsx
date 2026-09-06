@@ -2,6 +2,7 @@ import { definePluginApp } from "@get-bb/plugin-sdk/app";
 import {
   RpiArtifactDirective,
   RpiArtifactThreadPanel,
+  RpiComposerBanner,
   RpiDefaultsSettings,
   RpiMinimapThreadPanel,
   RpiPanel,
@@ -37,6 +38,13 @@ export default definePluginApp((app) => {
     id: "rpi-session",
     title: "RPI session",
     component: RpiThreadHeaderAction,
+  });
+  // Proceed / Suggested next / context-high notice live here, not in the 28px header control (see
+  // ui/rpi.tsx RpiThreadHeaderAction's doc comment and docs/phases/10-header-composer.md).
+  app.composer.customize({
+    id: "rpi-session",
+    scopes: ["thread"],
+    banners: [{ id: "next-step", chrome: "bare", component: RpiComposerBanner }],
   });
   app.slots.threadPanelAction({
     id: "artifacts",
