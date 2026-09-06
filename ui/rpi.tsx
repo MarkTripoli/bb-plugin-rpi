@@ -16,6 +16,7 @@ import { toast } from "sonner";
 import type {
   ArtifactRecord,
   ArtifactVersionRecord,
+  ContextWarningRule,
   LaunchAttemptRecord,
   NextStepSuggestionsRecord,
   Prefs,
@@ -125,21 +126,21 @@ function SessionStatus({ status }: { status: string }) {
   );
 }
 
-// Warning threshold per plan §2.8 (≥70% of the model's context window).
-const CONTEXT_WARNING_THRESHOLD = 0.7;
-
-function contextGaugeText(usage: SessionView["contextUsage"]) {
+// Warning threshold (plan §2.8, now resolved per session): `contextThresholdFor` in
+// context-threshold.ts, from prefs.contextWarning plus the session's providerId/model, exposed as
+// SessionView.contextWarnThreshold.
+function contextGaugeText(usage: SessionView["contextUsage"], threshold: number) {
   if (!usage) return null;
   const percent = Math.round(usage.percent * 100);
   return {
     percent,
-    warn: usage.percent >= CONTEXT_WARNING_THRESHOLD,
-    title: `${usage.usedTokens.toLocaleString()} / ${usage.modelContextWindow.toLocaleString()} tokens${usage.estimated ? " (estimated)" : ""}`,
+    warn: usage.percent >= threshold,
+    title: `${usage.usedTokens.toLocaleString()} / ${usage.modelContextWindow.toLocaleString()} tokens${usage.estimated ? " (estimated)" : ""}, warn at ${Math.round(threshold * 100)}%`,
   };
 }
 
-function ContextGauge({ usage }: { usage: SessionView["contextUsage"] }) {
-  const meta = contextGaugeText(usage);
+function ContextGauge({ usage, threshold }: { usage: SessionView["contextUsage"]; threshold: number }) {
+  const meta = contextGaugeText(usage, threshold);
   if (!meta) return null;
   return (
     <span
@@ -1181,7 +1182,7 @@ function SessionsTable({ sessions }: { sessions: SessionView[] }) {
                 </div>
               </td>
               <td className="px-4 py-3">{session.label ? <span className={pillClassName("step")}>{session.label}</span> : <span className={pillClassName("ghost")}>none</span>}</td>
-              <td className="px-4 py-3"><ContextGauge usage={session.contextUsage} /></td>
+              <td className="px-4 py-3"><ContextGauge usage={session.contextUsage} threshold={session.contextWarnThreshold} /></td>
               <td className="max-w-[320px] truncate px-4 py-3 text-muted-foreground">{session.workingDirectory ?? "unknown"}</td>
               <td className="px-4 py-3 text-muted-foreground">{relativeTime(session.threadUpdatedAt ?? session.updatedAt)}</td>
             </tr>
@@ -2688,6 +2689,25 @@ export function RpiDefaultsSettings() {
   const saveWorkflow = (workflowType: WorkflowType, patch: WorkflowOverride) => {
     void rpc.call("setPrefs", { workflowDefaults: { [workflowType]: patch } }).then(setPrefs);
   };
+  const saveContextWarning = (patch: Partial<Prefs["contextWarning"]>) => {
+    void rpc.call("setPrefs", { contextWarning: patch }).then(setPrefs);
+  };
+  const updateContextWarningRule = (index: number, patch: Partial<ContextWarningRule>) => {
+    saveContextWarning({ rules: prefs.contextWarning.rules.map((rule, ruleIndex) => (ruleIndex === index ? { ...rule, ...patch } : rule)) });
+  };
+  const deleteContextWarningRule = (index: number) => {
+    const rule = prefs.contextWarning.rules[index];
+    if (!rule) return;
+    saveContextWarning({
+      rules: prefs.contextWarning.rules.filter((_, ruleIndex) => ruleIndex !== index),
+      removedBuiltins: rule.builtin ? [...prefs.contextWarning.removedBuiltins, rule.id] : prefs.contextWarning.removedBuiltins,
+    });
+  };
+  const addContextWarningRule = () => {
+    saveContextWarning({
+      rules: [...prefs.contextWarning.rules, { id: crypto.randomUUID(), pattern: "", threshold: prefs.contextWarning.defaultThreshold, builtin: false }],
+    });
+  };
 
   return (
     <div className="space-y-4">
@@ -2761,6 +2781,80 @@ export function RpiDefaultsSettings() {
           </table>
         </div>
       </div>
+      <div className="space-y-2">
+        <h3 className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">Context warning</h3>
+        <p className="text-xs text-muted-foreground">Patterns match provider/model, for example */claude-sonnet-* or codex/gpt-5.5.</p>
+        <label className="block space-y-2 rounded-md border border-border bg-card p-3 text-sm text-foreground">
+          <span className="block font-medium">Default threshold {Math.round(prefs.contextWarning.defaultThreshold * 100)}%</span>
+          <div className="flex items-center gap-3">
+            <input
+              type="range"
+              min="30"
+              max="95"
+              step="5"
+              value={Math.round(prefs.contextWarning.defaultThreshold * 100)}
+              onChange={(event) => saveContextWarning({ defaultThreshold: Number(event.currentTarget.value) / 100 })}
+              className="w-full accent-foreground"
+            />
+            <Input
+              type="number"
+              min={30}
+              max={95}
+              step={5}
+              className="h-8 w-20"
+              value={Math.round(prefs.contextWarning.defaultThreshold * 100)}
+              onChange={(event) => saveContextWarning({ defaultThreshold: Number(event.currentTarget.value) / 100 })}
+            />
+          </div>
+        </label>
+        <div className="overflow-hidden rounded-xl border border-border bg-card">
+          <table className="min-w-full border-collapse text-sm">
+            <thead className="border-b border-border text-left text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
+              <tr>
+                <th className="px-3 py-2 font-medium">Pattern</th>
+                <th className="px-3 py-2 font-medium">Threshold</th>
+                <th className="px-3 py-2 font-medium" />
+              </tr>
+            </thead>
+            <tbody>
+              {prefs.contextWarning.rules.map((rule, index) => (
+                <tr key={rule.id} className="border-b border-border last:border-b-0">
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <Input
+                        className="h-8"
+                        value={rule.pattern}
+                        placeholder="*/claude-sonnet-*"
+                        onChange={(event) => updateContextWarningRule(index, { pattern: event.currentTarget.value })}
+                      />
+                      {rule.builtin ? <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">default</span> : null}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2">
+                    <Input
+                      type="number"
+                      min={30}
+                      max={95}
+                      step={5}
+                      className="h-8 w-20"
+                      value={Math.round(rule.threshold * 100)}
+                      onChange={(event) => updateContextWarningRule(index, { threshold: Number(event.currentTarget.value) / 100 })}
+                    />
+                  </td>
+                  <td className="px-3 py-2">
+                    <button type="button" aria-label="Delete rule" className="text-muted-foreground hover:text-destructive" onClick={() => deleteContextWarningRule(index)}>
+                      <Icon name="Trash2" className="size-4" />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <Button type="button" variant="outline" onClick={addContextWarningRule}>
+          Add rule
+        </Button>
+      </div>
     </div>
   );
 }
@@ -2826,7 +2920,7 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
         <span className={pillClassName(session.label ? "step" : "ghost")}>{session.label ?? "freeform"}</span>
       )}
       <SessionStatus status={session.rpiStatus} />
-      <ContextGauge usage={session.contextUsage} />
+      <ContextGauge usage={session.contextUsage} threshold={session.contextWarnThreshold} />
       <Popover>
         <PopoverTrigger asChild>
           <button
@@ -2883,7 +2977,7 @@ export function RpiComposerBanner() {
 
   const extracted = nextStep(session);
   const suggested = suggestedNextFor(session);
-  const gauge = contextGaugeText(session.contextUsage);
+  const gauge = contextGaugeText(session.contextUsage, session.contextWarnThreshold);
   const contextWarningDismissed = Boolean(uiState.contextWarningDismissed?.[threadId]);
   const contextWarn = Boolean(gauge?.warn);
   if (!shouldShowComposerBanner({ extracted, suggested, contextWarn, dismissed: contextWarningDismissed })) return null;

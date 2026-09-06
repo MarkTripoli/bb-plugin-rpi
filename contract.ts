@@ -172,6 +172,9 @@ export const sessionViewSchema = sessionRowSchema
     // The owning task's workflow type, needed client-side to compute the Suggested-next
     // affordance (autoAdvanceTransition(label, workflowType) is workflow-type-specific).
     workflowType: workflowTypeSchema,
+    // Resolved from prefs.contextWarning plus the task's providerId/model (contextThresholdFor,
+    // context-threshold.ts), so the gauge/banner never hardcode a single global percentage.
+    contextWarnThreshold: z.number().min(0).max(1),
   })
   .strict();
 export type SessionView = z.infer<typeof sessionViewSchema>;
@@ -428,6 +431,29 @@ export const notificationPrefsSchema = z.object({
 }).strict();
 export type NotificationPrefsRecord = z.infer<typeof notificationPrefsSchema>;
 
+// One threshold rule: `pattern` is a case-insensitive glob (`*` only) matched against
+// "<providerId>/<model>", e.g. "pi/anthropic/claude-sonnet-5" or "codex/gpt-5.5". `builtin` marks
+// a seeded default row (contextThresholdFor, context-threshold.ts) so the settings UI can label it
+// and so deleting it records the id in contextWarning.removedBuiltins instead of being re-seeded.
+export const contextWarningRuleSchema = z
+  .object({
+    id: z.string().min(1),
+    pattern: z.string(),
+    threshold: z.number().min(0.3).max(0.95),
+    builtin: z.boolean(),
+  })
+  .strict();
+export type ContextWarningRule = z.infer<typeof contextWarningRuleSchema>;
+
+export const contextWarningPrefsSchema = z
+  .object({
+    defaultThreshold: z.number().min(0.3).max(0.95).default(0.6),
+    rules: z.array(contextWarningRuleSchema).default([]),
+    removedBuiltins: z.array(z.string()).default([]),
+  })
+  .strict();
+export type ContextWarningPrefs = z.infer<typeof contextWarningPrefsSchema>;
+
 export const prefsSchema = z
   .object({
     defaults: prefsDefaultsSchema,
@@ -439,6 +465,7 @@ export const prefsSchema = z
       volume: 0.2,
       jumpHotkey: "mod+shift+u",
     }),
+    contextWarning: contextWarningPrefsSchema.default({ defaultThreshold: 0.6, rules: [], removedBuiltins: [] }),
   })
   .strict();
 export type Prefs = z.infer<typeof prefsSchema>;
@@ -448,6 +475,7 @@ export const prefsUpdateSchema = z
     defaults: prefsDefaultsSchema.partial().optional(),
     workflowDefaults: workflowDefaultsSchema.optional(),
     notifications: notificationPrefsSchema.partial().optional(),
+    contextWarning: contextWarningPrefsSchema.partial().optional(),
   })
   .strict();
 

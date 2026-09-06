@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { prefsSchema, prefsUpdateSchema, proceedInputSchema, rpcContract, taskUiStateSchema, taskUpdateInputSchema, type WorkflowType } from "./contract";
+import { prefsSchema, prefsUpdateSchema, proceedInputSchema, rpcContract, taskUiStateSchema, taskUpdateInputSchema, type ContextWarningPrefs, type WorkflowType } from "./contract";
+import { contextThresholdFor, seedContextWarningRules } from "./context-threshold";
 import { nowMs, openPluginDatabase, parseJson, readRow, writeRow } from "./db";
 import {
   artifactPermalink,
@@ -234,6 +235,12 @@ export default async function plugin(bb: BbPluginApi) {
   const initialPrefs = prefsSchema.safeParse(await bb.storage.kv.get<unknown>(PREFS_KEY));
   let researchModelPreference = initialPrefs.success ? initialPrefs.data.defaults.researchModel ?? null : null;
   let notificationPrefs = normalizeNotificationPrefs(initialPrefs.success ? initialPrefs.data.notifications : null);
+  // Kept in sync with setPrefs (like notificationPrefs above) so sessionView/cachedSessionView can
+  // resolve contextWarnThreshold synchronously (cachedSessionView runs in a listSessions map, not
+  // async) instead of re-reading storage per session.
+  let contextWarningPrefs: ContextWarningPrefs = seedContextWarningRules(
+    initialPrefs.success ? initialPrefs.data.contextWarning : defaultTaskPrefs({}).contextWarning,
+  );
   for (const taskId of promoteStalePendingLaunchAttempts(db)) {
     bb.realtime.publish("tasks", { taskId });
     bb.realtime.publish("rpi:sessions", { taskId, threadId: null });
@@ -590,11 +597,11 @@ export default async function plugin(bb: BbPluginApi) {
 	      return iterateInFreshSession(bb, db, sessionMirror, launchBindings, threadId);
 	    },
     listSessions: async ({ taskId }) => ({
-      sessions: listSessions(db, taskId ?? null).map((session) => cachedSessionView(db, threadInfoCache, session)),
+      sessions: listSessions(db, taskId ?? null).map((session) => cachedSessionView(db, threadInfoCache, session, contextWarningPrefs)),
     }),
     getSession: async ({ threadId }) => {
       const session = readSession(db, threadId);
-      return { session: session ? await sessionView(bb, db, session) : null };
+      return { session: session ? await sessionView(bb, db, session, contextWarningPrefs) : null };
     },
     forkSession: async ({ threadId, text }) => forkSession(bb, db, sessionMirror, threadId, text),
     interruptSession: async ({ threadId }) => interruptSession(bb, db, sessionMirror, threadId),
@@ -747,7 +754,8 @@ export default async function plugin(bb: BbPluginApi) {
       ),
     getPrefs: async () => {
       const storedPrefs = await bb.storage.kv.get<unknown>(PREFS_KEY);
-      return prefsSchema.parse(storedPrefs ?? defaultTaskPrefs({}));
+      const parsed = prefsSchema.parse(storedPrefs ?? defaultTaskPrefs({}));
+      return { ...parsed, contextWarning: seedContextWarningRules(parsed.contextWarning) };
     },
     setPrefs: async (input) => {
       const currentPrefs = await bb.storage.kv.get<unknown>(PREFS_KEY);
@@ -772,12 +780,18 @@ export default async function plugin(bb: BbPluginApi) {
           sound: { ...current.notifications.sound, ...(patch.notifications?.sound ?? {}) },
           toast: { ...current.notifications.toast, ...(patch.notifications?.toast ?? {}) },
         }),
+        contextWarning: {
+          defaultThreshold: patch.contextWarning?.defaultThreshold ?? current.contextWarning.defaultThreshold,
+          rules: patch.contextWarning?.rules ?? current.contextWarning.rules,
+          removedBuiltins: patch.contextWarning?.removedBuiltins ?? current.contextWarning.removedBuiltins,
+        },
       };
       researchModelPreference = next.defaults.researchModel;
       notificationPrefs = next.notifications;
+      contextWarningPrefs = seedContextWarningRules(next.contextWarning);
       await bb.storage.kv.set(PREFS_KEY, next);
       bb.realtime.publish("prefs", { changed: true });
-      return prefsSchema.parse(next);
+      return { ...prefsSchema.parse(next), contextWarning: contextWarningPrefs };
     },
   });
 
@@ -1293,11 +1307,19 @@ function sleep(ms: number, signal: AbortSignal) {
   });
 }
 
-function sessionWorkflowType(db: ReturnType<typeof openPluginDatabase>, taskId: string) {
-  return readRow<{ workflowType: string }>(db, "SELECT workflow_type AS workflowType FROM tasks WHERE id = ?", taskId)?.workflowType ?? "freeform";
+// Single query for the owning task's fields a session view needs beyond the sessions table:
+// workflowType (Suggested-next), providerId/model (contextThresholdFor).
+function sessionTaskMeta(db: ReturnType<typeof openPluginDatabase>, taskId: string) {
+  return (
+    readRow<{ workflowType: string; providerId: string | null; model: string | null }>(
+      db,
+      "SELECT workflow_type AS workflowType, provider_id AS providerId, model FROM tasks WHERE id = ?",
+      taskId,
+    ) ?? { workflowType: "freeform", providerId: null, model: null }
+  );
 }
 
-async function sessionView(bb: BbPluginApi, db: ReturnType<typeof openPluginDatabase>, session: ReturnType<typeof readSession> extends infer T ? NonNullable<T> : never) {
+async function sessionView(bb: BbPluginApi, db: ReturnType<typeof openPluginDatabase>, session: ReturnType<typeof readSession> extends infer T ? NonNullable<T> : never, contextWarning: ContextWarningPrefs) {
   let title: string | null = null;
   let workingDirectory: string | null = null;
   let threadUpdatedAt: number | null = null;
@@ -1310,7 +1332,16 @@ async function sessionView(bb: BbPluginApi, db: ReturnType<typeof openPluginData
   } catch {
     // Thread lookup failed (e.g. archived/host offline): fall back to nulls, same as before.
   }
-  return { ...session, title, workingDirectory, threadUpdatedAt, contextUsage: await readContextUsage(bb, session.threadId), workflowType: sessionWorkflowType(db, session.taskId) as WorkflowType };
+  const meta = sessionTaskMeta(db, session.taskId);
+  return {
+    ...session,
+    title,
+    workingDirectory,
+    threadUpdatedAt,
+    contextUsage: await readContextUsage(bb, session.threadId),
+    workflowType: meta.workflowType as WorkflowType,
+    contextWarnThreshold: contextThresholdFor(contextWarning, meta.providerId, meta.model),
+  };
 }
 
 type ThreadInfoCacheEntry = {
@@ -1342,15 +1373,17 @@ function cacheThreadSnapshot(bb: BbPluginApi, cache: ThreadInfoCache, threadId: 
   });
 }
 
-function cachedSessionView(db: ReturnType<typeof openPluginDatabase>, cache: ThreadInfoCache, session: ReturnType<typeof readSession> extends infer T ? NonNullable<T> : never) {
+function cachedSessionView(db: ReturnType<typeof openPluginDatabase>, cache: ThreadInfoCache, session: ReturnType<typeof readSession> extends infer T ? NonNullable<T> : never, contextWarning: ContextWarningPrefs) {
   const cached = cache.get(session.threadId);
+  const meta = sessionTaskMeta(db, session.taskId);
   return {
     ...session,
     title: cached?.title ?? null,
     workingDirectory: cached?.workingDirectory ?? null,
     threadUpdatedAt: cached?.threadUpdatedAt ?? null,
     contextUsage: cached?.contextUsage ?? null,
-    workflowType: sessionWorkflowType(db, session.taskId) as WorkflowType,
+    workflowType: meta.workflowType as WorkflowType,
+    contextWarnThreshold: contextThresholdFor(contextWarning, meta.providerId, meta.model),
   };
 }
 

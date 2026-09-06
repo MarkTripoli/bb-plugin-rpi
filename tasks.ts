@@ -3,6 +3,7 @@ import type * as BetterSqlite3 from "better-sqlite3";
 import { nowMs, readRow, readRows, transaction, writeRow } from "./db";
 import { mimeFor, upsertArtifact } from "./artifacts";
 import { deriveBoardColumn, labelToStepLabel } from "./transitions";
+import { DEFAULT_CONTEXT_THRESHOLD } from "./context-threshold";
 import type {
   Prefs,
   SessionRow,
@@ -606,5 +607,6 @@ export function defaultTaskPrefs(input: {
       volume: 0.2,
       jumpHotkey: "mod+shift+u",
     },
+    contextWarning: { defaultThreshold: DEFAULT_CONTEXT_THRESHOLD, rules: [], removedBuiltins: [] },
   };
 }
