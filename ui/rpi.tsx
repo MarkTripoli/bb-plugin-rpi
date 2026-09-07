@@ -753,8 +753,15 @@ function TaskBoard({ tasks, width }: { tasks: TaskRow[]; width: number }) {
             {groups[column.id].map((task) => (
               <article
                 key={task.id}
+                role="link"
+                tabIndex={0}
                 onClick={() => navigate.toPluginPanel("rpi", { subPath: `tasks/${task.id}` })}
-                className="cursor-pointer rounded-lg border border-border bg-background/70 p-3 transition hover:border-foreground/40"
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  navigate.toPluginPanel("rpi", { subPath: `tasks/${task.id}` });
+                }}
+                className="cursor-pointer rounded-lg border border-border bg-background/70 p-3 transition hover:border-foreground/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <div className="space-y-2">
                   <div className="flex items-start justify-between gap-3">
@@ -1184,6 +1191,7 @@ function NewTaskPage({
             value={text}
             onChange={(event) => setText(event.target.value)}
             placeholder="Describe the task..."
+            aria-label="Task description"
             className="min-h-[220px] w-full resize-y rounded-xl border border-border bg-background/80 p-4 text-base leading-7 text-foreground outline-none placeholder:text-muted-foreground focus:border-foreground"
           />
           <label className="block max-w-[320px] space-y-1 text-xs text-muted-foreground">
@@ -1409,7 +1417,7 @@ function RecoverLaunchRow({ attempt, onResolved }: { attempt: LaunchAttemptRecor
             </div>
           ) : null}
           <div className="flex flex-wrap items-center gap-2">
-            <Input value={threadId} onChange={(event) => setThreadId(event.target.value)} placeholder="Thread id to adopt" className="h-9 max-w-[220px]" />
+            <Input value={threadId} onChange={(event) => setThreadId(event.target.value)} placeholder="Thread id to adopt" aria-label="Thread id to adopt" className="h-9 max-w-[220px]" />
             <Button type="button" disabled={busy || threadId.trim() === ""} onClick={() => resolve({ type: "adopt", threadId: threadId.trim() })}>
               Adopt
             </Button>
@@ -1966,6 +1974,7 @@ function ScratchPadPanel({ taskId }: { taskId: string }) {
         onChange={(event) => onChange(event.target.value)}
         maxLength={SCRATCH_PAD_MAX_CHARS}
         placeholder="Local notes for this task..."
+        aria-label="Scratch pad notes"
         className="min-h-[360px] w-full resize-y rounded-md border border-border bg-card p-3 text-sm text-foreground outline-none focus:border-foreground"
       />
     </div>
@@ -2097,7 +2106,7 @@ function ArtifactRow({
       {artifact.commentCount > 0 ? <span className="shrink-0 text-xs text-muted-foreground">{artifact.commentCount}</span> : null}
       <Popover>
         <PopoverTrigger asChild>
-          <button type="button" className={cn("flex items-center justify-center rounded-md border border-border text-muted-foreground hover:text-foreground", COARSE_POINTER_CHILD_ICON_BUTTON_CLASS)}>
+          <button type="button" aria-label="Artifact actions" className={cn("flex items-center justify-center rounded-md border border-border text-muted-foreground hover:text-foreground", COARSE_POINTER_CHILD_ICON_BUTTON_CLASS)}>
             <Icon name="MoreHorizontal" className="size-4" />
           </button>
         </PopoverTrigger>
@@ -2480,7 +2489,7 @@ function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string
                 )}
                 {composingBlock === block.index ? (
                   <div className="mb-2 space-y-2 rounded-md border border-border bg-card p-2">
-                    <textarea value={composerText} onChange={(event) => setComposerText(event.target.value)} className="min-h-20 w-full rounded-md border border-border bg-background p-2 text-sm text-foreground" />
+                    <textarea value={composerText} onChange={(event) => setComposerText(event.target.value)} aria-label="Comment text" className="min-h-20 w-full rounded-md border border-border bg-background p-2 text-sm text-foreground" />
                     <div className="flex justify-end gap-2">
                       <Button type="button" variant="outline" className="h-8" onClick={() => setComposingBlock(null)}>Cancel</Button>
                       <Button type="button" className="h-8" onClick={() => void saveComment(block)}>Save</Button>
@@ -2541,7 +2550,7 @@ function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <select value={version ?? artifact.currentVersion} onChange={(event) => setPinnedVersion(Number.parseInt(event.target.value, 10))} className="h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground">
+          <select value={version ?? artifact.currentVersion} onChange={(event) => setPinnedVersion(Number.parseInt(event.target.value, 10))} aria-label="Version" className="h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground">
             {versions.map((item) => (
               <option key={item.id} value={item.version}>v{item.version} · {versionAuthor(item.createdBy, sessions)}</option>
             ))}
@@ -2658,10 +2667,10 @@ function CommentRail({
         </label>
       </div>
       <div className="mb-3 space-y-2 rounded-md border border-border bg-card p-2">
-        <select value={sendThreadId} onChange={(event) => setSendThreadId(event.target.value)} className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs text-foreground">
+        <select value={sendThreadId} onChange={(event) => setSendThreadId(event.target.value)} aria-label="Send to session" className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs text-foreground">
           {sessions.map((session) => <option key={session.threadId} value={session.threadId}>{session.title ?? session.threadId}</option>)}
         </select>
-        <select value={sendMode} onChange={(event) => setSendMode(event.target.value as "send" | "send-and-resolve")} className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs text-foreground">
+        <select value={sendMode} onChange={(event) => setSendMode(event.target.value as "send" | "send-and-resolve")} aria-label="After sending" className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs text-foreground">
           <option value="send-and-resolve">Send and resolve</option>
           <option value="send">Send</option>
         </select>
@@ -2713,7 +2722,7 @@ function CommentThread({ artifactId, thread, update }: { artifactId: string; thr
       </div>
       {editing ? (
         <div className="space-y-2">
-          <textarea value={editText} onChange={(event) => setEditText(event.target.value)} className="min-h-20 w-full rounded-md border border-border bg-background p-2 text-sm text-foreground" />
+          <textarea value={editText} onChange={(event) => setEditText(event.target.value)} aria-label="Edit comment" className="min-h-20 w-full rounded-md border border-border bg-background p-2 text-sm text-foreground" />
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" className="h-8" onClick={() => setEditing(false)}>Cancel</Button>
             <Button type="button" className="h-8" onClick={() => void update(rpc.call("editComment", { commentId: root.id, content: editText })).then(() => setEditing(false))}>Save</Button>
@@ -2743,7 +2752,7 @@ function CommentThread({ artifactId, thread, update }: { artifactId: string; thr
       ))}
       {reply ? (
         <div className="space-y-2">
-          <textarea value={reply.trimStart()} onChange={(event) => setReply(event.target.value)} className="min-h-16 w-full rounded-md border border-border bg-background p-2 text-sm text-foreground" />
+          <textarea value={reply.trimStart()} onChange={(event) => setReply(event.target.value)} aria-label="Reply" className="min-h-16 w-full rounded-md border border-border bg-background p-2 text-sm text-foreground" />
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" className="h-8" onClick={() => setReply("")}>Cancel</Button>
             <Button type="button" className="h-8" onClick={() => void update(rpc.call("replyComment", { artifactId, commentId: root.id, content: reply.trim() })).then(() => setReply(""))}>Reply</Button>
@@ -3977,6 +3986,7 @@ export function RpiDefaultsSettings() {
               min={30}
               max={95}
               step={5}
+              aria-label="Default threshold percent"
               className="h-8 w-20"
               value={Math.round(prefs.contextWarning.defaultThreshold * 100)}
               onChange={(event) => saveContextWarning({ defaultThreshold: Number(event.currentTarget.value) / 100 })}
@@ -4001,6 +4011,7 @@ export function RpiDefaultsSettings() {
                         className="h-8"
                         value={rule.pattern}
                         placeholder="*/claude-sonnet-*"
+                        aria-label="Pattern"
                         onChange={(event) => updateContextWarningRule(index, { pattern: event.currentTarget.value })}
                       />
                       {rule.builtin ? <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">default</span> : null}
@@ -4012,6 +4023,7 @@ export function RpiDefaultsSettings() {
                       min={30}
                       max={95}
                       step={5}
+                      aria-label="Threshold"
                       className="h-8 w-20"
                       value={Math.round(rule.threshold * 100)}
                       onChange={(event) => updateContextWarningRule(index, { threshold: Number(event.currentTarget.value) / 100 })}
