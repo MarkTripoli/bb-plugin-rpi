@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -6,31 +7,20 @@ import assert from "node:assert/strict";
 const root = path.resolve(import.meta.dirname, "..");
 const EM_DASH = "\u2014";
 
-// AGENTS.md: "No em dashes in prose or UI copy." node_modules is excluded because it isn't this
-// repo's prose. The research notes and third-party reference material this repo's design work is
-// grounded in both live outside the tree entirely (see AGENTS.md item 6), so there is nothing
-// left in-tree to exclude for them.
-const EXCLUDED_DIR_PARTS = ["node_modules"];
-
-function listMarkdownFiles(dir: string): string[] {
-  const entries = fs.readdirSync(dir, { withFileTypes: true });
-  const files: string[] = [];
-  for (const entry of entries) {
-    const full = path.join(dir, entry.name);
-    const relative = path.relative(root, full).split(path.sep).join("/");
-    if (EXCLUDED_DIR_PARTS.some((excluded) => relative === excluded || relative.startsWith(`${excluded}/`))) continue;
-    if (entry.isDirectory()) {
-      files.push(...listMarkdownFiles(full));
-    } else if (entry.name.endsWith(".md")) {
-      files.push(full);
-    }
-  }
-  return files;
+// AGENTS.md: "No em dashes in prose or UI copy." "Repo prose" is what git considers part of the
+// repo: tracked files plus untracked files git does not ignore. Ignored trees (node_modules, the
+// agent-written `.rpi/` task artifacts excluded in .git/info/exclude) are not this repo's prose.
+function listMarkdownFiles(): string[] {
+  return execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard"], { cwd: root, encoding: "utf8" })
+    .split("\n")
+    .filter((file) => file.endsWith(".md"))
+    .map((file) => path.join(root, file))
+    .filter((file) => fs.existsSync(file));
 }
 
 test("repo prose (*.md) contains no em dashes", () => {
   const offenders: string[] = [];
-  for (const file of listMarkdownFiles(root)) {
+  for (const file of listMarkdownFiles()) {
     const content = fs.readFileSync(file, "utf8");
     if (content.includes(EM_DASH)) offenders.push(path.relative(root, file));
   }

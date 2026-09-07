@@ -4,6 +4,8 @@ import { nowMs, readRow, readRows, transaction, writeRow } from "./db";
 import { mimeFor, upsertArtifact } from "./artifacts";
 import { deriveBoardColumn, labelToStepLabel } from "./transitions";
 import { DEFAULT_CONTEXT_THRESHOLD } from "./context-threshold";
+import { attentionCountForTask } from "./status";
+import { LIVE_SESSION_CLAUSE, listSessions } from "./sessions";
 import type {
   Prefs,
   SessionRow,
@@ -122,26 +124,30 @@ function readTaskRecord(db: Database, taskId: string): TaskRecord | undefined {
   return row ? normalizeTaskRecord(row) : undefined;
 }
 
+// Same live-session rule as listSessions: a session whose thread was archived neither counts nor
+// decides the task's current phase (dismissing a failed re-run of an earlier step must not leave
+// the task pointing at that step).
 function readSessionCount(db: Database, taskId: string) {
-  const row = readRow<{ count: number }>(db, "SELECT COUNT(*) AS count FROM sessions WHERE task_id = ?", taskId);
+  const row = readRow<{ count: number }>(db, `SELECT COUNT(*) AS count FROM sessions WHERE task_id = ? AND ${LIVE_SESSION_CLAUSE}`, taskId);
   return row?.count ?? 0;
 }
 
 function readLatestLabel(db: Database, taskId: string) {
   const row = readRow<{ label: string | null }>(
     db,
-    "SELECT label FROM sessions WHERE task_id = ? ORDER BY created_at DESC, thread_id DESC LIMIT 1",
+    `SELECT label FROM sessions WHERE task_id = ? AND ${LIVE_SESSION_CLAUSE} ORDER BY created_at DESC, thread_id DESC LIMIT 1`,
     taskId,
   );
   return row?.label ?? null;
 }
 
-function readAttentionCount(db: Database, taskId: string) {
-  return readRow<{ count: number }>(
-    db,
-    "SELECT COUNT(*) AS count FROM sessions WHERE task_id = ? AND rpi_status IN ('ready_for_input', 'needs_approval')",
-    taskId,
-  )?.count ?? 0;
+// Live finding (phase B.1): counting raw rpi_status IN ('ready_for_input','needs_approval') over-
+// counts every session that finished its turn hours ago and whose phase has since moved on (see
+// status.ts effectiveStatus). Reads the task's sessions the same way listSessions's own RPC does
+// (sessions.ts's listSessions) and lets attentionCountForTask apply the same supersession rule the
+// UI's needs-you band uses, so the server's count and the panel's band never disagree.
+function readAttentionCount(db: Database, task: Pick<TaskRecord, "id" | "workflowType" | "worktreeTiming">) {
+  return attentionCountForTask(listSessions(db, task.id), task);
 }
 
 function taskRowFromRecord(record: TaskRecord, sessionCount: number, latestLabel: string | null, attentionCount: number): TaskRow {
@@ -240,7 +246,7 @@ export function listTasks(
     ORDER BY updated_at DESC, created_at DESC
   `;
   const records = readRows<RawTaskRecord>(db, sql, ...params).map(normalizeTaskRecord);
-  return records.map((record) => taskRowFromRecord(record, readSessionCount(db, record.id), readLatestLabel(db, record.id), readAttentionCount(db, record.id)));
+  return records.map((record) => taskRowFromRecord(record, readSessionCount(db, record.id), readLatestLabel(db, record.id), readAttentionCount(db, record)));
 }
 
 export function getTask(db: Database, taskId: string) {

@@ -479,6 +479,36 @@ export const prefsUpdateSchema = z
   })
   .strict();
 
+export const listModelsInputSchema = z.object({ hostId: z.string().min(1).nullable().optional() }).strict();
+export const modelCatalogProviderSchema = z
+  .object({
+    id: z.string(),
+    displayName: z.string(),
+    available: z.boolean(),
+    serviceTiers: z.array(z.object({ id: z.string(), label: z.string() }).strict()).default([]),
+  })
+  .strict();
+export const modelCatalogModelSchema = z
+  .object({
+    id: z.string(),
+    model: z.string(),
+    providerId: z.string(),
+    displayName: z.string(),
+    description: z.string(),
+    isDefault: z.boolean(),
+    defaultReasoningEffort: z.string(),
+    reasoningEfforts: z.array(z.string()),
+  })
+  .strict();
+export const listModelsOutputSchema = z
+  .object({
+    providers: z.array(modelCatalogProviderSchema).max(50),
+    models: z.array(modelCatalogModelSchema).max(1000),
+    error: z.object({ code: z.string(), providerId: z.string() }).nullable(),
+  })
+  .strict();
+export type ListModelsOutput = z.infer<typeof listModelsOutputSchema>;
+
 export const projectRowSchema = z
   .object({
     id: z.string(),
@@ -517,6 +547,7 @@ export const forkSessionInputSchema = z
   .object({ threadId: z.string().min(1), text: z.string().max(10000).nullable().optional() })
   .strict();
 export const interruptSessionInputSchema = z.object({ threadId: z.string().min(1) }).strict();
+export const adoptThreadInputSchema = z.object({ threadId: z.string().min(1), taskId: z.string().min(1) }).strict();
 export const listLaunchAttemptsInputSchema = z.object({ taskId: z.string().min(1) }).strict();
 export const resolveLaunchAttemptInputSchema = z
   .object({
@@ -666,6 +697,10 @@ export const rpcContract = defineRpcContract({
     input: interruptSessionInputSchema,
     output: z.object({ ok: z.literal(true) }).strict(),
   },
+  adoptThread: {
+    input: adoptThreadInputSchema,
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
   listLaunchAttempts: {
     input: listLaunchAttemptsInputSchema,
     output: z.object({ attempts: z.array(launchAttemptRowSchema) }).strict(),
@@ -761,6 +796,10 @@ export const rpcContract = defineRpcContract({
   listHosts: {
     input: z.object({}).strict(),
     output: z.array(hostRowSchema),
+  },
+  listModels: {
+    input: listModelsInputSchema,
+    output: listModelsOutputSchema,
   },
   getPrefs: {
     input: z.object({}).strict(),

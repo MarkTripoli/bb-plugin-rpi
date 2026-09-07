@@ -13,6 +13,7 @@ import {
   applyStatusDerivation,
   createLaunchBindingMirror,
   deriveStatus,
+  extractLaunchToken,
   loadSessionMirror,
   mirrorSession,
   recordIdleCompletion,
@@ -1181,4 +1182,33 @@ test("launch marker binds dispatch before spawn returns", async () => {
   resolveSpawn(threadResponse);
   await launchPromise;
   await harness.lifecycle.dispose();
+});
+
+test("extractLaunchToken finds the token when marker is the last line of a multi-line prompt", () => {
+  const multilinePrompt = `First line of context
+Second line
+Some task instructions
+
+<!-- rpi:launch:attempt-abc123 -->`;
+  const token = extractLaunchToken(multilinePrompt);
+  assert.equal(token, "attempt-abc123");
+});
+
+test("extractLaunchToken returns null when marker is absent", () => {
+  const noMarker = `First line of context
+Second line
+Some task instructions`;
+  const token = extractLaunchToken(noMarker);
+  assert.equal(token, null);
+});
+
+test("extractLaunchToken finds the token at any position in the text", () => {
+  const markerAtStart = `<!-- rpi:launch:start-marker -->
+Context line`;
+  assert.equal(extractLaunchToken(markerAtStart), "start-marker");
+
+  const markerInMiddle = `Line 1
+<!-- rpi:launch:middle-marker -->
+Line 3`;
+  assert.equal(extractLaunchToken(markerInMiddle), "middle-marker");
 });

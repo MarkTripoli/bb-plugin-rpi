@@ -208,6 +208,22 @@ export function promoteStalePendingLaunchAttempts(db: Database, olderThanMs = 2 
   return rows.map((row) => row.taskId);
 }
 
+// Auto-dismiss uncertain launch attempts whose spawn callback was never received (plugin
+// restart, crash, lost event). Without this, an uncertain attempt blocks every future launch
+// for its task permanently. 10 minutes is generous: a real spawn settles in seconds, and the
+// pending-to-uncertain promotion already waited 2 minutes, so the total grace period before
+// auto-dismiss is 12 minutes.
+export function dismissStaleUncertainAttempts(db: Database, olderThanMs = 10 * 60_000) {
+  const cutoff = nowMs() - olderThanMs;
+  const rows = readRows<{ taskId: string }>(
+    db,
+    "SELECT DISTINCT task_id AS taskId FROM launch_attempts WHERE status = 'uncertain' AND created_at < ?",
+    cutoff,
+  );
+  writeRow(db, "UPDATE launch_attempts SET status = 'failed' WHERE status = 'uncertain' AND created_at < ?", cutoff);
+  return rows.map((row) => row.taskId);
+}
+
 function sdkPermissionMode(mode: TaskRecord["permissionMode"]): "accept-edits" | "auto" | "full" | undefined {
   if (mode === "accept_edits") return "accept-edits";
   if (mode === "auto") return "auto";
@@ -449,7 +465,7 @@ export async function launchPhase(
     const thread = await bb.sdk.threads.spawn({
       projectId: task.projectId,
       environment: selected.environment,
-      prompt: `${launchMarker(attemptId)}\n${TASK_CONTEXT_FIRST_ACTION}\n${promptFor(task, input)}`,
+      prompt: `${TASK_CONTEXT_FIRST_ACTION}\n${promptFor(task, input)}\n\n${launchMarker(attemptId)}`,
       title: `${labelTitle(input.skillId)}: ${task.name}`,
       visibility: "visible",
       executionInputSources: {
@@ -555,6 +571,47 @@ export async function forkSession(
   bb.realtime.publish("rpi:sessions", { taskId: source.taskId, threadId: fork.id });
   bb.realtime.publish("tasks", { taskId: source.taskId });
   return { threadId: fork.id };
+}
+
+// Bind an existing, unbound bb thread to a task as a freeform session (no phase skill). Used by
+// the sidebar drag-and-drop: a chat started outside RPI that belongs with a task. The thread
+// keeps running wherever it is; only the association changes.
+export async function adoptThread(bb: BbPluginApi, db: Database, mirror: Map<string, SessionMirrorRow>, threadId: string, taskId: string) {
+  const task = readTaskOrThrow(db, taskId);
+  if (task.archived) throw new Error("Task is archived.");
+  if (mirror.has(threadId)) throw new Error("Thread is already bound to an RPI session.");
+  const thread = await bb.sdk.threads.get({ threadId });
+  if (!thread) throw new Error(`No thread found for id ${threadId}`);
+  // Children (subagents, forks) follow their parent in the sidebar; adopting one directly would
+  // show it as a session while its parent stays unbound. Adopt the root instead.
+  if (thread.parentThreadId) throw new Error("This thread is a subagent or fork. Move its parent thread instead.");
+  // Keep the thread's own timestamps: the sidebar orders by created_at and shows the thread's
+  // updatedAt, so adopting must not make the row look new or move it.
+  const timestamp = thread.createdAt ?? nowMs();
+  db.transaction(() => {
+    const existing = readRow<{ threadId: string }>(db, "SELECT thread_id AS threadId FROM sessions WHERE thread_id = ?", threadId);
+    if (existing) throw new Error("Thread is already bound to an RPI session.");
+    writeRow(
+      db,
+      `
+      INSERT INTO sessions (
+        thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
+        rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason,
+        created_at, updated_at
+      ) VALUES (?, ?, NULL, NULL, 'adopted', NULL, 'launching', ?, 0, 0, NULL, ?, ?)
+      `,
+      threadId,
+      task.id,
+      timestamp,
+      timestamp,
+      timestamp,
+    );
+  })();
+  mirrorSession(db, mirror, threadId);
+  await reconcileSession(bb, db, mirror, threadId);
+  bb.realtime.publish("rpi:sessions", { taskId: task.id, threadId });
+  bb.realtime.publish("tasks", { taskId: task.id });
+  return { ok: true as const };
 }
 
 export async function interruptSession(bb: BbPluginApi, db: Database, mirror: Map<string, SessionMirrorRow>, threadId: string) {

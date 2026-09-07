@@ -3,3 +3,6 @@ node_modules/
 # Third-party reference material (All Rights Reserved), reference-only, never shipped or
 # committed. Lives outside this repo at RPI_REFERENCE_DIR, defaulting to
 # ~/PersonalDevelopment/bb-plugin-rpi-reference/third-party (see tests/skills.test.ts).
+
+.rpi/tasks/
+.rpi/workspace.local.json

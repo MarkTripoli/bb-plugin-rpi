@@ -28,6 +28,7 @@ import {
   sweepOldSendReceipts,
 } from "./comments";
 import { markdownBlocks } from "./blocks";
+import { normalizeModelCatalog, type RawProviderModelsResponse } from "./models";
 import {
   iterateInFreshSession,
   latestLaunchAttemptLabel,
@@ -37,10 +38,12 @@ import {
 } from "./advance";
 import {
   forkSession,
+  adoptThread,
   interruptSession,
   launchDraft,
   listLaunchAdoptionCandidates,
   listLaunchAttempts,
+  dismissStaleUncertainAttempts,
   promoteStalePendingLaunchAttempts,
   resolveLaunchAttempt,
 } from "./launch";
@@ -605,6 +608,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
     forkSession: async ({ threadId, text }) => forkSession(bb, db, sessionMirror, threadId, text),
     interruptSession: async ({ threadId }) => interruptSession(bb, db, sessionMirror, threadId),
+    adoptThread: async ({ threadId, taskId }) => adoptThread(bb, db, sessionMirror, threadId, taskId),
 	    listLaunchAttempts: async ({ taskId }) => ({ attempts: await attemptsWithCandidates(bb, db, listLaunchAttempts(db, taskId)) }),
     resolveLaunchAttempt: async ({ id, action }) => resolveLaunchAttempt(bb, db, sessionMirror, launchBindings, id, action),
     listArtifacts: async ({ taskId, includeDeleted }) => ({ artifacts: listArtifacts(db, taskId, { includeDeleted }) }),
@@ -752,6 +756,45 @@ export default async function plugin(bb: BbPluginApi) {
           status: host.status ?? "unknown",
         })),
       ),
+    // A single unscoped bb.sdk.providers.models() call only returns one (host-default) provider's
+    // models, verified live against a running bb instance (`bb provider models --json` matched
+    // `bb provider models codex --json` exactly). To surface every provider the host has access
+    // to, list the providers first and fetch each one's own catalog, then merge with the pure
+    // normalizer (models.ts). Any failure (a provider lookup throwing, or the whole thing) reports
+    // as a catalog error instead of failing the RPC, so one broken provider does not blank the
+    // whole picker.
+    listModels: async ({ hostId }) => {
+      const routing = hostId ? { hostId } : {};
+      try {
+        const providers = await bb.sdk.providers.list(routing);
+        const entries: RawProviderModelsResponse[] = await Promise.all(
+          providers.map(async (provider): Promise<RawProviderModelsResponse> => {
+            try {
+              const response = await bb.sdk.providers.models({ ...routing, providerId: provider.id });
+              return {
+                provider: {
+                  id: provider.id,
+                  displayName: provider.displayName,
+                  available: provider.available,
+                  serviceTiers: provider.serviceTiers,
+                },
+                models: response.models,
+                modelLoadError: response.modelLoadError,
+              };
+            } catch {
+              return {
+                provider: { id: provider.id, displayName: provider.displayName, available: provider.available, serviceTiers: provider.serviceTiers },
+                models: [],
+                modelLoadError: { code: "failed", providerId: provider.id },
+              };
+            }
+          }),
+        );
+        return normalizeModelCatalog(entries);
+      } catch {
+        return { providers: [], models: [], error: { code: "failed", providerId: "" } };
+      }
+    },
     getPrefs: async () => {
       const storedPrefs = await bb.storage.kv.get<unknown>(PREFS_KEY);
       const parsed = prefsSchema.parse(storedPrefs ?? defaultTaskPrefs({}));
@@ -1199,6 +1242,10 @@ export default async function plugin(bb: BbPluginApi) {
         sweepOldNotifications(db);
         sweepOldSuppressions(db);
         for (const taskId of promoteStalePendingLaunchAttempts(db)) {
+          bb.realtime.publish("tasks", { taskId });
+          bb.realtime.publish("rpi:sessions", { taskId, threadId: null });
+        }
+        for (const taskId of dismissStaleUncertainAttempts(db)) {
           bb.realtime.publish("tasks", { taskId });
           bb.realtime.publish("rpi:sessions", { taskId, threadId: null });
         }

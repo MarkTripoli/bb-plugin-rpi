@@ -138,6 +138,19 @@ export function artifactType(fileName: string, frontmatter: Frontmatter) {
     .find((type) => prefix === type || prefix.startsWith(`${type}-`)) ?? "other";
 }
 
+// Middle-truncates a file name so the descriptive middle survives (the numbered-phase word, e.g.
+// "01-research-questions-..."), keeping the head and the tail (usually the extension) intact.
+// Ui/rpi.tsx keeps its own copy of this (the frontend bundle never imports this server-only
+// module; see ARTIFACT_GROUP_ORDER's comment there for the same reason), so a change here needs
+// the same change made there.
+export function middleEllipsis(name: string, max: number): string {
+  if (name.length <= max) return name;
+  const headLength = Math.max(0, max - 12);
+  const head = name.slice(0, headLength);
+  const tail = name.slice(name.length - 11);
+  return `${head}\u2026${tail}`;
+}
+
 export function parseArtifactNumber(fileName: string) {
   const match = /^(\d{2})-/.exec(fileName);
   return match ? Number.parseInt(match[1]!, 10) : null;

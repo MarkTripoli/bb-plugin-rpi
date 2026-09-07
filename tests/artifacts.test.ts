@@ -12,6 +12,7 @@ import {
   getArtifactVersion,
   groupByType,
   listArtifactVersions,
+  middleEllipsis,
   nextArtifactNumber,
   parseFrontmatter,
   restoreArtifact,
@@ -131,4 +132,13 @@ test("frontmatter and type inference handle eof fences, quoted scalars, and long
   assert.equal(artifactType("01-research-questions-cache.md", {}), "research-questions");
   assert.equal(artifactType("02-pr-description-cache.md", {}), "pr-description");
   assert.equal(artifactType("03-unknown-cache.md", {}), "other");
+});
+
+test("middleEllipsis: returns short names unchanged, truncates long ones to exactly max", () => {
+  assert.equal(middleEllipsis("01-research-questions.md", 34), "01-research-questions.md");
+  const truncated = middleEllipsis("01-research-questions-dashboard-caching-strategy.md", 34);
+  assert.equal(truncated.length, 34);
+  assert.ok(truncated.includes("\u2026"));
+  assert.equal(truncated.slice(0, 22), "01-research-questions-dashboard-caching-strategy.md".slice(0, 22));
+  assert.equal(truncated.slice(-11), "01-research-questions-dashboard-caching-strategy.md".slice(-11));
 });

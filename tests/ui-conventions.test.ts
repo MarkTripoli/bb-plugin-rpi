@@ -1,0 +1,42 @@
+import fs from "node:fs";
+import path from "node:path";
+import test from "node:test";
+import assert from "node:assert/strict";
+
+// AGENTS.md frontend convention: the only permitted uppercase-tracked style is a table column
+// header (`text-[11px] uppercase tracking-[0.2em]`, inside a <th> or a div-based header row).
+// Every other heading or label is sentence case. Locates ui/rpi.tsx the same way
+// tests/prose.test.ts does (relative to the repo root, one level up from tests/).
+const root = path.resolve(import.meta.dirname, "..");
+const content = fs.readFileSync(path.join(root, "ui", "rpi.tsx"), "utf8");
+const EM_DASH = "\u2014";
+
+test("ui/rpi.tsx has no retired letter-spacing tracks", () => {
+  for (const banned of ["tracking-[0.16em]", "tracking-[0.22em]", "tracking-[0.24em]"]) {
+    assert.equal(content.includes(banned), false, `found retired class ${banned}`);
+  }
+});
+
+test("ui/rpi.tsx has no text-[10px]", () => {
+  assert.equal(content.includes("text-[10px]"), false);
+});
+
+test("ui/rpi.tsx only pulses under motion-safe", () => {
+  assert.equal(/(?<!motion-safe:)animate-pulse/.test(content), false);
+});
+
+test("ui/rpi.tsx (UI copy) contains no em dashes", () => {
+  assert.equal(content.includes(EM_DASH), false);
+});
+
+test("every uppercase-tracked line is the one permitted table-header style", () => {
+  const offenders: string[] = [];
+  const lines = content.split("\n");
+  for (const [index, line] of lines.entries()) {
+    if (!line.includes("uppercase")) continue;
+    if (!line.includes("tracking-[0.2em]") || !line.includes("text-[11px]")) {
+      offenders.push(`line ${index + 1}: ${line.trim()}`);
+    }
+  }
+  assert.deepEqual(offenders, []);
+});
