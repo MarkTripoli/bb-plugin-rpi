@@ -91,6 +91,13 @@ export function needsHuman(status: string): boolean {
   return status === "ready_for_input" || status === "needs_approval" || status === "failed" || status === "lost";
 }
 
+// "1 sessions running" reads as broken; every count-then-noun sentence in the panel (the band's
+// running hint, sessions/artifacts/comments counts) goes through this instead of a bare
+// template-literal `s`.
+export function plural(count: number, singular: string, pluralForm: string = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : pluralForm}`;
+}
+
 // Parses the same nextStepJson shape transitions.ts's parseNextStepExtraction reads
 // (extraction.ts's NextStepSuggestions, persisted as text), but keeps nextStepSummary: the
 // canonical parser (transitions.ts) only surfaces type/nextStepType for the suggested-next
@@ -172,7 +179,11 @@ export function effectiveStatus<S extends EffectiveStatusSession>(
   const supersededBy = taskSessions.some((other) => {
     if (other.threadId === session.threadId) return false;
     if (other.createdAt <= session.createdAt) return false;
-    if (other.label === null) return false; // a side fork/freeform helper never supersedes
+    // A null-label session (freeform/side helper) never supersedes a labeled phase session, but a
+    // newer null-label session in the same task does supersede an older one: three freeform
+    // sessions from hours ago should not all still read as "Needs you", only the newest.
+    if (session.label === null) return other.label === null;
+    if (other.label === null) return false;
     if (labelStep(other.label) === sessionStep) return true;
     const otherIndex = stepIndex(other.label, task.workflowType, task.worktreeTiming);
     return sessionIndex >= 0 && otherIndex >= 0 && otherIndex > sessionIndex;

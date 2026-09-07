@@ -43,6 +43,7 @@ import {
   needsHuman,
   nextStepSummary,
   phaseProgress,
+  plural,
   statusMeta,
   workflowSteps,
   type PhaseProgressEntry,
@@ -579,7 +580,7 @@ function AttentionCountChip({ n }: { n: number }) {
   return (
     <span
       className={cn("inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-xs font-semibold", TONE_PILL_CLASS.attention)}
-      aria-label={`${n} sessions need you`}
+      aria-label={`${plural(n, "session")} ${n === 1 ? "needs" : "need"} you`}
     >
       {n}
     </span>
@@ -645,7 +646,7 @@ function TaskCompactRow({ task, onOpen }: { task: TaskRow; onOpen: () => void })
     >
       <div className="flex items-center justify-between gap-2">
         <span className="truncate font-medium text-foreground">{task.name}</span>
-        <span className="shrink-0 text-xs text-muted-foreground">{task.sessionCount} sessions · {relativeTime(task.updatedAt)}</span>
+        <span className="shrink-0 text-xs text-muted-foreground">{plural(task.sessionCount, "session")} · {relativeTime(task.updatedAt)}</span>
       </div>
       <div className="flex items-center justify-between gap-2">
         {task.isDraft ? <LabelPill label="Draft" /> : <PhaseStripMini task={task} />}
@@ -763,7 +764,7 @@ function TaskBoard({ tasks, width }: { tasks: TaskRow[]; width: number }) {
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     {task.isDraft ? <LabelPill label="Draft" /> : <TaskStepPill task={task} />}
-                    <span className="text-xs text-muted-foreground">{task.sessionCount} sessions</span>
+                    <span className="text-xs text-muted-foreground">{plural(task.sessionCount, "session")}</span>
                     {task.attentionCount > 0 ? <AttentionCountChip n={task.attentionCount} /> : null}
                   </div>
                 </div>
@@ -1295,6 +1296,22 @@ function startedAgoText(createdAt: number): string {
   return rt === "now" ? "just started" : `started ${rt} ago`;
 }
 
+// Live finding (D.0.4): the previous version always rendered "forked from attempt {ordinal of
+// forkedFrom within ITS OWN label group}", which reads as a self-reference ("attempt 1 forked from
+// attempt 1") whenever the source session belongs to a different labelStep than the fork, since
+// attempt numbering is only meaningful within one label group. Only show an attempt number when
+// the fork source shares this session's labelStep; otherwise name its phase; otherwise (no
+// resolvable source) fall back to "started ... ago".
+function forkSubLine(session: SessionView, allSessions: SessionView[], ordinals: Map<string, { ordinal: number; total: number }>): string {
+  const forkedFrom = session.forkedFromThreadId ? allSessions.find((other) => other.threadId === session.forkedFromThreadId) : undefined;
+  if (!forkedFrom || forkedFrom.threadId === session.threadId) return startedAgoText(session.createdAt);
+  const sourceStep = labelStep(forkedFrom.label);
+  if (sourceStep !== null && sourceStep === labelStep(session.label)) {
+    return `forked from attempt ${ordinals.get(forkedFrom.threadId)?.ordinal ?? 1}`;
+  }
+  return `forked from ${sourceStep ?? "session"}`;
+}
+
 // "What it wants" cell: needsHuman statuses reuse attentionText verbatim; a superseded session
 // says what it handed off (its own next-step extraction, if any); running/interrupted get a short
 // present-tense line; anything else (launching, resuming, interrupt_requested) falls back to
@@ -1351,10 +1368,7 @@ function SessionsTable({
           const meta = statusMeta(effective);
           const ordinal = ordinals.get(session.threadId);
           const attemptSuffix = ordinal && ordinal.total > 1 ? `, attempt ${ordinal.ordinal}` : "";
-          const forkedFrom = session.forkedFromThreadId ? allSessions.find((other) => other.threadId === session.forkedFromThreadId) : undefined;
-          const subLine = forkedFrom
-            ? `forked from attempt ${ordinals.get(forkedFrom.threadId)?.ordinal ?? 1}`
-            : startedAgoText(session.createdAt);
+          const subLine = forkSubLine(session, allSessions, ordinals);
           return (
             <div
               key={session.threadId}
@@ -1406,10 +1420,7 @@ function SessionsTable({
             const meta = statusMeta(effective);
             const ordinal = ordinals.get(session.threadId);
             const attemptSuffix = ordinal && ordinal.total > 1 ? `, attempt ${ordinal.ordinal}` : "";
-            const forkedFrom = session.forkedFromThreadId ? allSessions.find((other) => other.threadId === session.forkedFromThreadId) : undefined;
-            const subLine = forkedFrom
-              ? `forked from attempt ${ordinals.get(forkedFrom.threadId)?.ordinal ?? 1}`
-              : startedAgoText(session.createdAt);
+            const subLine = forkSubLine(session, allSessions, ordinals);
             return (
               <tr
                 key={session.threadId}
@@ -1903,10 +1914,19 @@ function ConfirmDialog({
 // so a wide window with a narrow side panel does not get the desktop three-column layout squeezed
 // into ~150px. `useLayoutEffect` (not `useEffect`) measures before first paint so there is no
 // one-frame flash at the wrong width.
-function useElementWidth(ref: RefObject<HTMLElement | null>) {
+//
+// Callback-ref pattern (live finding, D.0.1): a plain `useRef` object never changes identity, so
+// `useLayoutEffect(..., [ref])` only ever runs once, against whatever `ref.current` was at that
+// first commit. A component that renders a "Loading..." branch before its real root (e.g.
+// TaskDetailPage) mounts with `ref.current === null` on that first commit, and the effect then
+// never re-runs once the real root mounts later, so width stays 0 forever and every
+// width-driven `compact` branch downstream never engages. Returning a state setter as the ref
+// callback instead means React calls it every time the underlying DOM node actually changes
+// (including null -> real node), so the observer effect (keyed on that node) always re-runs.
+function useElementWidth(): [width: number, ref: (node: HTMLElement | null) => void] {
+  const [node, setNode] = useState<HTMLElement | null>(null);
   const [width, setWidth] = useState(0);
   useLayoutEffect(() => {
-    const node = ref.current;
     if (!node) return;
     setWidth(node.getBoundingClientRect().width);
     const observer = new ResizeObserver((entries) => {
@@ -1915,8 +1935,8 @@ function useElementWidth(ref: RefObject<HTMLElement | null>) {
     });
     observer.observe(node);
     return () => observer.disconnect();
-  }, [ref]);
-  return width;
+  }, [node]);
+  return [width, setNode];
 }
 
 function readPersistedWidth(key: string, fallback: number, range: { min: number; max: number }) {
@@ -2014,8 +2034,7 @@ function ArtifactViewer({ taskId, fileName, onRestore, panelWidth }: { taskId: s
   const [sessions, setSessions] = useState<SessionView[]>([]);
   const [sendThreadId, setSendThreadId] = useState("");
   const [sendMode, setSendMode] = useState<"send" | "send-and-resolve">("send-and-resolve");
-  const viewerRootRef = useRef<HTMLDivElement | null>(null);
-  const viewerWidth = useElementWidth(viewerRootRef);
+  const [viewerWidth, setViewerRoot] = useElementWidth();
   const layoutMode = artifactLayoutMode(panelWidth, viewerWidth);
   const commentsWidth = usePersistedWidth("rpi.artifacts.split.comments", 320, ARTIFACT_COMMENTS_WIDTH_RANGE);
 
@@ -2187,7 +2206,7 @@ function ArtifactViewer({ taskId, fileName, onRestore, panelWidth }: { taskId: s
   );
 
   return (
-    <div ref={viewerRootRef} className="flex min-h-0 flex-1 flex-col gap-3 rounded-md border border-border bg-card p-3">
+    <div ref={setViewerRoot} className="flex min-h-0 flex-1 flex-col gap-3 rounded-md border border-border bg-card p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
           <h3 className="truncate text-sm font-semibold text-foreground">{artifact.fileName}</h3>
@@ -2399,8 +2418,7 @@ function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFi
   const [grouped, setGrouped] = useState(true);
   const [selected, setSelected] = useState<string | null>(initialFileName ?? null);
   const [busy, setBusy] = useState(false);
-  const panelRef = useRef<HTMLDivElement | null>(null);
-  const panelWidth = useElementWidth(panelRef);
+  const [panelWidth, setPanelRoot] = useElementWidth();
   // Forced stacked below the breakpoint regardless of viewer width; see artifact-layout.ts.
   const stacked = panelWidth > 0 && panelWidth < ARTIFACT_PANEL_STACK_BREAKPOINT;
   const listWidth = usePersistedWidth("rpi.artifacts.split.list", 300, ARTIFACT_LIST_WIDTH_RANGE);
@@ -2494,7 +2512,7 @@ function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFi
   ) : null;
 
   return (
-    <div ref={panelRef} className="flex h-full min-h-0 flex-1 flex-col gap-3">
+    <div ref={setPanelRoot} className="flex h-full min-h-0 flex-1 flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <button type="button" onClick={() => setGrouped((value) => !value)} className={cn("inline-flex h-9 items-center gap-2 rounded-md border px-3 text-xs uppercase tracking-[0.2em]", grouped ? "border-foreground text-foreground" : "border-border text-muted-foreground")}>
@@ -2673,8 +2691,7 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
   // PhaseStrip clicks, and once from the current step on first load (see the effect below).
   const [phaseFilter, setPhaseFilter] = useState<string | null>(null);
   const initializedFilterRef = useRef<string | null>(null);
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const panelWidth = useElementWidth(rootRef);
+  const [panelWidth, setRoot] = useElementWidth();
   const compact = panelWidth > 0 && panelWidth < 560;
 
   const refetch = () => {
@@ -2729,18 +2746,19 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
     (attempt.status === "failed" && attempt.retryMarker === null),
   );
 
-  const liveSessionCount = sessions.filter((session) => effectiveStatus(session, sessions, task) !== SUPERSEDED).length;
   const filteredSessions = phaseFilter ? sessions.filter((session) => labelStep(session.label) === phaseFilter) : sessions;
   const currentSession = currentSessionFor(sessions, task);
 
+  // The tab shows the total session count; the heading under the strip (below) already says how
+  // many of those are live or phase-filtered, so this is not effectiveStatus-filtered.
   const tabs: Array<{ id: "sessions" | "artifacts" | "settings"; label: string }> = [
-    { id: "sessions", label: `Sessions ${liveSessionCount}` },
+    { id: "sessions", label: `Sessions ${sessions.length}` },
     { id: "artifacts", label: artifactCount === null ? "Artifacts" : `Artifacts ${artifactCount}` },
     { id: "settings", label: "Settings" },
   ];
 
   return (
-    <div ref={rootRef} className="flex min-h-0 flex-1 flex-col gap-4">
+    <div ref={setRoot} className="flex min-h-0 flex-1 flex-col gap-4">
       <button
         type="button"
         onClick={() => navigate.toPluginPanel("rpi", { subPath: "" })}
@@ -3698,7 +3716,7 @@ function splitAttentionPrefix(text: string): [string | null, string] {
 }
 
 function needsYouEmptyMessage(runningCount: number, hasTasks: boolean): string {
-  if (runningCount > 0) return `Nothing needs you. ${runningCount} sessions running.`;
+  if (runningCount > 0) return `Nothing needs you. ${plural(runningCount, "session")} running.`;
   if (!hasTasks) return "Nothing needs you. Create a task to start.";
   return "Nothing needs you.";
 }
@@ -3807,7 +3825,7 @@ function NeedsYouBand({
           <span className={cn("whitespace-nowrap text-sm font-semibold", queue.length > 0 ? "text-attention" : "text-muted-foreground")}>{queue.length}</span>
         </div>
         <span className="truncate text-xs text-muted-foreground">
-          {compact ? `${runningCount} running` : `${runningCount} sessions running.${queue.length > 0 ? " Press N to open the first item." : ""}`}
+          {compact ? `${runningCount} running` : `${plural(runningCount, "session")} running.${queue.length > 0 ? " Press N to open the first item." : ""}`}
         </span>
       </div>
       {queue.length === 0 ? (
@@ -3965,6 +3983,7 @@ export function RpiPanel({ subPath }: { subPath: string }) {
   // one. Skips a combo that collides with the user's configured jump hotkey so it always wins.
   const jumpHotkey = useConfiguredJumpHotkey();
   const panelRootRef = useRef<HTMLDivElement | null>(null);
+  const [panelWidth, setPanelWidthRoot] = useElementWidth();
   const awaitingTRef = useRef(false);
   const chordTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clearChordRef = useRef(() => {
@@ -3972,7 +3991,6 @@ export function RpiPanel({ subPath }: { subPath: string }) {
     if (chordTimerRef.current) clearTimeout(chordTimerRef.current);
     chordTimerRef.current = null;
   });
-  const panelWidth = useElementWidth(panelRootRef);
   const compact = panelWidth > 0 && panelWidth < 560;
   usePanelHotkeys(panelRootRef, (event) => {
     if (shouldHandleHotkey(event, jumpHotkey)) return;
@@ -4006,7 +4024,13 @@ export function RpiPanel({ subPath }: { subPath: string }) {
 
   return (
     <TooltipProvider delayDuration={300}>
-    <div ref={panelRootRef} className="flex h-full min-h-0 flex-col gap-4 overflow-hidden p-4">
+    <div
+      ref={(node) => {
+        panelRootRef.current = node;
+        setPanelWidthRoot(node);
+      }}
+      className="flex h-full min-h-0 flex-col gap-4 overflow-hidden p-4"
+    >
       <RpiNotificationBridge />
       <div className="flex items-center justify-between gap-3">
         <div role="tablist" className="flex gap-1 rounded-md border border-border p-1">

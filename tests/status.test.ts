@@ -11,6 +11,7 @@ import {
   labelStep,
   needsHuman,
   phaseProgress,
+  plural,
   statusMeta,
   stepIndex,
   workflowSteps,
@@ -176,13 +177,16 @@ test("attentionQueue: filters archived and missing tasks, orders approval before
     { id: "t1", archived: false, workflowType: "rpi", worktreeTiming: "later" },
     { id: "t2", archived: true, workflowType: "rpi", worktreeTiming: "later" },
   ];
+  // Distinct (unrecognized) labels, not each session's default null: this fixture tests
+  // rank/order/filter, not the same-task null-label supersede rule, so these four t1 sessions
+  // must not supersede each other by recency.
   const sessions: FixtureSession[] = [
-    fixtureSession({ threadId: "s1", rpiStatus: "ready_for_input", taskId: "t1", updatedAt: 100, threadUpdatedAt: 100 }),
-    fixtureSession({ threadId: "s2", rpiStatus: "needs_approval", taskId: "t1", updatedAt: 50, threadUpdatedAt: 50 }),
-    fixtureSession({ threadId: "s3", rpiStatus: "failed", taskId: "t1", updatedAt: 75, threadUpdatedAt: 75 }),
-    fixtureSession({ threadId: "s4", rpiStatus: "running", taskId: "t1", updatedAt: 200, threadUpdatedAt: 200 }),
-    fixtureSession({ threadId: "s5", rpiStatus: "ready_for_input", taskId: "t2", updatedAt: 500, threadUpdatedAt: 500 }),
-    fixtureSession({ threadId: "s6", rpiStatus: "lost", taskId: "missing", updatedAt: 10, threadUpdatedAt: 10 }),
+    fixtureSession({ threadId: "s1", label: "s1", rpiStatus: "ready_for_input", taskId: "t1", updatedAt: 100, threadUpdatedAt: 100 }),
+    fixtureSession({ threadId: "s2", label: "s2", rpiStatus: "needs_approval", taskId: "t1", updatedAt: 50, threadUpdatedAt: 50 }),
+    fixtureSession({ threadId: "s3", label: "s3", rpiStatus: "failed", taskId: "t1", updatedAt: 75, threadUpdatedAt: 75 }),
+    fixtureSession({ threadId: "s4", label: "s4", rpiStatus: "running", taskId: "t1", updatedAt: 200, threadUpdatedAt: 200 }),
+    fixtureSession({ threadId: "s5", label: "s5", rpiStatus: "ready_for_input", taskId: "t2", updatedAt: 500, threadUpdatedAt: 500 }),
+    fixtureSession({ threadId: "s6", label: "s6", rpiStatus: "lost", taskId: "missing", updatedAt: 10, threadUpdatedAt: 10 }),
   ];
   const queue = attentionQueue(sessions, tasks);
   assert.deepEqual(
@@ -264,10 +268,22 @@ test("effectiveStatus: a newer session in a later phase supersedes", () => {
   assert.equal(effectiveStatus(older, [older, newer], RPI_TASK), SUPERSEDED);
 });
 
-test("effectiveStatus: a newer session with a null label never supersedes", () => {
+test("effectiveStatus: a newer session with a null label never supersedes a labeled session", () => {
   const older = { threadId: "a", label: "research", rpiStatus: "ready_for_input", createdAt: 1, advancedAt: null };
   const newer = { threadId: "b", label: null, rpiStatus: "ready_for_input", createdAt: 2, advancedAt: null };
   assert.equal(effectiveStatus(older, [older, newer], RPI_TASK), "ready_for_input");
+});
+
+test("effectiveStatus: a newer null-label session supersedes an older null-label session in the same task", () => {
+  // Live finding: three freeform sessions of the same task from 11h ago all read "Needs you";
+  // only the newest of them should.
+  const oldest = { threadId: "a", label: null, rpiStatus: "ready_for_input", createdAt: 1, advancedAt: null };
+  const middle = { threadId: "b", label: null, rpiStatus: "ready_for_input", createdAt: 2, advancedAt: null };
+  const newest = { threadId: "c", label: null, rpiStatus: "ready_for_input", createdAt: 3, advancedAt: null };
+  const all = [oldest, middle, newest];
+  assert.equal(effectiveStatus(oldest, all, RPI_TASK), SUPERSEDED);
+  assert.equal(effectiveStatus(middle, all, RPI_TASK), SUPERSEDED);
+  assert.equal(effectiveStatus(newest, all, RPI_TASK), "ready_for_input");
 });
 
 test("effectiveStatus: an older session never supersedes", () => {
@@ -410,4 +426,12 @@ test("phaseProgress: unmatched currentLabel means every step is future", () => {
 test("TONE_ORDER puts danger first and muted last", () => {
   assert.equal(TONE_ORDER[0], "danger");
   assert.equal(TONE_ORDER[TONE_ORDER.length - 1], "muted");
+});
+
+test("plural: singular at 1, default and explicit plural form otherwise", () => {
+  assert.equal(plural(1, "session"), "1 session");
+  assert.equal(plural(2, "session"), "2 sessions");
+  assert.equal(plural(0, "session"), "0 sessions");
+  assert.equal(plural(1, "child", "children"), "1 child");
+  assert.equal(plural(3, "child", "children"), "3 children");
 });
