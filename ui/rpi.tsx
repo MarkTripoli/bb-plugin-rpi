@@ -3463,6 +3463,50 @@ function otherThreadGlyph(thread: { hasPendingInteraction: boolean; isUnread: bo
   return { icon: "Circle" as const, className: "text-muted-foreground" };
 }
 
+// Sidebar group collapse state (`rpi:sidebar:collapsed`, one map for the whole sidebar): unlike
+// usePersistedSet (membership = collapsed, default expanded), a sidebar group's default depends on
+// the group's own content (does it hold the active thread or a needs-human session), so this
+// persists only explicit overrides and leaves the default to the caller.
+function readCollapsedOverrides(key: string): Record<string, boolean> {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(key) ?? "");
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const entries = Object.entries(parsed as Record<string, unknown>).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean");
+    return Object.fromEntries(entries);
+  } catch {
+    return {};
+  }
+}
+
+function useCollapseOverrides(key: string) {
+  const [overrides, setOverrides] = useState<Record<string, boolean>>(() => readCollapsedOverrides(key));
+  const set = (id: string, collapsed: boolean) => {
+    setOverrides((current) => {
+      const next = { ...current, [id]: collapsed };
+      if (typeof window !== "undefined") window.localStorage.setItem(key, JSON.stringify(next));
+      return next;
+    });
+  };
+  return { get: (id: string) => overrides[id], set };
+}
+
+// Sidebar row order within a task group: needs_approval first (an explicit ask outranks a mere
+// wait), then failed/lost (needs a decision), then ready_for_input, then still-running sessions,
+// then anything else (interrupted; superseded is filtered out before this runs); newest first
+// within a rank. Finer-grained than SessionsTable's sessionRowOrder (which only splits
+// needs-human vs not) because the sidebar mixes several urgency levels in one flat list.
+function sidebarSessionRank(effective: string): number {
+  if (effective === "needs_approval") return 0;
+  if (effective === "failed" || effective === "lost") return 1;
+  if (effective === "ready_for_input") return 2;
+  if (effective === "running" || effective === "launching" || effective === "resuming") return 3;
+  return 4;
+}
+
+function sidebarSessionTime(session: SessionView): number {
+  return session.threadUpdatedAt ?? session.updatedAt;
+}
+
 export function RpiThreadList({ activeThreadId, isCompactViewport, onNavigate, Original }: PluginThreadListProps) {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
@@ -3470,6 +3514,8 @@ export function RpiThreadList({ activeThreadId, isCompactViewport, onNavigate, O
   const [useDefault, setUseDefault] = useState(false);
   const [sessionsByThread, setSessionsByThread] = useState<Map<string, SessionView>>(new Map());
   const [taskMeta, setTaskMeta] = useState<Map<string, { name: string; workflowType: WorkflowType; worktreeTiming: "now" | "later" | "never" }>>(new Map());
+  const collapseOverrides = useCollapseOverrides("rpi:sidebar:collapsed");
+  const doneGroups = usePersistedSet("rpi:sidebar:done-expanded");
 
   const refetch = () => {
     Promise.all([
@@ -3502,8 +3548,8 @@ export function RpiThreadList({ activeThreadId, isCompactViewport, onNavigate, O
   if (useDefault) {
     return (
       <div className="flex h-full min-h-0 flex-col">
-        <button type="button" onClick={() => setUseDefault(false)} className="px-3 py-1.5 text-left text-[11px] uppercase tracking-[0.2em] text-muted-foreground hover:text-foreground">
-          Use RPI list
+        <button type="button" onClick={() => setUseDefault(false)} className="px-3 py-1.5 text-left text-xs text-muted-foreground hover:text-foreground">
+          Show RPI list
         </button>
         <div className="min-h-0 flex-1"><Original /></div>
       </div>
@@ -3531,45 +3577,135 @@ export function RpiThreadList({ activeThreadId, isCompactViewport, onNavigate, O
     onNavigate();
   };
 
+  // Each group's rows split into live (not superseded) and done (superseded); live sessions decide
+  // the group's needs-human flag, its default expand/collapse, and its sort position among groups.
+  const groupEntries = [...groups.entries()].map(([taskId, group]) => {
+    const task = taskMeta.get(taskId);
+    const taskSessions = sessionsByTaskId.get(taskId) ?? [];
+    const rows = group.threads.map((thread) => {
+      const session = sessionsByThread.get(thread.id)!;
+      const effective = task ? effectiveStatus(session, taskSessions, task) : session.rpiStatus;
+      return { thread, session, effective };
+    });
+    const live = rows
+      .filter((row) => row.effective !== SUPERSEDED)
+      .sort((a, b) => {
+        const rankDiff = sidebarSessionRank(a.effective) - sidebarSessionRank(b.effective);
+        return rankDiff !== 0 ? rankDiff : sidebarSessionTime(b.session) - sidebarSessionTime(a.session);
+      });
+    const done = rows
+      .filter((row) => row.effective === SUPERSEDED)
+      .sort((a, b) => sidebarSessionTime(b.session) - sidebarSessionTime(a.session));
+    const needsHumanCount = live.filter((row) => needsHuman(row.effective)).length;
+    const hasActive = rows.some((row) => row.thread.id === activeThreadId);
+    const latestUpdate = Math.max(...rows.map((row) => sidebarSessionTime(row.session)), 0);
+    return { taskId, taskName: group.taskName, live, done, needsHumanCount, hasActive, latestUpdate };
+  });
+  groupEntries.sort((a, b) => {
+    if (a.needsHumanCount > 0 !== b.needsHumanCount > 0) return a.needsHumanCount > 0 ? -1 : 1;
+    return b.latestUpdate - a.latestUpdate;
+  });
+
+  const ordinalsByTask = new Map<string, Map<string, { ordinal: number; total: number }>>();
+  const ordinalsFor = (taskId: string) => {
+    const cached = ordinalsByTask.get(taskId);
+    if (cached) return cached;
+    const computed = attemptOrdinals(sessionsByTaskId.get(taskId) ?? []);
+    ordinalsByTask.set(taskId, computed);
+    return computed;
+  };
+
+  const sessionRow = (thread: PluginSidebarThread, session: SessionView, effective: string, taskId: string) => {
+    const meta = statusMeta(effective);
+    const ordinal = ordinalsFor(taskId).get(session.threadId);
+    const attemptSuffix = ordinal && ordinal.total > 1 ? `, attempt ${ordinal.ordinal}` : "";
+    const title = `${capitalize(labelStep(session.label) ?? "Session")}${attemptSuffix}`;
+    return (
+      <button
+        key={thread.id}
+        type="button"
+        onClick={() => go(thread.id)}
+        className={cn(
+          "flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          thread.id === activeThreadId ? "bg-card text-foreground" : "text-muted-foreground hover:text-foreground",
+        )}
+      >
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="shrink-0"><Icon name={meta.icon} className={cn("size-3.5", TONE_TEXT_CLASS[meta.tone])} /></span>
+          </TooltipTrigger>
+          <TooltipContent>{meta.hint || meta.text}</TooltipContent>
+        </Tooltip>
+        <span className="truncate">{title}</span>
+        <span className={cn("ml-auto shrink-0", isCompactViewport && "hidden")}>{relativeTime(sidebarSessionTime(session))}</span>
+      </button>
+    );
+  };
+
+  const groupHeader = (entry: (typeof groupEntries)[number]) => {
+    const defaultCollapsed = !entry.hasActive && entry.needsHumanCount === 0;
+    const collapsed = collapseOverrides.get(entry.taskId) ?? defaultCollapsed;
+    return (
+      <button
+        type="button"
+        aria-expanded={!collapsed}
+        onClick={() => collapseOverrides.set(entry.taskId, !collapsed)}
+        className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs font-medium text-foreground hover:bg-card/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <Icon name={collapsed ? "ChevronRight" : "ChevronDown"} className="size-3.5 shrink-0" />
+        <span className="flex-1 truncate">{entry.taskName}</span>
+        {entry.needsHumanCount > 0 ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className={cn("inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[11px] font-semibold", TONE_PILL_CLASS.attention)}>{entry.needsHumanCount}</span>
+            </TooltipTrigger>
+            <TooltipContent>{plural(entry.needsHumanCount, "session needs", "sessions need")} you</TooltipContent>
+          </Tooltip>
+        ) : (
+          <span className="text-xs text-muted-foreground">{entry.live.length}</span>
+        )}
+      </button>
+    );
+  };
+
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto p-2">
-      <button type="button" onClick={() => setUseDefault(true)} className="px-1 pb-2 text-left text-[11px] uppercase tracking-[0.2em] text-muted-foreground hover:text-foreground">
-        Use default list
-      </button>
-      <div className="space-y-3">
-        {[...groups.entries()].map(([taskId, group]) => (
-          <div key={taskId} className="space-y-1">
-            <div className="px-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">{group.taskName}</div>
-            {group.threads
-              .slice()
-              .sort((a, b) => b.updatedAt - a.updatedAt)
-              .map((thread) => {
-                const session = sessionsByThread.get(thread.id)!;
-                const task = taskMeta.get(session.taskId);
-                const effective = task ? effectiveStatus(session, sessionsByTaskId.get(session.taskId) ?? [session], task) : session.rpiStatus;
-                const meta = statusMeta(effective);
-                return (
-                  <button
-                    key={thread.id}
-                    type="button"
-                    onClick={() => go(thread.id)}
-                    title={thread.title ?? thread.titleFallback ?? undefined}
-                    className={cn(
-                      "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm",
-                      thread.id === activeThreadId ? "bg-card text-foreground" : "text-muted-foreground hover:bg-card/60",
-                    )}
-                  >
-                    <Icon name={meta.icon} className={cn("size-3.5 shrink-0", TONE_TEXT_CLASS[meta.tone])} />
-                    <span className="truncate">{thread.title ?? thread.titleFallback ?? "Untitled"}</span>
-                    <span className={cn("ml-auto shrink-0 text-[10px]", isCompactViewport && "hidden")}>{session.label ?? ""}</span>
-                  </button>
-                );
-              })}
-          </div>
-        ))}
+      <div className="space-y-2">
+        {groupEntries.map((entry) => {
+          const defaultCollapsed = !entry.hasActive && entry.needsHumanCount === 0;
+          const collapsed = collapseOverrides.get(entry.taskId) ?? defaultCollapsed;
+          const doneCollapsed = !doneGroups.has(entry.taskId);
+          return (
+            <div key={entry.taskId} className="space-y-0.5">
+              {groupHeader(entry)}
+              {collapsed ? null : (
+                <>
+                  {entry.live.map((row) => sessionRow(row.thread, row.session, row.effective, entry.taskId))}
+                  {entry.done.length > 0 ? (
+                    <>
+                      <button
+                        type="button"
+                        aria-expanded={!doneCollapsed}
+                        onClick={() => doneGroups.toggle(entry.taskId)}
+                        className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs text-muted-foreground hover:text-foreground"
+                      >
+                        <Icon name={doneCollapsed ? "ChevronRight" : "ChevronDown"} className="size-3.5 shrink-0" />
+                        <span>{plural(entry.done.length, "done session", "done sessions")}</span>
+                      </button>
+                      {doneCollapsed ? null : entry.done.map((row) => sessionRow(row.thread, row.session, row.effective, entry.taskId))}
+                    </>
+                  ) : null}
+                </>
+              )}
+            </div>
+          );
+        })}
         {sortedOther.length > 0 ? (
-          <div className="space-y-1">
-            <div className="px-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">Other</div>
+          <div className="space-y-0.5">
+            <div className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs font-medium text-foreground">
+              <span className="flex-1 truncate">Other threads</span>
+              <span className="text-xs text-muted-foreground">{sortedOther.length}</span>
+            </div>
             {sortedOther.map((thread) => {
               const glyph = otherThreadGlyph(thread);
               return (
@@ -3579,19 +3715,22 @@ export function RpiThreadList({ activeThreadId, isCompactViewport, onNavigate, O
                   onClick={() => go(thread.id)}
                   title={thread.indicatorLabel ?? undefined}
                   className={cn(
-                    "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm",
-                    thread.id === activeThreadId ? "bg-card text-foreground" : "text-muted-foreground hover:bg-card/60",
+                    "flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    thread.id === activeThreadId ? "bg-card text-foreground" : "text-muted-foreground hover:text-foreground",
                   )}
                 >
                   <Icon name={glyph.icon} className={cn("size-3.5 shrink-0", glyph.className)} />
                   <span className="truncate">{thread.title ?? thread.titleFallback ?? "Untitled"}</span>
-                  <span className="ml-auto shrink-0 text-[10px]">{relativeTime(thread.updatedAt)}</span>
+                  <span className="ml-auto shrink-0">{relativeTime(thread.updatedAt)}</span>
                 </button>
               );
             })}
           </div>
         ) : null}
       </div>
+      <button type="button" onClick={() => setUseDefault(true)} className="mt-2 px-1.5 py-1 text-left text-xs text-muted-foreground hover:text-foreground">
+        Show bb's default list
+      </button>
     </div>
   );
 }
