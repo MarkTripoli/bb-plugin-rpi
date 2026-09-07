@@ -34,13 +34,18 @@ import type {
 import { AUTO_ADVANCE, BOARD_COLUMNS, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS, shouldShowComposerBanner, suggestedNextForSession, type SuggestedNext } from "../transitions";
 import { ARTIFACT_COMMENTS_WIDTH_RANGE, ARTIFACT_LIST_WIDTH_RANGE, ARTIFACT_PANEL_STACK_BREAKPOINT, artifactLayoutMode, clampWidth } from "../artifact-layout";
 import {
+  PHASE_DESCRIPTIONS,
+  SUPERSEDED,
   attentionQueue,
   attentionText,
+  effectiveStatus,
   labelStep,
   needsHuman,
+  nextStepSummary,
   phaseProgress,
   statusMeta,
   workflowSteps,
+  type PhaseProgressEntry,
   type StatusTone,
 } from "../status";
 import { markdownBlocks } from "../blocks";
@@ -1592,12 +1597,16 @@ function MinimapPanel({ taskId }: { taskId: string }) {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
   const [sessions, setSessions] = useState<SessionView[]>([]);
+  const [worktreeTiming, setWorktreeTiming] = useState<"now" | "later" | "never">("later");
 
   const refetch = () => {
     rpc.call("listSessions", { taskId }).then(({ sessions: next }) => setSessions(next));
   };
   useEffect(() => {
     refetch();
+    rpc.call("getTask", { taskId }).then(({ task }) => {
+      if (task) setWorktreeTiming(task.worktreeTiming);
+    });
   }, [taskId]);
   useRealtime("rpi:sessions", refetch);
 
@@ -1608,7 +1617,10 @@ function MinimapPanel({ taskId }: { taskId: string }) {
       <h3 className="text-sm font-semibold text-foreground">Minimap</h3>
       <div className="flex flex-wrap gap-2">
         {ordered.map((session, index) => {
-          const meta = statusMeta(session.rpiStatus);
+          // A settled session (ready_for_input/failed/lost/interrupted) whose phase already moved on
+          // shows the same muted "done" glyph the sessions table uses, not its stale waiting color.
+          const effective = effectiveStatus(session, sessions, { workflowType: session.workflowType, worktreeTiming });
+          const meta = statusMeta(effective);
           return (
             <button
               key={session.threadId}
@@ -2656,7 +2668,7 @@ export function RpiThreadList({ activeThreadId, isCompactViewport, onNavigate, O
   const sidebar = experimental_useSidebarThreads();
   const [useDefault, setUseDefault] = useState(false);
   const [sessionsByThread, setSessionsByThread] = useState<Map<string, SessionView>>(new Map());
-  const [taskNames, setTaskNames] = useState<Map<string, string>>(new Map());
+  const [taskMeta, setTaskMeta] = useState<Map<string, { name: string; workflowType: WorkflowType; worktreeTiming: "now" | "later" | "never" }>>(new Map());
 
   const refetch = () => {
     Promise.all([
@@ -2664,7 +2676,7 @@ export function RpiThreadList({ activeThreadId, isCompactViewport, onNavigate, O
       rpc.call("listTasks", { archived: false }),
     ]).then(([sessionResult, taskResult]) => {
       setSessionsByThread(new Map(sessionResult.sessions.map((session) => [session.threadId, session])));
-      setTaskNames(new Map(taskResult.tasks.map((task) => [task.id, task.name])));
+      setTaskMeta(new Map(taskResult.tasks.map((task) => [task.id, { name: task.name, workflowType: task.workflowType, worktreeTiming: task.worktreeTiming }])));
     });
   };
   useEffect(() => {
@@ -2672,6 +2684,19 @@ export function RpiThreadList({ activeThreadId, isCompactViewport, onNavigate, O
   }, []);
   useRealtime("tasks", refetch);
   useRealtime("rpi:sessions", refetch);
+
+  // Grouped by task so a session's effective status (status.ts: does a later session already
+  // supersede it) can be computed against the rest of its task's sessions, same as the panel's
+  // needs-you band and the task detail sessions table.
+  const sessionsByTaskId = useMemo(() => {
+    const map = new Map<string, SessionView[]>();
+    for (const session of sessionsByThread.values()) {
+      const list = map.get(session.taskId);
+      if (list) list.push(session);
+      else map.set(session.taskId, [session]);
+    }
+    return map;
+  }, [sessionsByThread]);
 
   if (useDefault) {
     return (
@@ -2689,7 +2714,7 @@ export function RpiThreadList({ activeThreadId, isCompactViewport, onNavigate, O
   const other: PluginSidebarThread[] = [];
   for (const thread of sidebar.threads) {
     const session = sessionsByThread.get(thread.id);
-    const taskName = session ? taskNames.get(session.taskId) : undefined;
+    const taskName = session ? taskMeta.get(session.taskId)?.name : undefined;
     if (!session || !taskName) {
       other.push(thread);
       continue;
@@ -2719,7 +2744,9 @@ export function RpiThreadList({ activeThreadId, isCompactViewport, onNavigate, O
               .sort((a, b) => b.updatedAt - a.updatedAt)
               .map((thread) => {
                 const session = sessionsByThread.get(thread.id)!;
-                const meta = statusMeta(session.rpiStatus);
+                const task = taskMeta.get(session.taskId);
+                const effective = task ? effectiveStatus(session, sessionsByTaskId.get(session.taskId) ?? [session], task) : session.rpiStatus;
+                const meta = statusMeta(effective);
                 return (
                   <button
                     key={thread.id}
@@ -3382,7 +3409,11 @@ function NeedsYouRow({
 }
 
 // The panel's inbox: sessions that need the human, ranked by urgency (attentionQueue, status.ts),
-// above the task table (PRODUCT.md #1: the panel is an inbox before it is a tracker).
+// above the task table (PRODUCT.md #1: the panel is an inbox before it is a tracker). Capped to 8
+// rows by default (a "Show N more"/"Show fewer" toggle reveals the rest) so a task with dozens of
+// waiting sessions does not push the task table off screen.
+const NEEDS_YOU_BAND_CAP = 8;
+
 function NeedsYouBand({
   queue,
   runningCount,
@@ -3396,15 +3427,18 @@ function NeedsYouBand({
   compact: boolean;
   onOpen: (threadId: string) => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const visible = expanded ? queue : queue.slice(0, NEEDS_YOU_BAND_CAP);
+  const hiddenCount = queue.length - visible.length;
   return (
     <div className="space-y-2">
-      <div className="flex items-baseline justify-between px-1">
-        <div className="flex items-baseline gap-2">
-          <h2 className="text-sm font-semibold text-foreground">Needs you</h2>
-          <span className={cn("text-sm font-semibold", queue.length > 0 ? "text-attention" : "text-muted-foreground")}>{queue.length}</span>
+      <div className="flex items-baseline justify-between gap-3 px-1">
+        <div className="flex items-baseline gap-2 whitespace-nowrap">
+          <h2 className="whitespace-nowrap text-sm font-semibold text-foreground">Needs you</h2>
+          <span className={cn("whitespace-nowrap text-sm font-semibold", queue.length > 0 ? "text-attention" : "text-muted-foreground")}>{queue.length}</span>
         </div>
-        <span className="text-xs text-muted-foreground">
-          {runningCount} sessions running.{queue.length > 0 ? " Press N to open the first item." : ""}
+        <span className="truncate text-xs text-muted-foreground">
+          {compact ? `${runningCount} running` : `${runningCount} sessions running.${queue.length > 0 ? " Press N to open the first item." : ""}`}
         </span>
       </div>
       {queue.length === 0 ? (
@@ -3413,7 +3447,7 @@ function NeedsYouBand({
         </div>
       ) : (
         <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
-          {queue.map((entry) => (
+          {visible.map((entry) => (
             <NeedsYouRow
               key={entry.session.threadId}
               session={entry.session}
@@ -3422,6 +3456,15 @@ function NeedsYouBand({
               onOpen={() => onOpen(entry.session.threadId)}
             />
           ))}
+          {hiddenCount > 0 || expanded && queue.length > NEEDS_YOU_BAND_CAP ? (
+            <button
+              type="button"
+              onClick={() => setExpanded((value) => !value)}
+              className="block w-full px-3.5 py-2 text-center text-xs font-medium text-muted-foreground hover:bg-card/70 hover:text-foreground"
+            >
+              {expanded ? "Show fewer" : `Show ${hiddenCount} more`}
+            </button>
+          ) : null}
         </div>
       )}
     </div>
@@ -3604,7 +3647,7 @@ export function RpiPanel({ subPath }: { subPath: string }) {
             aria-selected={view === "tasks"}
             aria-controls="rpi-panel-content"
             onClick={() => onSwitch("tasks")}
-            className={cn("rounded px-3 py-1.5 text-sm font-medium transition", view === "tasks" ? "bg-card text-foreground" : "text-muted-foreground")}
+            className={cn("whitespace-nowrap rounded px-3 py-1.5 text-sm font-medium transition", view === "tasks" ? "bg-card text-foreground" : "text-muted-foreground")}
           >
             Tasks
           </button>
@@ -3614,9 +3657,9 @@ export function RpiPanel({ subPath }: { subPath: string }) {
             aria-selected={view === "drafts"}
             aria-controls="rpi-panel-content"
             onClick={() => onSwitch("drafts")}
-            className={cn("rounded px-3 py-1.5 text-sm font-medium transition", view === "drafts" ? "bg-card text-foreground" : "text-muted-foreground")}
+            className={cn("whitespace-nowrap rounded px-3 py-1.5 text-sm font-medium transition", view === "drafts" ? "bg-card text-foreground" : "text-muted-foreground")}
           >
-            Drafts {draftCount}
+            <span className="whitespace-nowrap">Drafts <span className="text-muted-foreground">{draftCount}</span></span>
           </button>
           <button
             type="button"
@@ -3624,16 +3667,27 @@ export function RpiPanel({ subPath }: { subPath: string }) {
             aria-selected={view === "settings"}
             aria-controls="rpi-panel-content"
             onClick={() => onSwitch("settings")}
-            className={cn("rounded px-3 py-1.5 text-sm font-medium transition", view === "settings" ? "bg-card text-foreground" : "text-muted-foreground")}
+            className={cn("whitespace-nowrap rounded px-3 py-1.5 text-sm font-medium transition", view === "settings" ? "bg-card text-foreground" : "text-muted-foreground")}
           >
             Settings
           </button>
         </div>
-        <Button type="button" onClick={onCreateTask} className="h-10 px-4 text-xs uppercase tracking-[0.2em]">
-          <Icon name="Plus" className="size-4" />
-          Create task
-          <span className="ml-1 rounded bg-background/10 px-1.5 py-0.5 text-[10px] font-semibold">T</span>
-        </Button>
+        {compact ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button type="button" onClick={onCreateTask} size="icon" className="size-9" aria-label="Create task">
+                <Icon name="Plus" className="size-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Create task (T)</TooltipContent>
+          </Tooltip>
+        ) : (
+          <Button type="button" onClick={onCreateTask} className="h-9 text-sm font-medium">
+            <Icon name="Plus" className="size-4" />
+            Create task
+            <span className="ml-1 rounded bg-background/10 px-1.5 py-0.5 text-[10px] font-semibold">T</span>
+          </Button>
+        )}
       </div>
 
       <main id="rpi-panel-content" className="flex min-h-0 flex-1 flex-col overflow-auto rounded-2xl border border-border bg-background/80 p-4">

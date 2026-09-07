@@ -4,6 +4,8 @@ import { nowMs, readRow, readRows, transaction, writeRow } from "./db";
 import { mimeFor, upsertArtifact } from "./artifacts";
 import { deriveBoardColumn, labelToStepLabel } from "./transitions";
 import { DEFAULT_CONTEXT_THRESHOLD } from "./context-threshold";
+import { attentionCountForTask } from "./status";
+import { listSessions } from "./sessions";
 import type {
   Prefs,
   SessionRow,
@@ -136,12 +138,13 @@ function readLatestLabel(db: Database, taskId: string) {
   return row?.label ?? null;
 }
 
-function readAttentionCount(db: Database, taskId: string) {
-  return readRow<{ count: number }>(
-    db,
-    "SELECT COUNT(*) AS count FROM sessions WHERE task_id = ? AND rpi_status IN ('ready_for_input', 'needs_approval')",
-    taskId,
-  )?.count ?? 0;
+// Live finding (phase B.1): counting raw rpi_status IN ('ready_for_input','needs_approval') over-
+// counts every session that finished its turn hours ago and whose phase has since moved on (see
+// status.ts effectiveStatus). Reads the task's sessions the same way listSessions's own RPC does
+// (sessions.ts's listSessions) and lets attentionCountForTask apply the same supersession rule the
+// UI's needs-you band uses, so the server's count and the panel's band never disagree.
+function readAttentionCount(db: Database, task: Pick<TaskRecord, "id" | "workflowType" | "worktreeTiming">) {
+  return attentionCountForTask(listSessions(db, task.id), task);
 }
 
 function taskRowFromRecord(record: TaskRecord, sessionCount: number, latestLabel: string | null, attentionCount: number): TaskRow {
@@ -240,7 +243,7 @@ export function listTasks(
     ORDER BY updated_at DESC, created_at DESC
   `;
   const records = readRows<RawTaskRecord>(db, sql, ...params).map(normalizeTaskRecord);
-  return records.map((record) => taskRowFromRecord(record, readSessionCount(db, record.id), readLatestLabel(db, record.id), readAttentionCount(db, record.id)));
+  return records.map((record) => taskRowFromRecord(record, readSessionCount(db, record.id), readLatestLabel(db, record.id), readAttentionCount(db, record)));
 }
 
 export function getTask(db: Database, taskId: string) {
