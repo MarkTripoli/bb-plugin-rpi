@@ -117,8 +117,8 @@ test("launchPhase prompts start with marker then task context first-action line"
     updatedAt: 1,
   }, { skillId: null, prompt: "do work", launchedBy: "user", fromThreadId: null });
   const lines = prompt.split("\n");
-  assert.match(lines[0]!, /^<!-- rpi:launch:/);
-  assert.equal(lines[1], TASK_CONTEXT_FIRST_ACTION);
+  assert.equal(lines[0], TASK_CONTEXT_FIRST_ACTION);
+  assert.match(lines[lines.length - 1]!, /^<!-- rpi:launch:/);
   db.close();
 });
 
@@ -339,7 +339,7 @@ test("retry creates a new marked attempt with the same command and role", async 
     log: { warn: () => undefined },
   };
   await resolveLaunchAttempt(bb as never, db, new Map(), createLaunchBindingMirror(), "attempt_1", { type: "retry" });
-  assert.match(prompt, /^<!-- rpi:launch:(?!attempt_1)/);
+  assert.match(prompt, /<!-- rpi:launch:(?!attempt_1).*$/);
   assert.match(prompt, /\/rpi-create-research @x\.md/);
   const attempts = db.prepare("SELECT id, status, retried_from AS retriedFrom, environment_role AS environmentRole, thread_id AS threadId FROM launch_attempts ORDER BY created_at, id").all() as Array<{ id: string; status: string; retriedFrom: string | null; environmentRole: string; threadId: string | null }>;
   assert.equal(attempts.length, 2);

@@ -449,7 +449,7 @@ export async function launchPhase(
     const thread = await bb.sdk.threads.spawn({
       projectId: task.projectId,
       environment: selected.environment,
-      prompt: `${launchMarker(attemptId)}\n${TASK_CONTEXT_FIRST_ACTION}\n${promptFor(task, input)}`,
+      prompt: `${TASK_CONTEXT_FIRST_ACTION}\n${promptFor(task, input)}\n\n${launchMarker(attemptId)}`,
       title: `${labelTitle(input.skillId)}: ${task.name}`,
       visibility: "visible",
       executionInputSources: {
