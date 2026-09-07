@@ -62,7 +62,7 @@ test("normalizeModelCatalog attributes a routed model to routeProviderId, not th
   assert.equal(withRouteProvider.models[0]!.providerId, "codex");
 });
 
-test("normalizeModelCatalog caps models at 200 and providers at 50, and surfaces the first modelLoadError", () => {
+test("normalizeModelCatalog caps models at 1000 and providers at 50, and surfaces the first modelLoadError", () => {
   const entries: RawProviderModelsResponse[] = [];
   for (let i = 0; i < 60; i += 1) {
     entries.push({
@@ -73,7 +73,7 @@ test("normalizeModelCatalog caps models at 200 and providers at 50, and surfaces
   }
   const result = normalizeModelCatalog(entries);
   assert.equal(result.providers.length, 50);
-  assert.ok(result.models.length <= 200);
+  assert.ok(result.models.length <= 1000);
   assert.deepEqual(result.error, { code: "auth_required", providerId: "p5" });
 });
 

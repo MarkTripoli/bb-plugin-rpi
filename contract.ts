@@ -503,7 +503,7 @@ export const modelCatalogModelSchema = z
 export const listModelsOutputSchema = z
   .object({
     providers: z.array(modelCatalogProviderSchema).max(50),
-    models: z.array(modelCatalogModelSchema).max(200),
+    models: z.array(modelCatalogModelSchema).max(1000),
     error: z.object({ code: z.string(), providerId: z.string() }).nullable(),
   })
   .strict();

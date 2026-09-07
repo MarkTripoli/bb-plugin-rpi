@@ -5,7 +5,7 @@
 // per-provider responses to normalizeModelCatalog here.
 import type { ListModelsOutput } from "./contract";
 
-const MAX_MODELS = 200;
+const MAX_MODELS = 1000;
 const MAX_PROVIDERS = 50;
 
 export interface RawCatalogModel {
