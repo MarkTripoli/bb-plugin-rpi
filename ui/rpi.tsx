@@ -89,7 +89,7 @@ function SectionTitle({
 }) {
   return (
     <div className="flex items-center justify-between gap-3">
-      <h2 className="text-sm font-semibold uppercase tracking-[0.24em] text-muted-foreground">
+      <h2 className="text-sm font-semibold text-foreground">
         {title}
       </h2>
       {count === undefined ? null : (
@@ -744,7 +744,7 @@ function TaskBoard({ tasks, width }: { tasks: TaskRow[]; width: number }) {
       {columns.map((column) => (
         <section key={column.id} className="min-h-[240px] rounded-xl border border-border bg-card/60 p-3">
           <div className="mb-3 flex items-center justify-between gap-2">
-            <h3 className="text-xs font-semibold uppercase tracking-[0.24em] text-foreground">
+            <h3 className="text-sm font-semibold text-foreground">
               {column.title}
             </h3>
             <span className="text-xs text-muted-foreground">{groups[column.id].length}</span>
@@ -1823,7 +1823,7 @@ function WorkspacePanel({ taskId }: { taskId: string }) {
         </div>
       ) : null}
       <div className="rounded-md border border-border bg-card p-3">
-        <div className="mb-2 text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">Requested vs resolved</div>
+        <div className="mb-2 text-sm font-semibold text-foreground">Requested vs resolved</div>
         <div className="grid gap-2 text-sm lg:grid-cols-2">
           <div><span className="text-muted-foreground">Path requested </span><span className="text-foreground">{workspace.pathTemplate.requested ?? "default"}</span></div>
           <div><span className="text-muted-foreground">Path resolved </span><span className="text-foreground">{workspace.pathTemplate.resolved ?? "pending"}</span></div>
@@ -1833,7 +1833,7 @@ function WorkspacePanel({ taskId }: { taskId: string }) {
       </div>
       <div className="overflow-hidden rounded-md border border-border bg-card">
         <table className="min-w-full border-collapse text-sm">
-          <thead className="border-b border-border text-left text-xs uppercase tracking-[0.22em] text-muted-foreground">
+          <thead className="border-b border-border text-left text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
             <tr><th className="px-3 py-2">Repo</th><th className="px-3 py-2">Primary</th><th className="px-3 py-2">Source</th><th className="px-3 py-2">Setup</th></tr>
           </thead>
           <tbody>
@@ -1874,7 +1874,7 @@ function WorkspacePanel({ taskId }: { taskId: string }) {
 function WorkspaceStat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md border border-border bg-card p-3">
-      <div className="text-xs uppercase tracking-[0.22em] text-muted-foreground">{label}</div>
+      <div className="text-xs text-muted-foreground">{label}</div>
       <div className="mt-1 truncate text-sm font-medium text-foreground">{value}</div>
     </div>
   );
@@ -4014,7 +4014,7 @@ export function RpiDefaultsSettings() {
                         aria-label="Pattern"
                         onChange={(event) => updateContextWarningRule(index, { pattern: event.currentTarget.value })}
                       />
-                      {rule.builtin ? <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">default</span> : null}
+                      {rule.builtin ? <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">default</span> : null}
                     </div>
                   </td>
                   <td className="px-3 py-2">
@@ -4720,7 +4720,7 @@ export function RpiPanel({ subPath }: { subPath: string }) {
           <Button type="button" onClick={onCreateTask} className="h-9 text-sm font-medium">
             <Icon name="Plus" className="size-4" />
             Create task
-            <span className="ml-1 rounded bg-background/10 px-1.5 py-0.5 text-[10px] font-semibold">T</span>
+            <span className="ml-1 rounded bg-background/10 px-1.5 py-0.5 text-xs font-semibold">T</span>
           </Button>
         )}
       </div>
