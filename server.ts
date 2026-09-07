@@ -38,10 +38,12 @@ import {
 } from "./advance";
 import {
   forkSession,
+  adoptThread,
   interruptSession,
   launchDraft,
   listLaunchAdoptionCandidates,
   listLaunchAttempts,
+  dismissStaleUncertainAttempts,
   promoteStalePendingLaunchAttempts,
   resolveLaunchAttempt,
 } from "./launch";
@@ -606,6 +608,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
     forkSession: async ({ threadId, text }) => forkSession(bb, db, sessionMirror, threadId, text),
     interruptSession: async ({ threadId }) => interruptSession(bb, db, sessionMirror, threadId),
+    adoptThread: async ({ threadId, taskId }) => adoptThread(bb, db, sessionMirror, threadId, taskId),
 	    listLaunchAttempts: async ({ taskId }) => ({ attempts: await attemptsWithCandidates(bb, db, listLaunchAttempts(db, taskId)) }),
     resolveLaunchAttempt: async ({ id, action }) => resolveLaunchAttempt(bb, db, sessionMirror, launchBindings, id, action),
     listArtifacts: async ({ taskId, includeDeleted }) => ({ artifacts: listArtifacts(db, taskId, { includeDeleted }) }),
@@ -1239,6 +1242,10 @@ export default async function plugin(bb: BbPluginApi) {
         sweepOldNotifications(db);
         sweepOldSuppressions(db);
         for (const taskId of promoteStalePendingLaunchAttempts(db)) {
+          bb.realtime.publish("tasks", { taskId });
+          bb.realtime.publish("rpi:sessions", { taskId, threadId: null });
+        }
+        for (const taskId of dismissStaleUncertainAttempts(db)) {
           bb.realtime.publish("tasks", { taskId });
           bb.realtime.publish("rpi:sessions", { taskId, threadId: null });
         }

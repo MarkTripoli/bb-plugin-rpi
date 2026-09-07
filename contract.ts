@@ -547,6 +547,7 @@ export const forkSessionInputSchema = z
   .object({ threadId: z.string().min(1), text: z.string().max(10000).nullable().optional() })
   .strict();
 export const interruptSessionInputSchema = z.object({ threadId: z.string().min(1) }).strict();
+export const adoptThreadInputSchema = z.object({ threadId: z.string().min(1), taskId: z.string().min(1) }).strict();
 export const listLaunchAttemptsInputSchema = z.object({ taskId: z.string().min(1) }).strict();
 export const resolveLaunchAttemptInputSchema = z
   .object({
@@ -694,6 +695,10 @@ export const rpcContract = defineRpcContract({
   },
   interruptSession: {
     input: interruptSessionInputSchema,
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
+  adoptThread: {
+    input: adoptThreadInputSchema,
     output: z.object({ ok: z.literal(true) }).strict(),
   },
   listLaunchAttempts: {
