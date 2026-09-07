@@ -1971,14 +1971,14 @@ function ArtifactViewer({ taskId, fileName, onRestore, panelWidth }: { taskId: s
           <div style={{ width: commentsWidth.width }} className="min-h-0 min-w-0 shrink-0">{commentRailNode}</div>
         </div>
       ) : (
-        <div className="flex min-h-[260px] flex-1 flex-col gap-3 overflow-auto">
+        <div className="flex min-h-[260px] flex-1 flex-col gap-3">
           <div className="min-h-0 flex-1 overflow-auto rounded-md border border-border bg-background p-3">{previewNode}</div>
-          <details className="min-w-0 rounded-md border border-border" open>
-            <summary className="cursor-pointer select-none rounded-md px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col rounded-md border border-border">
+            <div className="shrink-0 px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
               Comments ({commentThreads.length})
-            </summary>
-            <div className="min-w-0 p-3 pt-0">{commentRailNode}</div>
-          </details>
+            </div>
+            <div className="min-h-0 min-w-0 flex-1 overflow-auto p-3 pt-0">{commentRailNode}</div>
+          </div>
         </div>
       )}
     </div>
@@ -2241,7 +2241,7 @@ function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFi
   ) : null;
 
   return (
-    <div ref={panelRef} className="flex h-full min-h-0 flex-col gap-3">
+    <div ref={panelRef} className="flex h-full min-h-0 flex-1 flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <button type="button" onClick={() => setGrouped((value) => !value)} className={cn("inline-flex h-9 items-center gap-2 rounded-md border px-3 text-xs uppercase tracking-[0.2em]", grouped ? "border-foreground text-foreground" : "border-border text-muted-foreground")}>
@@ -2255,13 +2255,13 @@ function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFi
         </Button>
       </div>
       {stacked ? (
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto">
-          <details className="rounded-md border border-border" open>
-            <summary className="cursor-pointer select-none rounded-md px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+        <div className="flex min-h-0 flex-1 flex-col gap-3">
+          <div className={cn("flex min-h-0 flex-col rounded-md border border-border", viewerNode ? "max-h-[40%] shrink-0" : "flex-1")}>
+            <div className="shrink-0 px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
               Artifacts ({artifacts.length})
-            </summary>
-            <div className="p-3 pt-0">{listNode}</div>
-          </details>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto p-3 pt-0">{listNode}</div>
+          </div>
           {viewerNode}
         </div>
       ) : (
@@ -2321,7 +2321,7 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
   );
 
   return (
-    <div className="space-y-4">
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
       <button
         type="button"
         onClick={() => navigate.toPluginPanel("rpi", { subPath: "" })}
@@ -2382,7 +2382,7 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
       </div>
       <WorkflowStrip workflowType={task.workflowType} worktreeTiming={task.worktreeTiming} currentLabel={workspace.currentLabel} />
       {tab === "artifacts" ? (
-        <div className="min-h-[520px]">
+        <div className="flex min-h-[520px] flex-1 flex-col">
           <ArtifactsPanel taskId={taskId} initialFileName={artifactFileName} />
         </div>
       ) : tab === "workspace" ? (
@@ -3368,7 +3368,7 @@ export function RpiPanel({ subPath }: { subPath: string }) {
           </div>
         </aside>
 
-        <main className="min-h-0 overflow-auto rounded-2xl border border-border bg-background/80 p-4">
+        <main className="flex min-h-0 flex-col overflow-auto rounded-2xl border border-border bg-background/80 p-4">
           {detailTaskId ? (
             <TaskDetailPage taskId={detailTaskId} artifactFileName={/^tasks\/[^/]+\/artifacts\/(.+)$/.exec(subPath)?.[1] ? decodeURIComponent(/^tasks\/[^/]+\/artifacts\/(.+)$/.exec(subPath)![1]!) : null} />
           ) : view === "new" ? (
