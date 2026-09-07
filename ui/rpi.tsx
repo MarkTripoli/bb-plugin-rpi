@@ -849,6 +849,7 @@ function ModelSelect({
   value,
   onChange,
   allowDefault = true,
+  defaultOptionLabel = "Default (from settings)",
   size = "md",
   label,
 }: {
@@ -856,6 +857,7 @@ function ModelSelect({
   value: ModelSelectValue;
   onChange: (next: ModelSelectValue) => void;
   allowDefault?: boolean;
+  defaultOptionLabel?: string;
   size?: "md" | "sm";
   label: string;
 }) {
@@ -924,7 +926,7 @@ function ModelSelect({
         }}
         className={selectClass}
       >
-        {allowDefault ? <option value="">Default (from settings)</option> : null}
+        {allowDefault ? <option value="">{defaultOptionLabel}</option> : null}
         {!knownValue ? (
           <option value="__unavailable" disabled>
             {`${modelOptionValue(value.providerId, value.model) || `${value.providerId ?? ""}/${value.model ?? ""}`} (not available)`}
@@ -1196,7 +1198,7 @@ function NewTaskPage({
 
           <div className="grid gap-4 lg:grid-cols-2">
             <div className="space-y-3 rounded-xl border border-border bg-card p-3">
-              <h2 className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">Where</h2>
+              <h2 className="text-sm font-semibold text-foreground">Where</h2>
               <label className="block space-y-1 text-xs text-muted-foreground">
                 <span className="block">Project</span>
                 <ComposerToolbarSelect
@@ -1241,7 +1243,7 @@ function NewTaskPage({
             </div>
 
             <div className="space-y-3 rounded-xl border border-border bg-card p-3">
-              <h2 className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">How</h2>
+              <h2 className="text-sm font-semibold text-foreground">How</h2>
               <label className="block space-y-1 text-xs text-muted-foreground">
                 <span className="block">Workflow</span>
                 <ComposerToolbarSelect
@@ -2068,12 +2070,14 @@ function ArtifactRow({
   onSelect,
   onDelete,
   onRestore,
+  nameMaxLength,
 }: {
   artifact: ArtifactRecord;
   selected: boolean;
   onSelect: () => void;
   onDelete: () => void;
   onRestore: () => void;
+  nameMaxLength: number;
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const path = `/plugins/rpi/tasks/${encodeURIComponent(artifact.taskId)}/artifacts/${encodeURIComponent(artifact.fileName)}`;
@@ -2083,8 +2087,8 @@ function ArtifactRow({
         <ArtifactIcon artifact={artifact} />
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className={cn("truncate text-sm font-medium", artifact.isDeleted ? "text-muted-foreground line-through" : "text-foreground")}>
-              {middleEllipsis(artifact.fileName, 34)}
+            <span className={cn("text-sm font-medium", artifact.isDeleted ? "text-muted-foreground line-through" : "text-foreground")}>
+              {middleEllipsis(artifact.fileName, nameMaxLength)}
             </span>
           </TooltipTrigger>
           <TooltipContent>{artifact.fileName}</TooltipContent>
@@ -2830,6 +2834,7 @@ function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFi
       onSelect={() => setSelected(artifact.fileName)}
       onDelete={() => void mutate("deleteArtifact", artifact.fileName)}
       onRestore={() => void mutate("restoreArtifact", artifact.fileName)}
+      nameMaxLength={stacked ? 30 : 40}
     />
   ));
 
@@ -2894,10 +2899,17 @@ function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFi
     <TooltipProvider delayDuration={300}>
     <div ref={setPanelRoot} className="flex h-full min-h-0 flex-1 flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-baseline gap-2">
-          <h3 className="text-sm font-semibold text-foreground">Artifacts</h3>
-          <span className="text-sm font-semibold text-muted-foreground">{artifacts.length}</span>
-        </div>
+        {stacked && selected ? (
+          <Button type="button" variant="outline" className="h-8 w-fit" onClick={() => setSelected(null)}>
+            <Icon name="ChevronLeft" className="size-4" />
+            Artifacts {artifacts.length}
+          </Button>
+        ) : (
+          <div className="flex items-baseline gap-2">
+            <h3 className="text-sm font-semibold text-foreground">Artifacts</h3>
+            <span className="text-sm font-semibold text-muted-foreground">{artifacts.length}</span>
+          </div>
+        )}
         <Tooltip>
           <TooltipTrigger asChild>
             <Button type="button" variant="outline" className="h-8" disabled={busy} onClick={() => void hydrateNow()}>
@@ -2913,10 +2925,6 @@ function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFi
       {stacked ? (
         selected ? (
           <div className="flex min-h-0 flex-1 flex-col gap-3">
-            <Button type="button" variant="outline" className="h-8 w-fit" onClick={() => setSelected(null)}>
-              <Icon name="ChevronLeft" className="size-4" />
-              Artifacts {artifacts.length}
-            </Button>
             {viewerNode}
           </div>
         ) : (
@@ -3013,16 +3021,17 @@ function PhaseStrip({
                 aria-pressed={isActive}
                 onClick={() => onSelect(entry.step)}
                 className={cn(
-                  "min-w-0 flex-1 rounded-md border px-3 py-2 text-left",
+                  "min-w-0 rounded-md border px-3 py-2 text-left",
+                  entry.state === "current" ? "flex-[1.6]" : "flex-1",
                   compact && "min-w-[120px]",
                   entry.state === "current" ? "border-foreground bg-card" : entry.state === "future" ? "border-dashed border-border" : "border-border",
                 )}
               >
                 <span className={cn("block h-1 rounded-sm", barClass)} />
-                <span className="mt-1.5 flex items-center justify-between gap-2">
+                <span className={cn("mt-1.5 flex gap-2", compact ? "flex-col items-start gap-0.5" : "items-center justify-between")}>
                   <span
                     className={cn(
-                      "truncate text-xs",
+                      "truncate whitespace-nowrap text-xs",
                       entry.state === "current" ? "font-medium text-foreground" : entry.state === "done" ? "text-muted-foreground" : "text-muted-foreground/70",
                     )}
                   >
@@ -3283,16 +3292,6 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
           </button>
         ))}
       </div>
-      <PhaseStrip
-        workflowType={task.workflowType}
-        worktreeTiming={task.worktreeTiming}
-        currentLabel={workspace.currentLabel}
-        sessions={sessions}
-        activeFilter={phaseFilter}
-        onSelect={(step) => setPhaseFilter((current) => (current === step ? null : step))}
-        compact={compact}
-      />
-      <TipsPanel taskId={taskId} label={workspace.currentLabel} variant="inline" />
       <div id={`rpi-task-tabpanel-${tab}`} role="tabpanel" aria-labelledby={`rpi-task-tab-${tab}`} className="flex min-h-0 flex-1 flex-col">
         {tab === "artifacts" ? (
           <div className="flex min-h-[520px] flex-1 flex-col">
@@ -3315,6 +3314,16 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
           </div>
         ) : (
           <div className="space-y-3">
+            <PhaseStrip
+              workflowType={task.workflowType}
+              worktreeTiming={task.worktreeTiming}
+              currentLabel={workspace.currentLabel}
+              sessions={sessions}
+              activeFilter={phaseFilter}
+              onSelect={(step) => setPhaseFilter((current) => (current === step ? null : step))}
+              compact={compact}
+            />
+            <TipsPanel taskId={taskId} label={workspace.currentLabel} variant="inline" />
             {visibleAttempts.length > 0 ? (
               <div className="space-y-2">
                 {visibleAttempts.map((attempt) => <RecoverLaunchRow key={attempt.id} attempt={attempt} onResolved={refetch} />)}
@@ -3779,7 +3788,7 @@ export function RpiNotificationSettings() {
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-sm font-semibold uppercase tracking-[0.24em] text-foreground">Notifications</h2>
+        <h2 className="text-sm font-semibold text-foreground">Notifications</h2>
         <p className="mt-1 text-sm text-muted-foreground">Cmd Shift J is reserved by Chromium, so RPI uses Cmd Shift U by default.</p>
       </div>
       <div className="grid gap-3 lg:grid-cols-2">
@@ -3874,7 +3883,7 @@ export function RpiDefaultsSettings() {
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-sm font-semibold uppercase tracking-[0.24em] text-foreground">Defaults</h2>
+        <h2 className="text-sm font-semibold text-foreground">Defaults</h2>
         <p className="mt-1 text-sm text-muted-foreground">Provider, model, reasoning, and permission mode used for new tasks, per workflow type. Blank falls back to the row above.</p>
       </div>
       <div className="grid gap-3 lg:grid-cols-2">
@@ -3884,6 +3893,7 @@ export function RpiDefaultsSettings() {
             value={{ providerId: prefs.defaults.providerId ?? null, model: prefs.defaults.model ?? null, reasoningLevel: prefs.defaults.reasoningLevel ?? null }}
             onChange={(next) => saveDefaults({ providerId: next.providerId, model: next.model, reasoningLevel: next.reasoningLevel })}
             allowDefault
+            defaultOptionLabel="bb default (the provider's choice)"
             label="Default model"
           />
         </div>
@@ -3901,7 +3911,7 @@ export function RpiDefaultsSettings() {
         </div>
       </div>
       <div className="space-y-2">
-        <h3 className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">Per workflow type</h3>
+        <h3 className="text-sm font-semibold text-foreground">Per workflow type</h3>
         <div className="overflow-hidden rounded-xl border border-border bg-card">
           <table className="min-w-full border-collapse text-sm">
             <thead className="border-b border-border text-left text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
@@ -3948,7 +3958,7 @@ export function RpiDefaultsSettings() {
         </div>
       </div>
       <div className="space-y-2">
-        <h3 className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">Context warning</h3>
+        <h3 className="text-sm font-semibold text-foreground">Context warning</h3>
         <p className="text-xs text-muted-foreground">Patterns match provider/model, for example */claude-sonnet-* or codex/gpt-5.5.</p>
         <label className="block space-y-2 rounded-md border border-border bg-card p-3 text-sm text-foreground">
           <span className="block font-medium">Default threshold {Math.round(prefs.contextWarning.defaultThreshold * 100)}%</span>
@@ -4380,8 +4390,8 @@ function NeedsYouRow({
         <div className="flex items-center gap-2">
           <StatusPill tone={meta.tone} label={meta.text} icon={meta.icon} hint={meta.hint || undefined} />
           <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{task.name}</span>
-          <Button asChild variant="outline" className="h-9 w-9 shrink-0 p-0">
-            <span aria-hidden="true">
+          <Button asChild variant="outline" className="h-9 w-9 shrink-0 p-0" aria-label="Open session">
+            <span>
               <Icon name="ArrowUpRight" className="size-4" />
             </span>
           </Button>
