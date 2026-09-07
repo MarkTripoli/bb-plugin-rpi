@@ -1,8 +1,9 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent, RefObject } from "react";
+import type { DragEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode, RefObject } from "react";
 import {
   Markdown,
   experimental_SourceCode as SourceCode,
+  experimental_useSidebarThreadActions,
   experimental_useSidebarThreads,
   useBbContext,
   useBbNavigate,
@@ -65,7 +66,23 @@ import { cn } from "@/lib/utils";
 // Launch RPCs (launchDraft, launchSkill, proceed, resolveLaunchAttempt retry) can reject with a
 // LaunchRejectedError (launch.ts), e.g. code `no_source_host` when a task has no project source
 // and no host. Show its message instead of failing silently.
+const LAUNCH_ERROR_MESSAGES: Record<string, string> = {
+  session_running: "That session is still running. Wait for it to finish.",
+  pending_interaction: "The session is waiting for a response. Resolve it before advancing.",
+  task_archived: "This task is archived.",
+  missing_completed_turn: "The session has not completed a turn yet.",
+  stale_extraction: "The session is still processing. Try again in a moment.",
+  invalid_next_step: "No next step was found. The session may need a manual message.",
+  human_gate: "This transition requires your approval.",
+  launch_blocked: "A launch is already in progress for this task.",
+  no_source_host: "No host available. Set a project source or pick a host for this task.",
+};
+
 function reportLaunchError(error: unknown) {
+  if (error instanceof Error && "code" in error) {
+    const msg = LAUNCH_ERROR_MESSAGES[(error as { code: string }).code];
+    if (msg) { toast.error(msg); return; }
+  }
   toast.error(error instanceof Error ? error.message : "Failed to launch");
 }
 
@@ -126,6 +143,190 @@ const ROW_SHADE_CLASS: Partial<Record<StatusTone, string>> = {
   active: "bg-background/70 shadow-sm ring-1 ring-border/60",
 };
 
+// Hint tooltips are the panel's teaching layer (PRODUCT.md #5), so a hint trigger is always a real
+// focusable button: keyboard users reach it, and a tap toggles it open on phones (the remote
+// shell), where Radix never opens a tooltip on touch. The click stops at the trigger so a hint
+// inside a clickable row never opens the row.
+function HintTrigger({ hint, className, children }: { hint: ReactNode; className?: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Tooltip open={open} onOpenChange={setOpen}>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setOpen((value) => !value);
+          }}
+          className={cn("relative z-10 inline-flex min-w-0 max-w-full cursor-default appearance-none rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", className)}
+        >
+          {children}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>{hint}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+// The one keyboard-reachable control of a clickable row (a task or session name). The row itself
+// keeps a pointer onClick for mouse convenience but carries no role or tabIndex, so the
+// accessible tree sees a plain table row holding one link-like button, never a link wrapping
+// nested controls. Other controls in the row stop propagation so they do not also open the row.
+function RowLink({ onOpen, hint, className, children }: { onOpen: () => void; hint?: ReactNode; className?: string; children: ReactNode }) {
+  const link = (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation();
+        onOpen();
+      }}
+      className={cn("min-w-0 max-w-full rounded text-left font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", className)}
+    >
+      {children}
+    </button>
+  );
+  if (!hint) return link;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{link}</TooltipTrigger>
+      <TooltipContent>{hint}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+function stopRowClick(event: ReactMouseEvent) {
+  event.stopPropagation();
+}
+
+// Row surface shared by every clickable task/session row: one hover token the host guarantees to
+// differ from the surface in every theme (`--state-hover`), unlike `bg-card/70` over `bg-card`,
+// which is invisible where card equals background.
+const CLICKABLE_ROW_CLASS = "cursor-pointer hover:bg-state-hover";
+
+// Arrow-key roving for one horizontal group of tabs or radios (APG tabs and radiogroup patterns):
+// Left/Right wrap, Home/End jump, and moving focus also activates, so a single Tab stop reaches
+// the group and arrows choose within it. Attach to the container; the selected item is the only
+// one with tabIndex 0.
+function rovingKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
+  const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="tab"],[role="radio"]'));
+  const index = items.indexOf(document.activeElement as HTMLElement);
+  if (index === -1) return;
+  let next: number;
+  if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (index + 1) % items.length;
+  else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (index - 1 + items.length) % items.length;
+  else if (event.key === "Home") next = 0;
+  else if (event.key === "End") next = items.length - 1;
+  else return;
+  event.preventDefault();
+  items[next]!.focus();
+  items[next]!.click();
+}
+
+const TAB_CLASS = "shrink-0 whitespace-nowrap rounded px-3 py-1.5 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+function tabClass(selected: boolean) {
+  return cn(TAB_CLASS, selected ? "bg-state-active text-foreground" : "text-muted-foreground hover:text-foreground");
+}
+
+// Two-to-three way segmented control (List/Board, Preview/Raw): a radiogroup with the selected
+// segment exposed through aria-checked, not just a border color, and arrow keys to switch.
+function Segmented<T extends string>({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: T;
+  onChange: (next: T) => void;
+  options: ReadonlyArray<{ value: T; label: string }>;
+}) {
+  return (
+    <div role="radiogroup" aria-label={label} onKeyDown={rovingKeyDown} className="flex shrink-0 gap-0.5 rounded-md border border-border p-0.5">
+      {options.map((option) => {
+        const selected = option.value === value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            tabIndex={selected ? 0 : -1}
+            onClick={() => onChange(option.value)}
+            className={cn(
+              "h-7 rounded px-2.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              selected ? "bg-state-active text-foreground" : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Archive-with-confirmation, shared by the sidebar's row menu and the failed-session Dismiss
+// action: one pending id and one dialog per owner, and the archive itself is bb's own
+// (experimental_useSidebarThreadActions), so children and open panes are handled by the host.
+function useArchiveThread(copy: { title: string; description: string; confirmLabel: string }) {
+  const threadActions = experimental_useSidebarThreadActions();
+  const [pendingThreadId, setPendingThreadId] = useState<string | null>(null);
+  const dialog = (
+    <ConfirmDialog
+      open={pendingThreadId !== null}
+      onOpenChange={(open) => setPendingThreadId(open ? pendingThreadId : null)}
+      title={copy.title}
+      description={copy.description}
+      confirmLabel={copy.confirmLabel}
+      onConfirm={() => {
+        if (pendingThreadId) threadActions.archive(pendingThreadId);
+      }}
+    />
+  );
+  return { request: setPendingThreadId, dialog };
+}
+
+const DISMISS_SESSION_COPY = {
+  title: "Dismiss this session?",
+  description: "Archives its thread in bb and removes it from the task. The task's artifacts stay; you can start a fresh session on the same phase any time.",
+  confirmLabel: "Dismiss",
+};
+
+// Recovery for a failed or lost session, rendered where the session is surfaced (needs-you band
+// and sessions table) so the copy "start fresh or dismiss" always has the controls it names.
+// Start fresh launches a new session on the same phase (iterateInFreshSession, the RPC Iterate
+// already uses); the newer session supersedes this one, so it leaves the inbox by itself.
+// Dismiss archives the thread; listSessions drops archived-thread sessions.
+function SessionRecoveryActions({ threadId, onDismiss, className }: { threadId: string; onDismiss: (threadId: string) => void; className?: string }) {
+  const rpc = useRpc<RpcContract>();
+  const navigate = useBbNavigate();
+  const [busy, setBusy] = useState(false);
+  const startFresh = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const result = await rpc.call("iterateInFreshSession", { threadId });
+      navigate.toThread(result.threadId);
+    } catch (error) {
+      reportLaunchError(error);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <span className={cn("relative z-10 flex shrink-0 items-center gap-1", className)} onClick={stopRowClick}>
+      <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void startFresh()}>
+        <Icon name={busy ? "Spinner" : "RotateCcw"} className="size-3.5" />
+        Start fresh
+      </Button>
+      <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => onDismiss(threadId)}>
+        Dismiss
+      </Button>
+    </span>
+  );
+}
+
 function StatusPill({ tone, label, icon, hint }: { tone: StatusTone; label: string; icon: IconName; hint?: string }) {
   const pill = (
     <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium", TONE_PILL_CLASS[tone])}>
@@ -134,12 +335,7 @@ function StatusPill({ tone, label, icon, hint }: { tone: StatusTone; label: stri
     </span>
   );
   if (!hint) return pill;
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>{pill}</TooltipTrigger>
-      <TooltipContent>{hint}</TooltipContent>
-    </Tooltip>
-  );
+  return <HintTrigger hint={hint} className="rounded-full">{pill}</HintTrigger>;
 }
 
 function SessionStatus({ status }: { status: string }) {
@@ -579,11 +775,9 @@ function useRpiSessionState(threadId: string | null) {
 // glance without borrowing danger's red (PRODUCT.md #2).
 function AttentionCountChip({ n }: { n: number }) {
   return (
-    <span
-      className={cn("inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-xs font-semibold", TONE_PILL_CLASS.attention)}
-      aria-label={`${plural(n, "session")} ${n === 1 ? "needs" : "need"} you`}
-    >
-      {n}
+    <span className={cn("inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-xs font-semibold", TONE_PILL_CLASS.attention)}>
+      <span aria-hidden>{n}</span>
+      <span className="sr-only">{plural(n, "session")} {n === 1 ? "needs" : "need"} you</span>
     </span>
   );
 }
@@ -634,19 +828,9 @@ function boardColumnsClass(width: number): string {
 
 function TaskCompactRow({ task, onOpen }: { task: TaskRow; onOpen: () => void }) {
   return (
-    <div
-      role="link"
-      tabIndex={0}
-      onClick={onOpen}
-      onKeyDown={(event) => {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        event.preventDefault();
-        onOpen();
-      }}
-      className="flex cursor-pointer flex-col gap-1.5 border-b border-border px-4 py-3 last:border-b-0 hover:bg-card/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-    >
+    <div onClick={onOpen} className={cn("flex flex-col gap-1.5 border-b border-border px-4 py-3 last:border-b-0", CLICKABLE_ROW_CLASS)}>
       <div className="flex items-center justify-between gap-2">
-        <span className="truncate font-medium text-foreground">{task.name}</span>
+        <RowLink onOpen={onOpen} className="truncate">{task.name}</RowLink>
         <span className="shrink-0 text-xs text-muted-foreground">{plural(task.sessionCount, "session")} · {relativeTime(task.updatedAt)}</span>
       </div>
       <div className="flex items-center justify-between gap-2">
@@ -683,21 +867,10 @@ function TaskTable({ tasks, compact }: { tasks: TaskRow[]; compact: boolean }) {
         </thead>
         <tbody>
           {tasks.map((task) => (
-            <tr
-              key={task.id}
-              role="link"
-              tabIndex={0}
-              onClick={() => open(task.id)}
-              onKeyDown={(event) => {
-                if (event.key !== "Enter" && event.key !== " ") return;
-                event.preventDefault();
-                open(task.id);
-              }}
-              className="cursor-pointer border-b border-border last:border-b-0 hover:bg-card/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
+            <tr key={task.id} onClick={() => open(task.id)} className={cn("border-b border-border last:border-b-0", CLICKABLE_ROW_CLASS)}>
               <td className="px-4 py-3">
-                <div className="flex flex-col gap-1">
-                  <span className="font-medium text-foreground">{task.name}</span>
+                <div className="flex flex-col items-start gap-1">
+                  <RowLink onOpen={() => open(task.id)}>{task.name}</RowLink>
                   <span className="font-mono text-xs text-muted-foreground">{task.slug}</span>
                 </div>
               </td>
@@ -750,22 +923,13 @@ function TaskBoard({ tasks, width }: { tasks: TaskRow[]; width: number }) {
             <span className="text-xs text-muted-foreground">{groups[column.id].length}</span>
           </div>
           <div className="space-y-2">
-            {groups[column.id].map((task) => (
-              <article
-                key={task.id}
-                role="link"
-                tabIndex={0}
-                onClick={() => navigate.toPluginPanel("rpi", { subPath: `tasks/${task.id}` })}
-                onKeyDown={(event) => {
-                  if (event.key !== "Enter" && event.key !== " ") return;
-                  event.preventDefault();
-                  navigate.toPluginPanel("rpi", { subPath: `tasks/${task.id}` });
-                }}
-                className="cursor-pointer rounded-lg border border-border bg-background/70 p-3 transition hover:border-foreground/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
+            {groups[column.id].map((task) => {
+              const open = () => navigate.toPluginPanel("rpi", { subPath: `tasks/${task.id}` });
+              return (
+              <article key={task.id} onClick={open} className="cursor-pointer rounded-lg border border-border bg-background/70 p-3 transition hover:border-foreground/40">
                 <div className="space-y-2">
                   <div className="flex items-start justify-between gap-3">
-                    <h4 className="font-medium leading-tight text-foreground">{task.name}</h4>
+                    <h4 className="min-w-0 leading-tight"><RowLink onOpen={open}>{task.name}</RowLink></h4>
                     <span className="inline-flex items-center gap-2 text-xs text-muted-foreground">
                       {relativeTime(task.updatedAt)}
                     </span>
@@ -777,7 +941,8 @@ function TaskBoard({ tasks, width }: { tasks: TaskRow[]; width: number }) {
                   </div>
                 </div>
               </article>
-            ))}
+              );
+            })}
           </div>
         </section>
       ))}
@@ -805,16 +970,19 @@ function ComposerToolbarSelect({
   options,
   className,
   id,
+  describedBy,
 }: {
   value: string;
   onChange: (next: string) => void;
   options: Array<{ value: string; label: string; description?: string }>;
   className?: string;
   id?: string;
+  describedBy?: string;
 }) {
   return (
     <select
       id={id}
+      aria-describedby={describedBy}
       value={value}
       onChange={(event) => onChange(event.target.value)}
       className={cn("h-10 min-w-0 rounded-md border border-border bg-card px-3 text-sm text-foreground outline-none transition focus:border-foreground", className)}
@@ -1177,6 +1345,12 @@ function NewTaskPage({
   const firstPhaseLabel = firstSkillId ? labelStep(SKILL_BY_ID[firstSkillId].label) : null;
   const primaryLabel = firstPhaseLabel ? `Create and start ${firstPhaseLabel}` : "Create";
   const workflowSteps = WORKFLOW_GRAPHS[workflowType];
+  // Helper copy is linked with aria-describedby rather than nested in the <label>, so a control's
+  // name is "Worktree", not "Worktree Research and planning run in...".
+  const hintId = useId();
+  const worktreeHintId = `${hintId}-worktree`;
+  const workflowHintId = `${hintId}-workflow`;
+  const autoAdvanceHintId = `${hintId}-auto-advance`;
 
   return (
     <div className="space-y-6">
@@ -1225,9 +1399,11 @@ function NewTaskPage({
                   options={hostOptions.map((host) => ({ value: host.id, label: host.name }))}
                 />
               </label>
-              <label className="block space-y-1 text-xs text-muted-foreground">
-                <span className="block">Worktree</span>
+              <div className="space-y-1 text-xs text-muted-foreground">
+                <label htmlFor={`${hintId}-worktree-select`} className="block">Worktree</label>
                 <ComposerToolbarSelect
+                  id={`${hintId}-worktree-select`}
+                  describedBy={worktreeHintId}
                   className="w-full"
                   value={worktreeTiming}
                   onChange={(value) => setWorktreeTiming(value as "now" | "later" | "never")}
@@ -1237,8 +1413,8 @@ function NewTaskPage({
                     { value: "never", label: "No worktree" },
                   ]}
                 />
-                <span className="block text-muted-foreground">Research and planning run in the main checkout; implementation gets its own branch.</span>
-              </label>
+                <span id={worktreeHintId} className="block text-muted-foreground">Research and planning run in the main checkout; implementation gets its own branch.</span>
+              </div>
               <label className="block space-y-1 text-xs text-muted-foreground">
                 <span className="block">Working directory</span>
                 <Input
@@ -1252,9 +1428,11 @@ function NewTaskPage({
 
             <div className="space-y-3 rounded-xl border border-border bg-card p-3">
               <h2 className="text-sm font-semibold text-foreground">How</h2>
-              <label className="block space-y-1 text-xs text-muted-foreground">
-                <span className="block">Workflow</span>
+              <div className="space-y-1 text-xs text-muted-foreground">
+                <label htmlFor={`${hintId}-workflow-select`} className="block">Workflow</label>
                 <ComposerToolbarSelect
+                  id={`${hintId}-workflow-select`}
+                  describedBy={workflowHintId}
                   className="w-full"
                   value={workflowType}
                   onChange={(value) => setWorkflowType(value as "rpi" | "outline_only" | "prd_tdd" | "oneshot" | "freeform")}
@@ -1263,8 +1441,8 @@ function NewTaskPage({
                     label: `${WORKFLOW_GRAPH_LABELS[key]} (${plural(WORKFLOW_GRAPHS[key].length, "step")})`,
                   }))}
                 />
-                <span className="block text-muted-foreground">{workflowSteps.join(" \u2192 ")}</span>
-              </label>
+                <span id={workflowHintId} className="block text-muted-foreground">{workflowSteps.join(" \u2192 ")}</span>
+              </div>
               <label className="block space-y-1 text-xs text-muted-foreground">
                 <span className="block">Permissions</span>
                 <ComposerToolbarSelect
@@ -1280,18 +1458,11 @@ function NewTaskPage({
                 />
               </label>
               <div className="space-y-1 text-xs text-muted-foreground">
-                <button
-                  type="button"
-                  onClick={() => setAutoAdvance((value) => !value)}
-                  className={cn(
-                    "inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium transition",
-                    autoAdvance ? "border-border bg-muted text-foreground" : "border-border bg-card text-muted-foreground",
-                  )}
-                >
-                  <Icon name="ArrowTurnForward" className="size-4" />
+                <label className="flex w-fit cursor-pointer items-center gap-2 py-1 text-sm font-medium text-foreground">
+                  <Checkbox checked={autoAdvance} onCheckedChange={(checked) => setAutoAdvance(checked === true)} aria-describedby={autoAdvanceHintId} />
                   Auto-advance
-                </button>
-                <span className="block">Phases chain automatically; you approve before implementation and before the PR.</span>
+                </label>
+                <span id={autoAdvanceHintId} className="block">Phases chain automatically; you approve before implementation and before the PR.</span>
               </div>
               <ModelSelect
                 hostId={hostId || null}
@@ -1521,6 +1692,7 @@ function SessionsTable({
 }) {
   const navigate = useBbNavigate();
   const open = (threadId: string) => navigate.toThread(threadId);
+  const archive = useArchiveThread(DISMISS_SESSION_COPY);
   const ordinals = useMemo(() => attemptOrdinals(allSessions), [allSessions]);
   const rows = useMemo(
     () =>
@@ -1529,6 +1701,7 @@ function SessionsTable({
         .sort(sessionRowOrder),
     [sessions, allSessions, task],
   );
+  const isDanger = (effective: string) => effective === "failed" || effective === "lost";
 
   if (compact) {
     return (
@@ -1541,22 +1714,12 @@ function SessionsTable({
           return (
             <div
               key={session.threadId}
-              role="link"
-              tabIndex={0}
               onClick={() => open(session.threadId)}
-              onKeyDown={(event) => {
-                if (event.key !== "Enter" && event.key !== " ") return;
-                event.preventDefault();
-                open(session.threadId);
-              }}
-              className={cn(
-                "cursor-pointer space-y-1.5 rounded-lg border border-border bg-card p-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                (effective === "failed" || effective === "lost") && ROW_SHADE_CLASS.danger,
-              )}
+              className={cn("space-y-1.5 rounded-lg border border-border bg-card p-3", CLICKABLE_ROW_CLASS, isDanger(effective) && ROW_SHADE_CLASS.danger)}
             >
               <div className="flex items-center justify-between gap-2">
                 <StatusPill tone={meta.tone} label={meta.text} icon={meta.icon} hint={meta.hint || undefined} />
-                <span className="truncate text-sm font-medium text-foreground">{capitalize(labelStep(session.label) ?? "Session")}{attemptSuffix}</span>
+                <RowLink onOpen={() => open(session.threadId)} className="truncate text-sm">{capitalize(labelStep(session.label) ?? "Session")}{attemptSuffix}</RowLink>
               </div>
               <div className="text-xs text-muted-foreground">{subLine}</div>
               <div className="text-sm text-foreground">{sessionWhatItWants(session, effective)}</div>
@@ -1564,9 +1727,11 @@ function SessionsTable({
                 <ContextGauge usage={session.contextUsage} threshold={session.contextWarnThreshold} />
                 <span>{relativeTime(session.threadUpdatedAt ?? session.updatedAt)}</span>
               </div>
+              {isDanger(effective) ? <SessionRecoveryActions threadId={session.threadId} onDismiss={archive.request} className="pt-1" /> : null}
             </div>
           );
         })}
+        {archive.dialog}
       </div>
     );
   }
@@ -1593,28 +1758,15 @@ function SessionsTable({
             return (
               <tr
                 key={session.threadId}
-                role="link"
-                tabIndex={0}
                 onClick={() => open(session.threadId)}
-                onKeyDown={(event) => {
-                  if (event.key !== "Enter" && event.key !== " ") return;
-                  event.preventDefault();
-                  open(session.threadId);
-                }}
-                className={cn(
-                  "cursor-pointer border-b border-border last:border-b-0 hover:bg-background/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  (effective === "failed" || effective === "lost") && ROW_SHADE_CLASS.danger,
-                )}
+                className={cn("border-b border-border last:border-b-0", CLICKABLE_ROW_CLASS, isDanger(effective) && ROW_SHADE_CLASS.danger)}
               >
                 <td className="w-[130px] px-4 py-3"><StatusPill tone={meta.tone} label={meta.text} icon={meta.icon} hint={meta.hint || undefined} /></td>
                 <td className="px-4 py-3">
-                  <div className="flex flex-col gap-0.5">
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span className="w-fit truncate font-medium text-foreground">{capitalize(labelStep(session.label) ?? "Session")}{attemptSuffix}</span>
-                      </TooltipTrigger>
-                      <TooltipContent>{session.workingDirectory ?? "Working directory unknown"}</TooltipContent>
-                    </Tooltip>
+                  <div className="flex flex-col items-start gap-0.5">
+                    <RowLink onOpen={() => open(session.threadId)} hint={session.workingDirectory ?? "Working directory unknown"} className="truncate">
+                      {capitalize(labelStep(session.label) ?? "Session")}{attemptSuffix}
+                    </RowLink>
                     <span className="text-xs text-muted-foreground">{subLine}</span>
                   </div>
                 </td>
@@ -1622,23 +1774,22 @@ function SessionsTable({
                 <td className="px-4 py-3"><ContextGauge usage={session.contextUsage} threshold={session.contextWarnThreshold} /></td>
                 <td className="px-4 py-3 text-muted-foreground">{relativeTime(session.threadUpdatedAt ?? session.updatedAt)}</td>
                 <td className="px-4 py-3">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="h-8"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      open(session.threadId);
-                    }}
-                  >
-                    Open
-                  </Button>
+                  {isDanger(effective) ? (
+                    <SessionRecoveryActions threadId={session.threadId} onDismiss={archive.request} className="justify-end" />
+                  ) : (
+                    // Visual affordance only: the row (pointer) and the session name (keyboard) are
+                    // the controls, so this is a styled span, not a second button.
+                    <Button asChild variant="outline" size="sm" className="pointer-events-none" aria-hidden>
+                      <span>Open</span>
+                    </Button>
+                  )}
                 </td>
               </tr>
             );
           })}
         </tbody>
       </table>
+      {archive.dialog}
     </div>
   );
 }
@@ -2092,17 +2243,24 @@ function ArtifactRow({
   const path = `/plugins/rpi/tasks/${encodeURIComponent(artifact.taskId)}/artifacts/${encodeURIComponent(artifact.fileName)}`;
   return (
     <div className={cn("flex items-center gap-2 rounded-md border px-3 py-2", selected ? "border-foreground/50 bg-card" : "border-transparent hover:bg-card/70")}>
-      <button type="button" onClick={onSelect} className="flex min-w-0 flex-1 items-center gap-2 text-left">
-        <ArtifactIcon artifact={artifact} />
-        <Tooltip>
-          <TooltipTrigger asChild>
+      {/* The button is the tooltip trigger (focusable) and carries the full name; the visible
+          text is the middle-ellipsized form, so keyboard and screen-reader users get the whole name. */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={onSelect}
+            aria-label={`${artifact.fileName}${artifact.isDeleted ? " (deleted)" : ""}`}
+            className="flex min-w-0 flex-1 items-center gap-2 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <ArtifactIcon artifact={artifact} />
             <span className={cn("text-sm font-medium", artifact.isDeleted ? "text-muted-foreground line-through" : "text-foreground")}>
               {middleEllipsis(artifact.fileName, nameMaxLength)}
             </span>
-          </TooltipTrigger>
-          <TooltipContent>{artifact.fileName}</TooltipContent>
-        </Tooltip>
-      </button>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>{artifact.fileName}</TooltipContent>
+      </Tooltip>
       {artifact.commentCount > 0 ? <span className="shrink-0 text-xs text-muted-foreground">{artifact.commentCount}</span> : null}
       <Popover>
         <PopoverTrigger asChild>
@@ -2216,6 +2374,7 @@ function usePersistedWidth(key: string, fallback: number, range: { min: number; 
   };
   return {
     width,
+    range,
     drag: (delta: number) => apply(delta, false),
     step: (delta: number) => apply(delta, true),
     commit: () => apply(0, true),
@@ -2263,17 +2422,20 @@ function usePersistedSet(key: string) {
   };
 }
 
-// Draggable divider: plain pointer events (no drag-and-drop API) on a 6px `cursor-col-resize`
-// handle. `onDrag` runs during the pointer move (in-memory only); `onCommit` persists once on
-// pointerup, or immediately after each keyboard step. Keyboard: `role="separator"`
-// `aria-orientation="vertical"`, arrow keys move 16px per press.
+// Draggable divider: plain pointer events (no drag-and-drop API) on a 14px hit area drawing a 6px
+// `cursor-col-resize` bar. `onDrag` runs during the pointer move (in-memory only); `onCommit`
+// persists once on pointerup, or immediately after each keyboard step. Keyboard: a focusable
+// `role="separator"` is a widget, so it exposes the width it controls through aria-value*; arrow
+// keys move 16px per press.
 function SplitHandle({
   ariaLabel,
+  width,
   onDrag,
   onStep,
   onCommit,
 }: {
   ariaLabel: string;
+  width: { width: number; range: { min: number; max: number } };
   onDrag: (deltaPx: number) => void;
   onStep: (deltaPx: number) => void;
   onCommit: () => void;
@@ -2284,8 +2446,12 @@ function SplitHandle({
       role="separator"
       aria-orientation="vertical"
       aria-label={ariaLabel}
+      aria-valuenow={Math.round(width.width)}
+      aria-valuemin={width.range.min}
+      aria-valuemax={width.range.max}
+      aria-valuetext={`${Math.round(width.width)} pixels`}
       tabIndex={0}
-      className="w-1.5 shrink-0 cursor-col-resize touch-none rounded bg-transparent hover:bg-border focus-visible:bg-border focus-visible:outline-none"
+      className="group -mx-1 flex w-3.5 shrink-0 cursor-col-resize touch-none justify-center focus-visible:outline-none"
       onPointerDown={(event) => {
         event.currentTarget.setPointerCapture(event.pointerId);
         draggingRef.current = { lastX: event.clientX };
@@ -2308,7 +2474,9 @@ function SplitHandle({
         else return;
         event.preventDefault();
       }}
-    />
+    >
+      <span aria-hidden className="h-full w-1.5 rounded bg-transparent group-hover:bg-border group-focus-visible:bg-ring" />
+    </div>
   );
 }
 
@@ -2459,6 +2627,18 @@ function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string
     setCommentsNextOffset(result.nextOffset);
   };
 
+  const gutterKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    if (event.target instanceof HTMLTextAreaElement) return;
+    const gutters = Array.from(event.currentTarget.querySelectorAll<HTMLElement>("[data-gutter]"));
+    if (gutters.length === 0) return;
+    const current = gutters.indexOf(document.activeElement as HTMLElement);
+    const next = event.key === "ArrowDown" ? Math.min(current + 1, gutters.length - 1) : Math.max(current - 1, 0);
+    event.preventDefault();
+    gutters[next]!.focus();
+    gutters[next]!.scrollIntoView({ block: "nearest" });
+  };
+
   const previewNode = (
     <>
       {mode === "preview" && isRasterPreview(artifact.contentType) && url ? (
@@ -2466,18 +2646,28 @@ function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string
       ) : mode === "preview" && isSandboxedPreview(artifact.contentType) && content !== null ? (
         <iframe title={artifact.fileName} sandbox="" srcDoc={content} className="h-full min-h-[240px] w-full rounded-md border-0 bg-background" />
       ) : mode === "preview" && !isBinary && content !== null ? (
-        <div className="space-y-0.5">
+        // One Tab stop for the whole document: the gutter buttons are tabIndex -1 and reached with
+        // ArrowUp/ArrowDown from the container (or from each other), Enter comments on that line,
+        // so a 300-line plan is not 300 stops on the way to the comments rail.
+        <div
+          role="group"
+          tabIndex={0}
+          aria-label={`${artifact.fileName}. Press down arrow to move between lines, Enter to comment on one.`}
+          onKeyDown={gutterKeyDown}
+          className="space-y-0.5 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
           {blocks.map((block) => (
-            <div key={block.index} className="group grid grid-cols-[28px_minmax(0,1fr)] gap-2 rounded-md border border-transparent hover:border-border">
+            <div key={block.index} className="group grid grid-cols-[28px_minmax(0,1fr)] gap-2 rounded-md border border-transparent hover:border-border focus-within:border-border">
               <button
                 type="button"
+                tabIndex={-1}
+                data-gutter
                 aria-label={`Add comment on line ${block.index + 1}`}
-                title="Add comment"
                 onClick={() => {
                   setComposingBlock(block.index);
                   setComposerText("");
                 }}
-                className="mt-1.5 flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground opacity-60 transition hover:text-foreground hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100 pointer-coarse:size-9 pointer-coarse:opacity-100"
+                className="mt-1.5 flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground opacity-0 transition hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100 pointer-coarse:size-9 pointer-coarse:opacity-100"
               >
                 <Icon name="Plus" className="size-4" />
               </button>
@@ -2489,7 +2679,16 @@ function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string
                 )}
                 {composingBlock === block.index ? (
                   <div className="mb-2 space-y-2 rounded-md border border-border bg-card p-2">
-                    <textarea value={composerText} onChange={(event) => setComposerText(event.target.value)} aria-label="Comment text" className="min-h-20 w-full rounded-md border border-border bg-background p-2 text-sm text-foreground" />
+                    <textarea
+                      value={composerText}
+                      onChange={(event) => setComposerText(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") setComposingBlock(null);
+                      }}
+                      autoFocus
+                      aria-label={`Comment on line ${block.index + 1}`}
+                      className="min-h-20 w-full rounded-md border border-border bg-background p-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    />
                     <div className="flex justify-end gap-2">
                       <Button type="button" variant="outline" className="h-8" onClick={() => setComposingBlock(null)}>Cancel</Button>
                       <Button type="button" className="h-8" onClick={() => void saveComment(block)}>Save</Button>
@@ -2538,12 +2737,9 @@ function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <h3 className="truncate text-sm font-semibold text-foreground">{artifact.fileName}</h3>
-            </TooltipTrigger>
-            <TooltipContent>{artifact.fileName}</TooltipContent>
-          </Tooltip>
+          <h3 className="flex min-w-0 text-sm font-semibold text-foreground">
+            <HintTrigger hint={artifact.fileName}><span className="block truncate">{artifact.fileName}</span></HintTrigger>
+          </h3>
           <div className="text-xs text-muted-foreground">
             v{version ?? artifact.currentVersion} · written by {versionMeta ? versionAuthor(versionMeta.createdBy, sessions) : "?"}
             {versionMeta ? ` · ${versionTimeLabel(versionMeta.createdAt)}` : ""}
@@ -2555,8 +2751,7 @@ function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string
               <option key={item.id} value={item.version}>v{item.version} · {versionAuthor(item.createdBy, sessions)}</option>
             ))}
           </select>
-          <button type="button" onClick={() => setMode("preview")} className={cn("h-8 rounded-md border px-2 text-xs", mode === "preview" ? "border-foreground text-foreground" : "border-border text-muted-foreground")}>Preview</button>
-          <button type="button" onClick={() => setMode("raw")} className={cn("h-8 rounded-md border px-2 text-xs", mode === "raw" ? "border-foreground text-foreground" : "border-border text-muted-foreground")}>Raw</button>
+          <Segmented label="View" value={mode} onChange={setMode} options={[{ value: "preview", label: "Preview" }, { value: "raw", label: "Raw" }]} />
         </div>
       </div>
       {artifact.isDeleted ? (
@@ -2569,6 +2764,7 @@ function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string
           <div className="min-h-0 min-w-0 flex-1 overflow-auto rounded-md border border-border bg-background p-3">{previewNode}</div>
           <SplitHandle
             ariaLabel="Resize comments rail"
+            width={commentsWidth}
             onDrag={(delta) => commentsWidth.drag(-delta)}
             onStep={(delta) => commentsWidth.step(-delta)}
             onCommit={commentsWidth.commit}
@@ -2863,7 +3059,10 @@ function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFi
         {openComments > 0 ? (
           <Tooltip>
             <TooltipTrigger asChild>
-              <span className={cn("inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-xs font-semibold", TONE_PILL_CLASS.attention)}>{openComments}</span>
+              <span className={cn("inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-xs font-semibold", TONE_PILL_CLASS.attention)}>
+                <span aria-hidden>{openComments}</span>
+                <span className="sr-only">, {plural(openComments, "open comment")}</span>
+              </span>
             </TooltipTrigger>
             <TooltipContent>{plural(openComments, "open comment")}</TooltipContent>
           </Tooltip>
@@ -2942,7 +3141,7 @@ function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFi
       ) : (
         <div className="flex min-h-0 flex-1 gap-0">
           <div style={{ width: listWidth.width }} className="min-h-0 min-w-0 shrink-0">{listNode}</div>
-          <SplitHandle ariaLabel="Resize artifact list" onDrag={listWidth.drag} onStep={listWidth.step} onCommit={listWidth.commit} />
+          <SplitHandle ariaLabel="Resize artifact list" width={listWidth} onDrag={listWidth.drag} onStep={listWidth.step} onCommit={listWidth.commit} />
           <div className="min-h-0 min-w-0 flex-1">
             {viewerNode ?? (
               <div className="flex h-full min-h-[200px] items-center justify-center rounded-md border border-dashed border-border p-4 text-center text-sm text-muted-foreground">
@@ -2972,12 +3171,9 @@ const PERMISSION_MODE_HINT: Record<string, string> = {
 
 function TaskMetaTerm({ text, hint }: { text: string; hint: string }) {
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span className="cursor-default underline decoration-dotted decoration-muted-foreground/60 underline-offset-2">{text}</span>
-      </TooltipTrigger>
-      <TooltipContent>{hint}</TooltipContent>
-    </Tooltip>
+    <HintTrigger hint={hint} className="underline decoration-dotted decoration-muted-foreground/60 underline-offset-2">
+      {text}
+    </HintTrigger>
   );
 }
 
@@ -3282,7 +3478,7 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
           )}
         </div>
       </div>
-      <div role="tablist" className={cn("flex w-fit max-w-full gap-1 rounded-md border border-border p-1", compact && "overflow-x-auto")}>
+      <div role="tablist" onKeyDown={rovingKeyDown} className={cn("flex w-fit max-w-full gap-1 rounded-md border border-border p-1", compact && "overflow-x-auto")}>
         {tabs.map((entry) => (
           <button
             key={entry.id}
@@ -3291,11 +3487,9 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
             id={`rpi-task-tab-${entry.id}`}
             aria-selected={tab === entry.id}
             aria-controls={`rpi-task-tabpanel-${entry.id}`}
+            tabIndex={tab === entry.id ? 0 : -1}
             onClick={() => setTab(entry.id)}
-            className={cn(
-              "shrink-0 whitespace-nowrap rounded px-3 py-1.5 text-sm font-medium transition",
-              tab === entry.id ? "bg-card text-foreground" : "text-muted-foreground",
-            )}
+            className={tabClass(tab === entry.id)}
           >
             {entry.label}
           </button>
@@ -3475,10 +3669,41 @@ export function RpiArtifactDirective({ attributes, source }: { attributes: Reado
 // bb's own sidebar feed (`experimental_useSidebarThreads`) for title/indicator/time. A manual
 // "Use default list" toggle renders `Original` on request, on top of the host's own automatic
 // fallback for a missing/crashing replacement.
-function otherThreadGlyph(thread: { hasPendingInteraction: boolean; isUnread: boolean }) {
-  if (thread.hasPendingInteraction) return { icon: "AlertCircle" as const, className: "text-destructive" };
-  if (thread.isUnread) return { icon: "Circle" as const, className: "text-foreground" };
-  return { icon: "Circle" as const, className: "text-muted-foreground" };
+// Sidebar status dot. One filled circle per row, colored by tone; `pulse` animates work in
+// progress; `child` adds a dashed ring so subagent and fork rows read as nested under a session.
+// Host token classes only: subagent activity uses `primary` (the theme accent, blue in bb's
+// default themes) because the host exposes no dedicated info/blue token.
+const DOT_FILL_CLASS: Record<StatusTone | "primary" | "foreground", string> = {
+  success: "bg-success",
+  warning: "bg-warning",
+  danger: "bg-destructive",
+  attention: "bg-attention",
+  muted: "bg-muted-foreground/50",
+  active: "bg-success",
+  primary: "bg-primary",
+  foreground: "bg-foreground",
+};
+function Dot({ tone, pulse = false, child = false }: { tone: keyof typeof DOT_FILL_CLASS; pulse?: boolean; child?: boolean }) {
+  return (
+    <span className={cn("flex size-3.5 shrink-0 items-center justify-center rounded-full", child && "border border-dashed border-muted-foreground/60")} aria-hidden>
+      <span className={cn("size-2 rounded-full", DOT_FILL_CLASS[tone], pulse && "motion-safe:animate-pulse")} />
+    </span>
+  );
+}
+
+function otherThreadDot(thread: { hasPendingInteraction: boolean; isUnread: boolean }, busy = false, child = false) {
+  if (thread.hasPendingInteraction) return <Dot tone="danger" child={child} />;
+  if (busy) return <Dot tone="primary" pulse child={child} />;
+  if (thread.isUnread) return <Dot tone="foreground" child={child} />;
+  return <Dot tone="muted" child={child} />;
+}
+
+// The words behind otherThreadDot's colors, for the row's visually hidden status text.
+function otherThreadStatusText(thread: { hasPendingInteraction: boolean; isUnread: boolean }, busy = false): string {
+  if (thread.hasPendingInteraction) return "Waiting for you";
+  if (busy) return "Running";
+  if (thread.isUnread) return "Unread";
+  return "Idle";
 }
 
 // Sidebar group collapse state (`rpi:sidebar:collapsed`, one map for the whole sidebar): unlike
@@ -3508,30 +3733,26 @@ function useCollapseOverrides(key: string) {
   return { get: (id: string) => overrides[id], set };
 }
 
-// Sidebar row order within a task group: needs_approval first (an explicit ask outranks a mere
-// wait), then failed/lost (needs a decision), then ready_for_input, then still-running sessions,
-// then anything else (interrupted; superseded is filtered out before this runs); newest first
-// within a rank. Finer-grained than SessionsTable's sessionRowOrder (which only splits
-// needs-human vs not) because the sidebar mixes several urgency levels in one flat list.
-function sidebarSessionRank(effective: string): number {
-  if (effective === "needs_approval") return 0;
-  if (effective === "failed" || effective === "lost") return 1;
-  if (effective === "ready_for_input") return 2;
-  if (effective === "running" || effective === "launching" || effective === "resuming") return 3;
-  return 4;
-}
-
 function sidebarSessionTime(session: SessionView): number {
   return session.threadUpdatedAt ?? session.updatedAt;
 }
 
-export function RpiThreadList({ activeThreadId, isCompactViewport, onNavigate, Original }: PluginThreadListProps) {
+export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewport, onNavigate, Original }: PluginThreadListProps) {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
   const sidebar = experimental_useSidebarThreads();
+  const threadActions = experimental_useSidebarThreadActions();
+  const archive = useArchiveThread({
+    title: "Archive this thread?",
+    description: "Archives the thread and its children, and closes any panes showing them.",
+    confirmLabel: "Archive",
+  });
   const [useDefault, setUseDefault] = useState(false);
   const [sessionsByThread, setSessionsByThread] = useState<Map<string, SessionView>>(new Map());
-  const [taskMeta, setTaskMeta] = useState<Map<string, { name: string; workflowType: WorkflowType; worktreeTiming: "now" | "later" | "never" }>>(new Map());
+  const [taskMeta, setTaskMeta] = useState<Map<string, { name: string; projectId: string; workflowType: WorkflowType; worktreeTiming: "now" | "later" | "never" }>>(new Map());
+  const [projectNameById, setProjectNameById] = useState<Map<string, string>>(new Map());
+  const [launchingFromTask, setLaunchingFromTask] = useState<string | null>(null);
+  const [forkingThreadId, setForkingThreadId] = useState<string | null>(null);
   const collapseOverrides = useCollapseOverrides("rpi:sidebar:collapsed");
   const doneGroups = usePersistedSet("rpi:sidebar:done-expanded");
 
@@ -3539,9 +3760,11 @@ export function RpiThreadList({ activeThreadId, isCompactViewport, onNavigate, O
     Promise.all([
       rpc.call("listSessions", { taskId: null }),
       rpc.call("listTasks", { archived: false }),
-    ]).then(([sessionResult, taskResult]) => {
+      rpc.call("listProjects", { includePersonal: true }),
+    ]).then(([sessionResult, taskResult, projects]) => {
       setSessionsByThread(new Map(sessionResult.sessions.map((session) => [session.threadId, session])));
-      setTaskMeta(new Map(taskResult.tasks.map((task) => [task.id, { name: task.name, workflowType: task.workflowType, worktreeTiming: task.worktreeTiming }])));
+      setTaskMeta(new Map(taskResult.tasks.map((task) => [task.id, { name: task.name, projectId: task.projectId, workflowType: task.workflowType, worktreeTiming: task.worktreeTiming }])));
+      setProjectNameById(new Map(projects.map((project) => [project.id, project.name])));
     });
   };
   useEffect(() => {
@@ -3549,6 +3772,164 @@ export function RpiThreadList({ activeThreadId, isCompactViewport, onNavigate, O
   }, []);
   useRealtime("tasks", refetch);
   useRealtime("rpi:sessions", refetch);
+
+  // Continue a task from the sidebar without opening it first: forks a fresh thread off its most
+  // recent session (same RPC the "Iterate" confirm dialogs use), so the new chat keeps the task's
+  // context instead of starting blank.
+  const startNewChat = async (taskId: string, fromThreadId: string) => {
+    if (launchingFromTask) return;
+    setLaunchingFromTask(taskId);
+    try {
+      const result = await rpc.call("iterateInFreshSession", { threadId: fromThreadId });
+      go(result.threadId);
+    } catch (error) {
+      reportLaunchError(error);
+    } finally {
+      setLaunchingFromTask(null);
+    }
+  };
+
+  // Row-level actions (Fork/Archive/Delete). Archive and delete go through bb's own host API
+  // (experimental_useSidebarThreadActions), same as the default sidebar, so they get bb's real
+  // recursive-child handling and delete confirmation for free instead of a re-implementation here.
+  // Fork reuses the same forkSession RPC the thread header's "Fork" menu item already calls.
+  const forkThread = async (threadId: string) => {
+    if (forkingThreadId) return;
+    setForkingThreadId(threadId);
+    try {
+      const result = await rpc.call("forkSession", { threadId });
+      go(result.threadId);
+    } catch (error) {
+      reportLaunchError(error);
+    } finally {
+      setForkingThreadId(null);
+    }
+  };
+
+  const [draggingThreadId, setDraggingThreadId] = useState<string | null>(null);
+  const [dragOverTaskId, setDragOverTaskId] = useState<string | null>(null);
+  const dragDepth = useRef(new Map<string, number>());
+  const adoptThread = async (threadId: string, taskId: string) => {
+    try {
+      await rpc.call("adoptThread", { threadId, taskId });
+      toast.success(`Moved to ${taskMeta.get(taskId)?.name ?? "task"}`);
+      refetch();
+    } catch (error) {
+      reportLaunchError(error);
+    }
+  };
+  // Threads that are not RPI sessions can be dragged onto a task header. dataTransfer carries
+  // only the thread id under a plugin-private type so other drop targets ignore it. The drag
+  // image is a small chip with the thread title rather than the whole row; enter/leave are
+  // depth-counted per target so crossing the header's child elements does not flicker.
+  const DRAG_TYPE = "application/x-rpi-thread";
+  const dragSourceProps = (threadId: string, title: string) => ({
+    draggable: true,
+    onDragStart: (event: DragEvent<HTMLElement>) => {
+      event.dataTransfer.setData(DRAG_TYPE, threadId);
+      event.dataTransfer.effectAllowed = "move";
+      const chip = document.createElement("div");
+      chip.textContent = title;
+      chip.className = "pointer-events-none fixed -left-[9999px] top-0 max-w-56 truncate rounded-md border border-border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md";
+      document.body.appendChild(chip);
+      event.dataTransfer.setDragImage(chip, 12, 14);
+      requestAnimationFrame(() => chip.remove());
+      setDraggingThreadId(threadId);
+    },
+    onDragEnd: () => {
+      setDraggingThreadId(null);
+      setDragOverTaskId(null);
+      dragDepth.current.clear();
+    },
+  });
+  const dropTargetProps = (taskId: string) => ({
+    onDragEnter: (event: DragEvent<HTMLElement>) => {
+      if (!event.dataTransfer.types.includes(DRAG_TYPE)) return;
+      event.preventDefault();
+      dragDepth.current.set(taskId, (dragDepth.current.get(taskId) ?? 0) + 1);
+      setDragOverTaskId(taskId);
+    },
+    onDragOver: (event: DragEvent<HTMLElement>) => {
+      if (!event.dataTransfer.types.includes(DRAG_TYPE)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+    },
+    onDragLeave: () => {
+      const depth = (dragDepth.current.get(taskId) ?? 1) - 1;
+      dragDepth.current.set(taskId, depth);
+      if (depth <= 0) setDragOverTaskId((current) => (current === taskId ? null : current));
+    },
+    onDrop: (event: DragEvent<HTMLElement>) => {
+      const threadId = event.dataTransfer.getData(DRAG_TYPE);
+      dragDepth.current.set(taskId, 0);
+      setDragOverTaskId(null);
+      setDraggingThreadId(null);
+      if (!threadId) return;
+      event.preventDefault();
+      void adoptThread(threadId, taskId);
+    },
+  });
+
+  const rowActions = (thread: { id: string }, adoptable = false) => (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label="Thread actions"
+          onClick={(event) => event.stopPropagation()}
+          className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-card focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:opacity-100"
+        >
+          <Icon name="MoreHorizontal" className="size-3.5" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-36 p-1" onClick={(event) => event.stopPropagation()}>
+        <button
+          type="button"
+          disabled={forkingThreadId === thread.id}
+          onClick={() => void forkThread(thread.id)}
+          className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted disabled:opacity-50"
+        >
+          Fork
+        </button>
+        {adoptable && taskMeta.size > 0 ? (
+          <Popover>
+            <PopoverTrigger asChild>
+              <button type="button" className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted">
+                <span className="flex-1">Move to task</span>
+                <Icon name="ChevronRight" className="size-3.5 text-muted-foreground" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent side="right" align="start" className="max-h-64 w-48 overflow-y-auto p-1">
+              {[...taskMeta.entries()].map(([taskId, meta]) => (
+                <button
+                  key={taskId}
+                  type="button"
+                  onClick={() => void adoptThread(thread.id, taskId)}
+                  className="block w-full truncate rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted"
+                >
+                  {meta.name}
+                </button>
+              ))}
+            </PopoverContent>
+          </Popover>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => archive.request(thread.id)}
+          className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted"
+        >
+          Archive
+        </button>
+        <button
+          type="button"
+          onClick={() => threadActions.requestDelete(thread.id)}
+          className="block w-full rounded px-2 py-1.5 text-left text-sm text-destructive hover:bg-destructive/10"
+        >
+          Delete
+        </button>
+      </PopoverContent>
+    </Popover>
+  );
 
   // Grouped by task so a session's effective status (status.ts: does a later session already
   // supersede it) can be computed against the rest of its task's sessions, same as the panel's
@@ -3575,20 +3956,55 @@ export function RpiThreadList({ activeThreadId, isCompactViewport, onNavigate, O
   }
   if (sidebar.status !== "ready") return <Original />;
 
+  // Subagent and fork threads are children (parentThreadId) of a session thread. They are not RPI
+  // sessions, so without this they land in "Other threads" and a task whose session is quietly
+  // waiting on three running subagents looks finished. Nest every descendant under its session.
+  const childrenByParent = new Map<string, PluginSidebarThread[]>();
+  for (const thread of sidebar.threads) {
+    if (!thread.parentThreadId || sessionsByThread.has(thread.id)) continue;
+    const list = childrenByParent.get(thread.parentThreadId) ?? [];
+    list.push(thread);
+    childrenByParent.set(thread.parentThreadId, list);
+  }
+  const descendantsOf = (threadId: string): PluginSidebarThread[] => {
+    const out: PluginSidebarThread[] = [];
+    const stack = [...(childrenByParent.get(threadId) ?? [])];
+    while (stack.length) {
+      const next = stack.pop()!;
+      out.push(next);
+      stack.push(...(childrenByParent.get(next.id) ?? []));
+    }
+    return out.sort((a, b) => b.createdAt - a.createdAt);
+  };
+  const threadIsBusy = (thread: PluginSidebarThread) =>
+    thread.hasPendingInteraction || Object.values(thread.activity).some((n) => n > 0) || thread.indicator === "runtime" || thread.indicator === "background-agent" || thread.indicator === "workflow";
+
   const groups = new Map<string, { taskName: string; threads: PluginSidebarThread[] }>();
+  const nested = new Set<string>();
   const other: PluginSidebarThread[] = [];
   for (const thread of sidebar.threads) {
     const session = sessionsByThread.get(thread.id);
     const taskName = session ? taskMeta.get(session.taskId)?.name : undefined;
+    if (!session || !taskName) continue;
+    for (const child of descendantsOf(thread.id)) nested.add(child.id);
+  }
+  for (const thread of sidebar.threads) {
+    const session = sessionsByThread.get(thread.id);
+    const taskName = session ? taskMeta.get(session.taskId)?.name : undefined;
     if (!session || !taskName) {
-      other.push(thread);
+      if (!nested.has(thread.id)) other.push(thread);
       continue;
     }
     const group = groups.get(session.taskId) ?? { taskName, threads: [] };
     group.threads.push(thread);
     groups.set(session.taskId, group);
   }
-  const sortedOther = [...other].sort((a, b) => b.updatedAt - a.updatedAt);
+  const sortedOther = [...other].sort((a, b) => b.createdAt - a.createdAt);
+  // Sentinel id (not a real task id, task ids come from the RPC and never start with "__") so
+  // the "Other threads" bucket collapses through the same persisted map as task groups.
+  const OTHER_GROUP_KEY = "__other__";
+  const otherHasActive = sortedOther.some((thread) => thread.id === activeThreadId);
+  const otherCollapsed = collapseOverrides.get(OTHER_GROUP_KEY) ?? !otherHasActive;
 
   const go = (threadId: string) => {
     navigate.toThread(threadId);
@@ -3605,24 +4021,26 @@ export function RpiThreadList({ activeThreadId, isCompactViewport, onNavigate, O
       const effective = task ? effectiveStatus(session, taskSessions, task) : session.rpiStatus;
       return { thread, session, effective };
     });
-    const live = rows
-      .filter((row) => row.effective !== SUPERSEDED)
-      .sort((a, b) => {
-        const rankDiff = sidebarSessionRank(a.effective) - sidebarSessionRank(b.effective);
-        return rankDiff !== 0 ? rankDiff : sidebarSessionTime(b.session) - sidebarSessionTime(a.session);
-      });
-    const done = rows
-      .filter((row) => row.effective === SUPERSEDED)
-      .sort((a, b) => sidebarSessionTime(b.session) - sidebarSessionTime(a.session));
+    // Stable order only: newest session first by creation time. Status rank, last-update time,
+    // and the selected thread are deliberately not sort keys; using them made rows jump on click.
+    const byCreated = (a: { session: SessionView }, b: { session: SessionView }) => b.session.createdAt - a.session.createdAt;
+    const live = rows.filter((row) => row.effective !== SUPERSEDED).sort(byCreated);
+    const done = rows.filter((row) => row.effective === SUPERSEDED).sort(byCreated);
     const needsHumanCount = live.filter((row) => needsHuman(row.effective)).length;
-    const hasActive = rows.some((row) => row.thread.id === activeThreadId);
-    const latestUpdate = Math.max(...rows.map((row) => sidebarSessionTime(row.session)), 0);
-    return { taskId, taskName: group.taskName, live, done, needsHumanCount, hasActive, latestUpdate };
+    const hasActive =
+      rows.some((row) => row.thread.id === activeThreadId) ||
+      rows.some((row) => descendantsOf(row.thread.id).some((child) => child.id === activeThreadId || threadIsBusy(child)));
+    const firstCreated = Math.min(...rows.map((row) => row.session.createdAt));
+    const latestThreadId = (live[0] ?? done[0])?.thread.id ?? null;
+    return { taskId, taskName: group.taskName, projectId: task?.projectId ?? null, live, done, needsHumanCount, hasActive, firstCreated, latestThreadId };
   });
-  groupEntries.sort((a, b) => {
-    if (a.needsHumanCount > 0 !== b.needsHumanCount > 0) return a.needsHumanCount > 0 ? -1 : 1;
-    return b.latestUpdate - a.latestUpdate;
-  });
+  // One flat list of tasks, newest task first by its first session's creation time. Nothing that
+  // changes on click or as work progresses (active project, needs-you, last update) is a sort
+  // key: the list must not reorder under the user. The project is shown as a muted subtitle only
+  // when tasks span more than one project.
+  groupEntries.sort((a, b) => b.firstCreated - a.firstCreated);
+  const showProjectNames = new Set(groupEntries.map((entry) => entry.projectId ?? "__unknown__")).size > 1;
+  const projectLabel = (projectId: string | null) => (projectId && projectNameById.get(projectId)) || "Unknown project";
 
   const ordinalsByTask = new Map<string, Map<string, { ordinal: number; total: number }>>();
   const ordinalsFor = (taskId: string) => {
@@ -3633,30 +4051,75 @@ export function RpiThreadList({ activeThreadId, isCompactViewport, onNavigate, O
     return computed;
   };
 
+  const childRow = (thread: PluginSidebarThread) => {
+    const busy = threadIsBusy(thread);
+    return (
+      <div key={thread.id} className="group flex items-center gap-0.5">
+        <button
+          type="button"
+          onClick={() => go(thread.id)}
+          title={thread.indicatorLabel ?? undefined}
+          className={cn(
+            "flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            thread.id === activeThreadId ? "bg-card text-foreground" : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {otherThreadDot(thread, busy, true)}
+          <span className="sr-only">{otherThreadStatusText(thread, busy)}, </span>
+          <span className="truncate">{thread.title ?? thread.titleFallback ?? "Subagent"}</span>
+          <span className={cn("ml-auto shrink-0", isCompactViewport && "hidden")}>{relativeTime(thread.updatedAt)}</span>
+        </button>
+        {rowActions(thread)}
+      </div>
+    );
+  };
+
   const sessionRow = (thread: PluginSidebarThread, session: SessionView, effective: string, taskId: string) => {
     const meta = statusMeta(effective);
     const ordinal = ordinalsFor(taskId).get(session.threadId);
     const attemptSuffix = ordinal && ordinal.total > 1 ? `, attempt ${ordinal.ordinal}` : "";
-    const title = `${capitalize(labelStep(session.label) ?? "Session")}${attemptSuffix}`;
+    const title = session.label ? `${capitalize(labelStep(session.label) ?? "Session")}${attemptSuffix}` : (thread.title ?? thread.titleFallback ?? "Session");
+    const children = descendantsOf(thread.id);
+    const busyChildren = children.filter(threadIsBusy).length;
     return (
-      <button
-        key={thread.id}
-        type="button"
-        onClick={() => go(thread.id)}
-        className={cn(
-          "flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-          thread.id === activeThreadId ? "bg-card text-foreground" : "text-muted-foreground hover:text-foreground",
-        )}
-      >
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="shrink-0"><Icon name={meta.icon} className={cn("size-3.5", TONE_TEXT_CLASS[meta.tone])} /></span>
-          </TooltipTrigger>
-          <TooltipContent>{meta.hint || meta.text}</TooltipContent>
-        </Tooltip>
-        <span className="truncate">{title}</span>
-        <span className={cn("ml-auto shrink-0", isCompactViewport && "hidden")}>{relativeTime(sidebarSessionTime(session))}</span>
-      </button>
+      <div key={thread.id} className="space-y-0.5">
+        <div className="group flex items-center gap-0.5">
+          <button
+            type="button"
+            onClick={() => go(thread.id)}
+            className={cn(
+              "flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              thread.id === activeThreadId ? "bg-card text-foreground" : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {/* Status is color-only in the dot, so the row's own name carries it for screen readers;
+                the hover tooltip stays for mouse users. */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="shrink-0"><Dot tone={meta.tone} pulse={meta.tone === "active"} /></span>
+              </TooltipTrigger>
+              <TooltipContent>{meta.hint || meta.text}</TooltipContent>
+            </Tooltip>
+            <span className="sr-only">{meta.text}, </span>
+            <span className="truncate">{title}</span>
+            {busyChildren > 0 ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex shrink-0 items-center gap-1 text-muted-foreground">
+                    <Dot tone="primary" pulse child />
+                    <span aria-hidden>{busyChildren}</span>
+                    <span className="sr-only">, {plural(busyChildren, "subagent", "subagents")} running</span>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>{plural(busyChildren, "subagent", "subagents")} running</TooltipContent>
+              </Tooltip>
+            ) : null}
+            <span className={cn("ml-auto shrink-0", isCompactViewport && "hidden")}>{relativeTime(sidebarSessionTime(session))}</span>
+          </button>
+          {rowActions(thread)}
+        </div>
+        {children.length > 0 ? <div className="ml-3 space-y-0.5 border-l border-border pl-1.5">{children.map(childRow)}</div> : null}
+      </div>
     );
   };
 
@@ -3664,83 +4127,126 @@ export function RpiThreadList({ activeThreadId, isCompactViewport, onNavigate, O
     const defaultCollapsed = !entry.hasActive && entry.needsHumanCount === 0;
     const collapsed = collapseOverrides.get(entry.taskId) ?? defaultCollapsed;
     return (
-      <button
-        type="button"
-        aria-expanded={!collapsed}
-        onClick={() => collapseOverrides.set(entry.taskId, !collapsed)}
-        className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs font-medium text-foreground hover:bg-card/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      <div
+        className={cn(
+          "flex items-center gap-0.5 rounded-md transition-colors",
+          draggingThreadId && "outline-dashed outline-1 -outline-offset-1 outline-border",
+          dragOverTaskId === entry.taskId && "bg-primary/15 outline-primary",
+        )}
+        {...dropTargetProps(entry.taskId)}
       >
-        <Icon name={collapsed ? "ChevronRight" : "ChevronDown"} className="size-3.5 shrink-0" />
-        <span className="flex-1 truncate">{entry.taskName}</span>
-        {entry.needsHumanCount > 0 ? (
+        <button
+          type="button"
+          aria-expanded={!collapsed}
+          onClick={() => collapseOverrides.set(entry.taskId, !collapsed)}
+          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs font-medium text-foreground hover:bg-card/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <Icon name={collapsed ? "ChevronRight" : "ChevronDown"} className="size-3.5 shrink-0" />
+          <span className="flex min-w-0 flex-1 flex-col">
+            <span className="truncate">{entry.taskName}</span>
+            {showProjectNames ? <span className="truncate text-[11px] font-normal text-muted-foreground">{projectLabel(entry.projectId)}</span> : null}
+          </span>
+          {entry.needsHumanCount > 0 ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className={cn("inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[11px] font-semibold", TONE_PILL_CLASS.attention)}>
+                  <span aria-hidden>{entry.needsHumanCount}</span>
+                  <span className="sr-only">, {plural(entry.needsHumanCount, "session needs", "sessions need")} you</span>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>{plural(entry.needsHumanCount, "session needs", "sessions need")} you</TooltipContent>
+            </Tooltip>
+          ) : null}
+        </button>
+        {entry.latestThreadId ? (
           <Tooltip>
             <TooltipTrigger asChild>
-              <span className={cn("inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[11px] font-semibold", TONE_PILL_CLASS.attention)}>{entry.needsHumanCount}</span>
+              <button
+                type="button"
+                aria-label={`New chat on ${entry.taskName}`}
+                disabled={launchingFromTask === entry.taskId}
+                onClick={() => void startNewChat(entry.taskId, entry.latestThreadId!)}
+                className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-card/70 hover:text-foreground disabled:opacity-50"
+              >
+                <Icon name={launchingFromTask === entry.taskId ? "Spinner" : "Plus"} className="size-3.5" />
+              </button>
             </TooltipTrigger>
-            <TooltipContent>{plural(entry.needsHumanCount, "session needs", "sessions need")} you</TooltipContent>
+            <TooltipContent>New chat on this task</TooltipContent>
           </Tooltip>
-        ) : (
-          <span className="text-xs text-muted-foreground">{entry.live.length}</span>
+        ) : null}
+      </div>
+    );
+  };
+
+  const taskGroupNode = (entry: (typeof groupEntries)[number]) => {
+    const defaultCollapsed = !entry.hasActive && entry.needsHumanCount === 0;
+    const collapsed = collapseOverrides.get(entry.taskId) ?? defaultCollapsed;
+    const doneCollapsed = !doneGroups.has(entry.taskId);
+    return (
+      <div key={entry.taskId} className="space-y-0.5">
+        {groupHeader(entry)}
+        {collapsed ? null : (
+          <div className="ml-3 space-y-0.5 border-l border-border pl-1.5">
+            {entry.live.map((row) => sessionRow(row.thread, row.session, row.effective, entry.taskId))}
+            {entry.done.length > 0 ? (
+              <>
+                <button
+                  type="button"
+                  aria-expanded={!doneCollapsed}
+                  onClick={() => doneGroups.toggle(entry.taskId)}
+                  className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs text-muted-foreground hover:text-foreground"
+                >
+                  <Icon name={doneCollapsed ? "ChevronRight" : "ChevronDown"} className="size-3.5 shrink-0" />
+                  <span>{plural(entry.done.length, "done session", "done sessions")}</span>
+                </button>
+                {doneCollapsed ? null : entry.done.map((row) => sessionRow(row.thread, row.session, row.effective, entry.taskId))}
+              </>
+            ) : null}
+          </div>
         )}
-      </button>
+      </div>
     );
   };
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto p-2">
       <div className="space-y-2">
-        {groupEntries.map((entry) => {
-          const defaultCollapsed = !entry.hasActive && entry.needsHumanCount === 0;
-          const collapsed = collapseOverrides.get(entry.taskId) ?? defaultCollapsed;
-          const doneCollapsed = !doneGroups.has(entry.taskId);
-          return (
-            <div key={entry.taskId} className="space-y-0.5">
-              {groupHeader(entry)}
-              {collapsed ? null : (
-                <>
-                  {entry.live.map((row) => sessionRow(row.thread, row.session, row.effective, entry.taskId))}
-                  {entry.done.length > 0 ? (
-                    <>
-                      <button
-                        type="button"
-                        aria-expanded={!doneCollapsed}
-                        onClick={() => doneGroups.toggle(entry.taskId)}
-                        className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs text-muted-foreground hover:text-foreground"
-                      >
-                        <Icon name={doneCollapsed ? "ChevronRight" : "ChevronDown"} className="size-3.5 shrink-0" />
-                        <span>{plural(entry.done.length, "done session", "done sessions")}</span>
-                      </button>
-                      {doneCollapsed ? null : entry.done.map((row) => sessionRow(row.thread, row.session, row.effective, entry.taskId))}
-                    </>
-                  ) : null}
-                </>
-              )}
-            </div>
-          );
-        })}
+        {groupEntries.map(taskGroupNode)}
         {sortedOther.length > 0 ? (
           <div className="space-y-0.5">
-            <div className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs font-medium text-foreground">
+            <button
+              type="button"
+              aria-expanded={!otherCollapsed}
+              onClick={() => collapseOverrides.set(OTHER_GROUP_KEY, !otherCollapsed)}
+              className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs font-medium text-foreground hover:bg-card/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <Icon name={otherCollapsed ? "ChevronRight" : "ChevronDown"} className="size-3.5 shrink-0" />
               <span className="flex-1 truncate">Other threads</span>
               <span className="text-xs text-muted-foreground">{sortedOther.length}</span>
-            </div>
-            {sortedOther.map((thread) => {
-              const glyph = otherThreadGlyph(thread);
+            </button>
+            {otherCollapsed ? null : sortedOther.map((thread) => {
               return (
-                <button
+                <div
                   key={thread.id}
-                  type="button"
-                  onClick={() => go(thread.id)}
-                  title={thread.indicatorLabel ?? undefined}
-                  className={cn(
-                    "flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                    thread.id === activeThreadId ? "bg-card text-foreground" : "text-muted-foreground hover:text-foreground",
-                  )}
+                  className={cn("group flex cursor-grab items-center gap-0.5 active:cursor-grabbing", draggingThreadId === thread.id && "opacity-40")}
+                  {...dragSourceProps(thread.id, thread.title ?? thread.titleFallback ?? "Untitled")}
                 >
-                  <Icon name={glyph.icon} className={cn("size-3.5 shrink-0", glyph.className)} />
-                  <span className="truncate">{thread.title ?? thread.titleFallback ?? "Untitled"}</span>
-                  <span className="ml-auto shrink-0">{relativeTime(thread.updatedAt)}</span>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => go(thread.id)}
+                    title={thread.indicatorLabel ?? "Drag onto a task to move it there"}
+                    className={cn(
+                      "flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      thread.id === activeThreadId ? "bg-card text-foreground" : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {otherThreadDot(thread, threadIsBusy(thread))}
+                    <span className="sr-only">{otherThreadStatusText(thread, threadIsBusy(thread))}, </span>
+                    <span className="truncate">{thread.title ?? thread.titleFallback ?? "Untitled"}</span>
+                    <span className="ml-auto shrink-0">{relativeTime(thread.updatedAt)}</span>
+                  </button>
+                  {rowActions(thread, true)}
+                </div>
               );
             })}
           </div>
@@ -3749,6 +4255,7 @@ export function RpiThreadList({ activeThreadId, isCompactViewport, onNavigate, O
       <button type="button" onClick={() => setUseDefault(true)} className="mt-2 px-1.5 py-1 text-left text-xs text-muted-foreground hover:text-foreground">
         Show bb's default list
       </button>
+      {archive.dialog}
     </div>
   );
 }
@@ -4363,24 +4870,33 @@ function needsYouEmptyMessage(runningCount: number, hasTasks: boolean): string {
   return "Nothing needs you.";
 }
 
-// One band row: a real button (not a div+onClick) so the whole row is keyboard-operable. The
-// visual "Open" affordance is the actual Button component rendered `asChild` onto a plain span,
-// not a nested <button>, since a button-in-button is invalid HTML and the row is already the one
-// interactive element (per PRODUCT.md "one control per decision").
+// One band row, same contract as the task and session rows: the row takes pointer clicks, the
+// task name is the keyboard control (RowLink), the status pill is a focusable hint, and a failed or
+// lost session carries its recovery actions right here (Start fresh, Dismiss) so the copy "or
+// start fresh" always has the control it names. The visual "Open" is a styled span, not a second
+// button (PRODUCT.md #3: one control per decision).
 function NeedsYouRow({
   session,
   task,
   compact,
   onOpen,
+  onDismiss,
 }: {
   session: SessionView;
   task: TaskRow;
   compact: boolean;
   onOpen: () => void;
+  onDismiss: (threadId: string) => void;
 }) {
   const meta = statusMeta(session.rpiStatus);
   const [prefix, rest] = splitAttentionPrefix(attentionText(session));
   const tint = session.rpiStatus === "ready_for_input" ? "bg-attention/5" : undefined;
+  const danger = session.rpiStatus === "failed" || session.rpiStatus === "lost";
+  const openAffordance = (className: string, children: ReactNode) => (
+    <Button asChild variant="outline" className={cn("pointer-events-none shrink-0", className)} aria-hidden>
+      <span>{children}</span>
+    </Button>
+  );
   const textCell = (
     <>
       {prefix ? <span className="text-muted-foreground">{prefix}: </span> : null}
@@ -4394,46 +4910,34 @@ function NeedsYouRow({
   );
   if (compact) {
     return (
-      <button
-        type="button"
-        onClick={onOpen}
-        className={cn("flex w-full flex-col gap-1.5 px-3.5 py-2.5 text-left hover:bg-card/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", tint)}
-      >
+      <div onClick={onOpen} className={cn("flex flex-col gap-1.5 px-3.5 py-2.5", CLICKABLE_ROW_CLASS, tint)}>
         <div className="flex items-center gap-2">
           <StatusPill tone={meta.tone} label={meta.text} icon={meta.icon} hint={meta.hint || undefined} />
-          <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{task.name}</span>
-          <Button asChild variant="outline" className="h-9 w-9 shrink-0 p-0" aria-label="Open session">
-            <span>
-              <Icon name="ArrowUpRight" className="size-4" />
-            </span>
-          </Button>
+          <RowLink onOpen={onOpen} className="min-w-0 flex-1 truncate text-sm">{task.name}</RowLink>
+          {danger ? null : openAffordance("h-9 w-9 p-0", <Icon name="ArrowUpRight" className="size-4" />)}
         </div>
         <div className="text-xs text-muted-foreground">{metaLine}</div>
         <div className="text-sm text-foreground">{textCell}</div>
-      </button>
+        {danger ? <SessionRecoveryActions threadId={session.threadId} onDismiss={onDismiss} className="pt-1" /> : null}
+      </div>
     );
   }
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className={cn("flex w-full items-center gap-3.5 px-3.5 py-2.5 text-left hover:bg-card/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", tint)}
-    >
+    <div onClick={onOpen} className={cn("flex items-center gap-3.5 px-3.5 py-2.5", CLICKABLE_ROW_CLASS, tint)}>
       <span className="flex w-[118px] shrink-0">
         <StatusPill tone={meta.tone} label={meta.text} icon={meta.icon} hint={meta.hint || undefined} />
       </span>
-      <span className="flex w-[260px] shrink-0 flex-col gap-0.5">
-        <span className="truncate text-sm font-medium text-foreground">{task.name}</span>
+      <span className="flex w-[260px] shrink-0 flex-col items-start gap-0.5">
+        <RowLink onOpen={onOpen} className="truncate text-sm">{task.name}</RowLink>
         <span className="text-xs text-muted-foreground">{metaLine}</span>
       </span>
       <span className="min-w-0 flex-1 truncate text-sm">{textCell}</span>
-      <Button asChild variant="outline" className="h-8 shrink-0">
-        <span>
-          Open
-          <Icon name="ArrowUpRight" className="size-3.5" />
-        </span>
-      </Button>
-    </button>
+      {danger ? (
+        <SessionRecoveryActions threadId={session.threadId} onDismiss={onDismiss} />
+      ) : (
+        openAffordance("h-8", <>Open<Icon name="ArrowUpRight" className="size-3.5" /></>)
+      )}
+    </div>
   );
 }
 
@@ -4457,10 +4961,12 @@ function NeedsYouBand({
   onOpen: (threadId: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const archive = useArchiveThread(DISMISS_SESSION_COPY);
   const visible = expanded ? queue : queue.slice(0, NEEDS_YOU_BAND_CAP);
   const hiddenCount = queue.length - visible.length;
   return (
     <div className="space-y-2">
+      {archive.dialog}
       <div className="flex items-baseline justify-between gap-3 px-1">
         <div className="flex items-baseline gap-2 whitespace-nowrap">
           <h2 className="whitespace-nowrap text-sm font-semibold text-foreground">Needs you</h2>
@@ -4483,13 +4989,14 @@ function NeedsYouBand({
               task={entry.task}
               compact={compact}
               onOpen={() => onOpen(entry.session.threadId)}
+              onDismiss={archive.request}
             />
           ))}
           {hiddenCount > 0 || expanded && queue.length > NEEDS_YOU_BAND_CAP ? (
             <button
               type="button"
               onClick={() => setExpanded((value) => !value)}
-              className="block w-full px-3.5 py-2 text-center text-xs font-medium text-muted-foreground hover:bg-card/70 hover:text-foreground"
+              className="block w-full px-3.5 py-2 text-center text-xs font-medium text-muted-foreground hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {expanded ? "Show fewer" : `Show ${hiddenCount} more`}
             </button>
@@ -4519,26 +5026,12 @@ function TasksSectionHeader({
         <h2 className="text-sm font-semibold text-foreground">{title}</h2>
         <span className="text-sm font-semibold text-muted-foreground">{count}</span>
       </div>
-      <div role="radiogroup" aria-label="Task view" className="flex gap-0.5 rounded-md border border-border p-0.5">
-        <button
-          type="button"
-          role="radio"
-          aria-checked={!boardMode}
-          onClick={() => setBoardMode(false)}
-          className={cn("h-7 rounded px-2.5 text-xs font-medium", !boardMode ? "bg-card text-foreground" : "text-muted-foreground")}
-        >
-          List
-        </button>
-        <button
-          type="button"
-          role="radio"
-          aria-checked={boardMode}
-          onClick={() => setBoardMode(true)}
-          className={cn("h-7 rounded px-2.5 text-xs font-medium", boardMode ? "bg-card text-foreground" : "text-muted-foreground")}
-        >
-          Board
-        </button>
-      </div>
+      <Segmented
+        label="Task view"
+        value={boardMode ? "board" : "list"}
+        onChange={(next) => setBoardMode(next === "board")}
+        options={[{ value: "list", label: "List" }, { value: "board", label: "Board" }]}
+      />
     </div>
   );
 }
@@ -4675,37 +5168,25 @@ export function RpiPanel({ subPath }: { subPath: string }) {
     >
       <RpiNotificationBridge />
       <div className="flex items-center justify-between gap-3">
-        <div role="tablist" className="flex gap-1 rounded-md border border-border p-1">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === "tasks"}
-            aria-controls="rpi-panel-content"
-            onClick={() => onSwitch("tasks")}
-            className={cn("whitespace-nowrap rounded px-3 py-1.5 text-sm font-medium transition", view === "tasks" ? "bg-card text-foreground" : "text-muted-foreground")}
-          >
-            Tasks
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === "drafts"}
-            aria-controls="rpi-panel-content"
-            onClick={() => onSwitch("drafts")}
-            className={cn("whitespace-nowrap rounded px-3 py-1.5 text-sm font-medium transition", view === "drafts" ? "bg-card text-foreground" : "text-muted-foreground")}
-          >
-            <span className="whitespace-nowrap">Drafts <span className="text-muted-foreground">{draftCount}</span></span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === "settings"}
-            aria-controls="rpi-panel-content"
-            onClick={() => onSwitch("settings")}
-            className={cn("whitespace-nowrap rounded px-3 py-1.5 text-sm font-medium transition", view === "settings" ? "bg-card text-foreground" : "text-muted-foreground")}
-          >
-            Settings
-          </button>
+        <div role="tablist" onKeyDown={rovingKeyDown} className="flex gap-1 rounded-md border border-border p-1">
+          {([
+            { id: "tasks", label: <>Tasks</> },
+            { id: "drafts", label: <>Drafts <span className="text-muted-foreground">{draftCount}</span></> },
+            { id: "settings", label: <>Settings</> },
+          ] as const).map((entry) => (
+            <button
+              key={entry.id}
+              type="button"
+              role="tab"
+              aria-selected={view === entry.id}
+              aria-controls="rpi-panel-content"
+              tabIndex={view === entry.id ? 0 : -1}
+              onClick={() => onSwitch(entry.id)}
+              className={tabClass(view === entry.id)}
+            >
+              {entry.label}
+            </button>
+          ))}
         </div>
         {compact ? (
           <Tooltip>

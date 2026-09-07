@@ -59,14 +59,14 @@ export function statusMeta(status: string): StatusMeta {
         text: "Failed",
         tone: "danger",
         icon: "AlertCircle",
-        hint: "The session hit an error. Open it to read the error, or retry it from Launch attempts.",
+        hint: "The session hit an error. Open it to read the error, start a fresh session on this phase, or dismiss it.",
       };
     case "lost":
       return {
         text: "Lost",
         tone: "danger",
         icon: "AlertCircle",
-        hint: "bb no longer reports this thread. Open it to check, or start a fresh session.",
+        hint: "bb no longer reports this thread. Open it to check, start a fresh session on this phase, or dismiss it.",
       };
     case "interrupted":
       return { text: "Stopped", tone: "muted", icon: "CircleX", hint: "You stopped this session. Fork or iterate to continue." };
@@ -130,7 +130,7 @@ export function attentionText(session: {
   }
   if (session.rpiStatus === "failed" || session.rpiStatus === "lost") {
     const trimmed = session.ingestError?.trim();
-    return trimmed ? trimmed : "The session failed. Open it to see why, or retry.";
+    return trimmed ? trimmed : "The session failed. Open it to see why, or start fresh.";
   }
   return "";
 }

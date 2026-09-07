@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { MIGRATIONS } from "../db";
 import { createDraftTask, defaultTaskPrefs, generateTaskSlug, listTasks, resolveTaskExecutionDefaults, updateTask } from "../tasks";
+import { listSessions } from "../sessions";
 import { deriveBoardColumn } from "../transitions";
 import type { Prefs } from "../contract";
 
@@ -120,4 +121,51 @@ test("resolveTaskExecutionDefaults: explicit request > workflow default > global
   // wins over both the workflow and global default.
   assert.equal(resolveTaskExecutionDefaults({ providerId: null }, "rpi", prefs).providerId, null);
   assert.equal(resolveTaskExecutionDefaults({ model: undefined }, "rpi", prefs).model, "workflow-model");
+});
+
+// Archiving a session's bb thread is how the human dismisses a failed or lost session: it must
+// drop out of listSessions, out of the task's attention count and session count, and stop deciding
+// the task's current phase, while the row itself stays for retention.
+test("an archived-thread session is excluded from listSessions, counts, and the current label", () => {
+  const db = makeDb();
+  for (const statement of MIGRATIONS) {
+    if (statement.trim().length > 0) {
+      db.exec(statement);
+    }
+  }
+  const { taskId } = createDraftTask(db, {
+    projectId: "proj_1",
+    prompt: "Build a task system",
+    name: "Build a task system",
+    workflowType: "rpi",
+    worktreeTiming: "later",
+    permissionMode: "default",
+    autoAdvance: false,
+    providerId: null,
+    model: null,
+    reasoningLevel: null,
+    serviceTier: null,
+  });
+  const insert = db.prepare(`
+    INSERT INTO sessions (
+      thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
+      rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at
+    ) VALUES (?, ?, ?, NULL, 'user', NULL, ?, 1, 1, 0, NULL, ?, ?)
+  `);
+  insert.run("thr_plan", taskId, "plan", "ready_for_input", 10, 10);
+  insert.run("thr_research_rerun", taskId, "research", "failed", 20, 20);
+
+  const before = listTasks(db, { archived: false })[0]!;
+  assert.equal(before.sessionCount, 2);
+  assert.equal(before.attentionCount, 2);
+  assert.equal(before.currentLabel, "research");
+
+  db.prepare("UPDATE sessions SET thread_archived_at = 30 WHERE thread_id = 'thr_research_rerun'").run();
+  const after = listTasks(db, { archived: false })[0]!;
+  assert.equal(after.sessionCount, 1);
+  assert.equal(after.attentionCount, 1);
+  assert.equal(after.currentLabel, "plan");
+  assert.deepEqual(listSessions(db, taskId).map((session) => session.threadId), ["thr_plan"]);
+  assert.deepEqual(listSessions(db, null).map((session) => session.threadId), ["thr_plan"]);
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number }).n, 2, "the row is kept for retention");
 });

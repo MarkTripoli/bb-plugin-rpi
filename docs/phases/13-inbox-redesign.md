@@ -15,7 +15,7 @@ Decisions taken with the owner before any code moved:
 - Direction: inbox first, "attention band over task table" (dealt by the concept seed from a
   ranked list of seven structures; the owner locked it).
 - Audience: solo today, larger organization later; in-place hints and tooltips, no onboarding.
-- Vocabulary: internal statuses, tables, and notification rules stay HumanLayer-parity; the words
+- Vocabulary: internal statuses, tables, and notification rules stay at parity with the reference workflow; the words
   on screen are ours ("Needs you", "Approve", "Failed", "Done").
 - "Needs you" uses bb's `--attention` token; `--destructive` is reserved for failed and lost.
 - Visual references: bb workflows card (structure, pills, collapsible groups) and pi-subagents

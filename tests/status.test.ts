@@ -134,11 +134,11 @@ test("attentionText: failed/lost use ingestError, trimmed, or a generic fallback
   );
   assert.equal(
     attentionText({ rpiStatus: "lost", blockedReason: null, nextStepJson: null, ingestError: null }),
-    "The session failed. Open it to see why, or retry.",
+    "The session failed. Open it to see why, or start fresh.",
   );
   assert.equal(
     attentionText({ rpiStatus: "lost", blockedReason: null, nextStepJson: null, ingestError: "   " }),
-    "The session failed. Open it to see why, or retry.",
+    "The session failed. Open it to see why, or start fresh.",
   );
 });
 

@@ -292,9 +292,15 @@ export function readSession(db: Database, threadId: string) {
   return row ? normalizeSessionRow(row) : null;
 }
 
+// Sessions whose bb thread was archived or deleted are excluded: the mirror forgot them
+// (forgetThread), so their status can never change again, and archiving the thread is how the
+// human dismisses a failed or lost session from the inbox. The row itself is kept for retention
+// and history (thread_archived_at); it just stops being a session the panel shows or counts.
+export const LIVE_SESSION_CLAUSE = "thread_archived_at IS NULL";
+
 export function listSessions(db: Database, taskId?: string | null, page?: { limit?: number; offset?: number }) {
   const params: Array<string | number> = [];
-  const where = taskId ? "WHERE task_id = ?" : "";
+  const where = taskId ? `WHERE task_id = ? AND ${LIVE_SESSION_CLAUSE}` : `WHERE ${LIVE_SESSION_CLAUSE}`;
   if (taskId) params.push(taskId);
   const limit = page?.limit;
   const offset = page?.offset ?? 0;
@@ -993,6 +999,7 @@ export function registerSessionRuntime(
   // Stamped once so the retention sweep can identify individually-archived-or-deleted sessions
   // even while their owning task stays open (the sessions row itself is never deleted).
   const forgetThread = (threadId: string) => {
+    const taskId = mirror.get(threadId)?.taskId ?? null;
     retiredThreads.add(threadId);
     mirror.delete(threadId);
     reconcileState.delete(threadId);
@@ -1002,6 +1009,11 @@ export function registerSessionRuntime(
     }
     bindings.pendingByThread.delete(threadId);
     writeRow(db, "UPDATE sessions SET thread_archived_at = COALESCE(thread_archived_at, ?) WHERE thread_id = ?", nowMs(), threadId);
+    // listSessions/listTasks drop the session now; tell the panel, band and sidebar to refetch.
+    if (taskId) {
+      bb.realtime.publish("rpi:sessions", { taskId, threadId });
+      bb.realtime.publish("tasks", { taskId });
+    }
   };
 
   const unsubscribe = bb.sdk.subscribe({

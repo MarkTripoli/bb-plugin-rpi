@@ -5,7 +5,7 @@ import { mimeFor, upsertArtifact } from "./artifacts";
 import { deriveBoardColumn, labelToStepLabel } from "./transitions";
 import { DEFAULT_CONTEXT_THRESHOLD } from "./context-threshold";
 import { attentionCountForTask } from "./status";
-import { listSessions } from "./sessions";
+import { LIVE_SESSION_CLAUSE, listSessions } from "./sessions";
 import type {
   Prefs,
   SessionRow,
@@ -124,15 +124,18 @@ function readTaskRecord(db: Database, taskId: string): TaskRecord | undefined {
   return row ? normalizeTaskRecord(row) : undefined;
 }
 
+// Same live-session rule as listSessions: a session whose thread was archived neither counts nor
+// decides the task's current phase (dismissing a failed re-run of an earlier step must not leave
+// the task pointing at that step).
 function readSessionCount(db: Database, taskId: string) {
-  const row = readRow<{ count: number }>(db, "SELECT COUNT(*) AS count FROM sessions WHERE task_id = ?", taskId);
+  const row = readRow<{ count: number }>(db, `SELECT COUNT(*) AS count FROM sessions WHERE task_id = ? AND ${LIVE_SESSION_CLAUSE}`, taskId);
   return row?.count ?? 0;
 }
 
 function readLatestLabel(db: Database, taskId: string) {
   const row = readRow<{ label: string | null }>(
     db,
-    "SELECT label FROM sessions WHERE task_id = ? ORDER BY created_at DESC, thread_id DESC LIMIT 1",
+    `SELECT label FROM sessions WHERE task_id = ? AND ${LIVE_SESSION_CLAUSE} ORDER BY created_at DESC, thread_id DESC LIMIT 1`,
     taskId,
   );
   return row?.label ?? null;
