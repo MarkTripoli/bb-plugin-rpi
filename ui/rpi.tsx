@@ -1872,7 +1872,7 @@ function ArtifactViewer({ taskId, fileName, onRestore, panelWidth }: { taskId: s
       ) : mode === "preview" && isSandboxedPreview(artifact.contentType) && content !== null ? (
         <iframe title={artifact.fileName} sandbox="" srcDoc={content} className="h-full min-h-[240px] w-full rounded-md border-0 bg-background" />
       ) : mode === "preview" && !isBinary && content !== null ? (
-        <div className="space-y-2">
+        <div className="space-y-0.5">
           {blocks.map((block) => (
             <div key={block.index} className="group grid grid-cols-[28px_minmax(0,1fr)] gap-2 rounded-md border border-transparent hover:border-border">
               <button
@@ -1888,7 +1888,11 @@ function ArtifactViewer({ taskId, fileName, onRestore, panelWidth }: { taskId: s
                 <Icon name="Plus" className="size-4" />
               </button>
               <div className="min-w-0">
-                <Markdown content={block.text} />
+                {block.code ? (
+                  <pre className="whitespace-pre-wrap font-mono text-xs text-foreground">{content!.slice(block.start, block.end).replace(/\n$/, "")}</pre>
+                ) : (
+                  <Markdown content={block.text} />
+                )}
                 {composingBlock === block.index ? (
                   <div className="mb-2 space-y-2 rounded-md border border-border bg-card p-2">
                     <textarea value={composerText} onChange={(event) => setComposerText(event.target.value)} className="min-h-20 w-full rounded-md border border-border bg-background p-2 text-sm text-foreground" />
