@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, RefObject } from "react";
 import {
   Markdown,
@@ -18,6 +18,7 @@ import type {
   ArtifactVersionRecord,
   ContextWarningRule,
   LaunchAttemptRecord,
+  ListModelsOutput,
   NextStepSuggestionsRecord,
   Prefs,
   RpcContract,
@@ -31,7 +32,8 @@ import type {
   WorkspaceViewRecord,
   CommentThreadRecord,
 } from "../contract";
-import { AUTO_ADVANCE, BOARD_COLUMNS, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS, shouldShowComposerBanner, suggestedNextForSession, type SuggestedNext } from "../transitions";
+import { modelDisplay, modelOptionValue, parseModelOptionValue } from "../models";
+import { AUTO_ADVANCE, BOARD_COLUMNS, FIRST_SKILL_BY_WORKFLOW, SKILL_BY_ID, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS, shouldShowComposerBanner, suggestedNextForSession, type SuggestedNext } from "../transitions";
 import { ARTIFACT_COMMENTS_WIDTH_RANGE, ARTIFACT_LIST_WIDTH_RANGE, ARTIFACT_PANEL_STACK_BREAKPOINT, artifactLayoutMode, clampWidth } from "../artifact-layout";
 import {
   PHASE_DESCRIPTIONS,
@@ -45,7 +47,6 @@ import {
   phaseProgress,
   plural,
   statusMeta,
-  workflowSteps,
   type PhaseProgressEntry,
   type StatusTone,
 } from "../status";
@@ -795,16 +796,21 @@ function ComposerToolbarSelect({
   value,
   onChange,
   options,
+  className,
+  id,
 }: {
   value: string;
   onChange: (next: string) => void;
   options: Array<{ value: string; label: string; description?: string }>;
+  className?: string;
+  id?: string;
 }) {
   return (
     <select
+      id={id}
       value={value}
       onChange={(event) => onChange(event.target.value)}
-      className="h-10 min-w-0 rounded-md border border-border bg-card px-3 text-sm text-foreground outline-none transition focus:border-foreground"
+      className={cn("h-10 min-w-0 rounded-md border border-border bg-card px-3 text-sm text-foreground outline-none transition focus:border-foreground", className)}
     >
       {options.map((option) => (
         <option key={option.value} value={option.value}>
@@ -815,46 +821,143 @@ function ComposerToolbarSelect({
   );
 }
 
-function WorkflowStrip({
-  workflowType,
-  worktreeTiming,
-  currentLabel,
+// Page-lifetime cache of the model catalog, keyed by hostId ("" for "no host chosen yet"), so the
+// New task form, a task's Settings tab, and the composer banner's model popover share one
+// listModels fetch instead of each re-fetching bb's provider catalog. Never invalidated; a stale
+// entry only matters if a provider is installed/removed mid-session, and a full page reload (or a
+// hostId change, which is a fresh cache key) already covers that.
+const modelCatalogCache = new Map<string, Promise<ListModelsOutput>>();
+const FAILED_MODEL_CATALOG: ListModelsOutput = { providers: [], models: [], error: { code: "failed", providerId: "" } };
+
+function fetchModelCatalog(rpc: ReturnType<typeof useRpc<RpcContract>>, hostId: string | null): Promise<ListModelsOutput> {
+  const key = hostId ?? "";
+  let cached = modelCatalogCache.get(key);
+  if (!cached) {
+    cached = rpc.call("listModels", { hostId: hostId ?? null }).catch(() => FAILED_MODEL_CATALOG);
+    modelCatalogCache.set(key, cached);
+  }
+  return cached;
+}
+
+type ModelSelectValue = { providerId: string | null; model: string | null; reasoningLevel: string | null };
+
+// Shared model + reasoning-effort picker fed by bb's own provider catalog (listModels), used by
+// the New task form, a task's Settings tab, the composer banner's model popover, and the defaults
+// settings page, so "which models exist" is answered in exactly one place per PRODUCT.md #3.
+function ModelSelect({
+  hostId,
+  value,
+  onChange,
+  allowDefault = true,
+  size = "md",
+  label,
 }: {
-  workflowType: "rpi" | "outline_only" | "prd_tdd" | "oneshot" | "freeform";
-  worktreeTiming: "now" | "later" | "never";
-  currentLabel?: string | null;
+  hostId: string | null;
+  value: ModelSelectValue;
+  onChange: (next: ModelSelectValue) => void;
+  allowDefault?: boolean;
+  size?: "md" | "sm";
+  label: string;
 }) {
-  const steps = workflowSteps(workflowType, worktreeTiming);
-  const currentStep = labelStep(currentLabel);
-  const currentIndex = steps.findIndex((step) => step === currentStep);
-  return (
-    <div className="rounded-xl border border-border bg-card/70 p-3">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <h3 className="text-xs font-semibold uppercase tracking-[0.24em] text-muted-foreground">
-          RPI workflow
-        </h3>
-        <span className="text-xs text-muted-foreground">{WORKFLOW_GRAPH_LABELS[workflowType]}</span>
+  const rpc = useRpc<RpcContract>();
+  const [catalog, setCatalog] = useState<ListModelsOutput | null>(null);
+  const selectId = useId();
+  const reasoningId = useId();
+
+  useEffect(() => {
+    let cancelled = false;
+    setCatalog(null);
+    fetchModelCatalog(rpc, hostId).then((result) => {
+      if (!cancelled) setCatalog(result);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hostId]);
+
+  const selectClass = cn(
+    "w-full rounded-md border border-border bg-background px-2 text-sm text-foreground",
+    size === "sm" ? "h-8" : "h-9",
+  );
+
+  if (!catalog) {
+    return (
+      <div className="space-y-1">
+        <label htmlFor={selectId} className="block text-xs text-muted-foreground">{label}</label>
+        <select id={selectId} disabled className={selectClass}>
+          <option>Loading models...</option>
+        </select>
       </div>
-      <div className="flex flex-wrap gap-2">
-        {steps.map((step, index) => {
-          const dashed = step === "worktree" && worktreeTiming === "later";
+    );
+  }
+
+  if (catalog.error && catalog.models.length === 0) {
+    return (
+      <div className="space-y-1">
+        <label className="block text-xs text-muted-foreground">{label}</label>
+        <p className="text-xs text-muted-foreground">Could not load models from bb ({catalog.error.code})</p>
+      </div>
+    );
+  }
+
+  // researchModel (RpiDefaultsSettings) has no providerId of its own; when the caller passes one
+  // in with providerId null, match by model id alone so a saved bare model string still shows as
+  // known instead of falling into the "not available" branch below.
+  const selectedModel = value.model
+    ? (catalog.models.find((entry) => entry.providerId === value.providerId && entry.model === value.model) ??
+      (value.providerId === null ? catalog.models.find((entry) => entry.model === value.model) : undefined) ??
+      null)
+    : null;
+  const knownValue = value.providerId === null && value.model === null ? true : selectedModel !== null;
+  const selectValue = selectedModel ? modelOptionValue(selectedModel.providerId, selectedModel.model) : modelOptionValue(value.providerId, value.model);
+
+  return (
+    <div className="space-y-1">
+      <label htmlFor={selectId} className="block text-xs text-muted-foreground">{label}</label>
+      <select
+        id={selectId}
+        value={knownValue ? selectValue : "__unavailable"}
+        onChange={(event) => {
+          const parsed = parseModelOptionValue(event.target.value);
+          onChange({ providerId: parsed.providerId, model: parsed.model, reasoningLevel: null });
+        }}
+        className={selectClass}
+      >
+        {allowDefault ? <option value="">Default (from settings)</option> : null}
+        {!knownValue ? (
+          <option value="__unavailable" disabled>
+            {`${modelOptionValue(value.providerId, value.model) || `${value.providerId ?? ""}/${value.model ?? ""}`} (not available)`}
+          </option>
+        ) : null}
+        {catalog.providers.map((provider) => {
+          const providerModels = catalog.models.filter((entry) => entry.providerId === provider.id);
+          if (providerModels.length === 0) return null;
           return (
-            <span
-              key={`${step}-${index}`}
-              className={cn(
-                "inline-flex min-w-[92px] items-center justify-center rounded-md border px-3 py-2 text-sm font-medium",
-                currentIndex === index
-                  ? "border-foreground bg-card text-foreground"
-                  : currentIndex > index
-                    ? "border-border bg-muted text-foreground"
-                    : dashed ? "border-dashed border-border text-muted-foreground" : "border-border text-foreground",
-              )}
-            >
-              {step}
-            </span>
+            <optgroup key={provider.id} label={provider.displayName}>
+              {providerModels.map((entry) => (
+                <option key={`${entry.providerId}/${entry.model}`} value={modelOptionValue(entry.providerId, entry.model)}>
+                  {entry.displayName}{entry.isDefault ? " (default)" : ""}
+                </option>
+              ))}
+            </optgroup>
           );
         })}
-      </div>
+      </select>
+      {selectedModel && selectedModel.reasoningEfforts.length > 0 ? (
+        <select
+          id={reasoningId}
+          aria-label={`${label} reasoning effort`}
+          value={value.reasoningLevel ?? ""}
+          onChange={(event) => onChange({ ...value, reasoningLevel: event.target.value || null })}
+          className={selectClass}
+        >
+          <option value="">Default</option>
+          {selectedModel.reasoningEfforts.map((effort) => (
+            <option key={effort} value={effort}>{capitalize(effort)}</option>
+          ))}
+        </select>
+      ) : null}
     </div>
   );
 }
@@ -937,6 +1040,9 @@ function NewTaskPage({
   const [workflowType, setWorkflowType] = useState<"rpi" | "outline_only" | "prd_tdd" | "oneshot" | "freeform">("rpi");
   const [worktreeTiming, setWorktreeTiming] = useState<"now" | "later" | "never">("later");
   const [autoAdvance, setAutoAdvance] = useState(false);
+  const [providerId, setProviderId] = useState<string | null>(null);
+  const [model, setModel] = useState<string | null>(null);
+  const [reasoningLevel, setReasoningLevel] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -1010,6 +1116,9 @@ function NewTaskPage({
           worktreeTiming,
           permissionMode,
           autoAdvance,
+          providerId,
+          model,
+          reasoningLevel,
         },
         name: name.trim() || undefined,
         draft: true,
@@ -1034,6 +1143,9 @@ function NewTaskPage({
           worktreeTiming,
           permissionMode,
           autoAdvance,
+          providerId,
+          model,
+          reasoningLevel,
         },
         name: name.trim() || undefined,
         draft: true,
@@ -1052,118 +1164,161 @@ function NewTaskPage({
   const hostLabel = (hostId && hostOptions.find((host) => host.id === hostId)?.name) ||
     (hostId || "Select host");
 
+  const firstSkillId = FIRST_SKILL_BY_WORKFLOW[workflowType];
+  const firstPhaseLabel = firstSkillId ? labelStep(SKILL_BY_ID[firstSkillId].label) : null;
+  const primaryLabel = firstPhaseLabel ? `Create and start ${firstPhaseLabel}` : "Create";
+  const workflowSteps = WORKFLOW_GRAPHS[workflowType];
+
   return (
     <div className="space-y-6">
-      <div className="space-y-2">
-        <h1 className="text-3xl font-semibold tracking-tight text-foreground">
-          What should we build today?
-        </h1>
-        <p className="max-w-3xl text-sm text-muted-foreground">
-          Save a task or launch the first session.
-        </p>
+      <div className="space-y-1">
+        <h1 className="text-lg font-semibold text-foreground">New task</h1>
+        <p className="text-sm text-muted-foreground">Describe the task, then choose where and how it runs.</p>
       </div>
 
       <form onSubmit={createDraft} className="space-y-4">
-        <div className="rounded-2xl border border-border bg-card/70 p-4 shadow-sm">
+        <div className="space-y-4 rounded-2xl border border-border bg-card/70 p-4 shadow-sm">
           <textarea
             value={text}
             onChange={(event) => setText(event.target.value)}
             placeholder="Describe the task..."
-            className="min-h-[260px] w-full resize-y rounded-xl border border-border bg-background/80 p-4 text-base leading-7 text-foreground outline-none placeholder:text-muted-foreground focus:border-foreground"
+            className="min-h-[220px] w-full resize-y rounded-xl border border-border bg-background/80 p-4 text-base leading-7 text-foreground outline-none placeholder:text-muted-foreground focus:border-foreground"
           />
-          <div className="mt-4 flex flex-wrap items-center gap-2">
+          <label className="block max-w-[320px] space-y-1 text-xs text-muted-foreground">
+            <span className="block">Task name</span>
             <Input
               value={name}
               onChange={(event) => setName(event.target.value)}
               placeholder="Task name"
-              className="h-10 max-w-[240px]"
+              className="h-10"
             />
-            <ComposerToolbarSelect
-              value={permissionMode}
-              onChange={(value) => setPermissionMode(value as "default" | "accept_edits" | "auto" | "bypass")}
-              options={[
-                { value: "default", label: "Default" },
-                { value: "accept_edits", label: "Accept edits" },
-                { value: "auto", label: "Auto" },
-                { value: "bypass", label: "Bypass" },
-              ]}
-            />
-            <button
-              type="button"
-              onClick={() => setAutoAdvance((value) => !value)}
-              className={cn(
-                "inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm font-medium transition",
-                autoAdvance ? "border-border bg-muted text-foreground" : "border-border bg-card text-muted-foreground",
-              )}
-            >
-              <Icon name="ArrowTurnForward" className="size-4" />
-              Auto-advance
-            </button>
-            <ComposerToolbarSelect
-              value={hostId}
-              onChange={setHostId}
-              options={hostOptions.map((host) => ({
-                value: host.id,
-                label: host.name,
-              }))}
-            />
-            <ComposerToolbarSelect
-              value={projectId}
-              onChange={setProjectId}
-              options={projectOptions.map((project) => ({
-                value: project.id,
-                label: project.name,
-              }))}
-            />
-            <ComposerToolbarSelect
-              value={worktreeTiming}
-              onChange={(value) => setWorktreeTiming(value as "now" | "later" | "never")}
-              options={[
-                { value: "now", label: "Worktree now" },
-                { value: "later", label: "Worktree later" },
-                { value: "never", label: "No worktree" },
-              ]}
-            />
-            <ComposerToolbarSelect
-              value={workflowType}
-              onChange={(value) => setWorkflowType(value as "rpi" | "outline_only" | "prd_tdd" | "oneshot" | "freeform")}
-              options={[
-                { value: "rpi", label: "RPI" },
-                { value: "outline_only", label: "Outline" },
-                { value: "prd_tdd", label: "PRD / TDD" },
-                { value: "oneshot", label: "Oneshot" },
-                { value: "freeform", label: "Freeform" },
-              ]}
-            />
-            <Input
-              value={defaultDirectory}
-              onChange={(event) => setDefaultDirectory(event.target.value)}
-              placeholder="Working directory"
-              className="h-10 flex-1 min-w-[220px]"
-            />
-            <div className="ml-auto flex items-center gap-2">
-              <button
-                type="submit"
-                disabled={busy || text.trim() === "" || projectId === ""}
-                className="inline-flex h-10 items-center gap-2 rounded-md bg-foreground px-4 text-sm font-semibold text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <Icon name="EditFile" className="size-4" />
-                Save draft
-              </button>
-              <button
-                type="button"
-                onClick={createAndLaunch}
-                disabled={busy || text.trim() === "" || projectId === ""}
-                title="Create and launch"
-                className="inline-flex h-10 items-center gap-2 rounded-md border border-border bg-card px-4 text-sm font-semibold text-foreground transition hover:border-foreground/40 disabled:cursor-not-allowed disabled:text-muted-foreground disabled:opacity-60"
-              >
-                <Icon name="Play" className="size-4" />
-                Create
-              </button>
+          </label>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="space-y-3 rounded-xl border border-border bg-card p-3">
+              <h2 className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">Where</h2>
+              <label className="block space-y-1 text-xs text-muted-foreground">
+                <span className="block">Project</span>
+                <ComposerToolbarSelect
+                  className="w-full"
+                  value={projectId}
+                  onChange={setProjectId}
+                  options={projectOptions.map((project) => ({ value: project.id, label: project.name }))}
+                />
+              </label>
+              <label className="block space-y-1 text-xs text-muted-foreground">
+                <span className="block">Machine</span>
+                <ComposerToolbarSelect
+                  className="w-full"
+                  value={hostId}
+                  onChange={setHostId}
+                  options={hostOptions.map((host) => ({ value: host.id, label: host.name }))}
+                />
+              </label>
+              <label className="block space-y-1 text-xs text-muted-foreground">
+                <span className="block">Worktree</span>
+                <ComposerToolbarSelect
+                  className="w-full"
+                  value={worktreeTiming}
+                  onChange={(value) => setWorktreeTiming(value as "now" | "later" | "never")}
+                  options={[
+                    { value: "now", label: "From the start" },
+                    { value: "later", label: "After planning" },
+                    { value: "never", label: "No worktree" },
+                  ]}
+                />
+                <span className="block text-muted-foreground">Research and planning run in the main checkout; implementation gets its own branch.</span>
+              </label>
+              <label className="block space-y-1 text-xs text-muted-foreground">
+                <span className="block">Working directory</span>
+                <Input
+                  value={defaultDirectory}
+                  onChange={(event) => setDefaultDirectory(event.target.value)}
+                  placeholder="Default: repo root"
+                  className="h-9"
+                />
+              </label>
+            </div>
+
+            <div className="space-y-3 rounded-xl border border-border bg-card p-3">
+              <h2 className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">How</h2>
+              <label className="block space-y-1 text-xs text-muted-foreground">
+                <span className="block">Workflow</span>
+                <ComposerToolbarSelect
+                  className="w-full"
+                  value={workflowType}
+                  onChange={(value) => setWorkflowType(value as "rpi" | "outline_only" | "prd_tdd" | "oneshot" | "freeform")}
+                  options={(Object.keys(WORKFLOW_GRAPH_LABELS) as WorkflowType[]).map((key) => ({
+                    value: key,
+                    label: `${WORKFLOW_GRAPH_LABELS[key]} (${plural(WORKFLOW_GRAPHS[key].length, "step")})`,
+                  }))}
+                />
+                <span className="block text-muted-foreground">{workflowSteps.join(" \u2192 ")}</span>
+              </label>
+              <label className="block space-y-1 text-xs text-muted-foreground">
+                <span className="block">Permissions</span>
+                <ComposerToolbarSelect
+                  className="w-full"
+                  value={permissionMode}
+                  onChange={(value) => setPermissionMode(value as "default" | "accept_edits" | "auto" | "bypass")}
+                  options={[
+                    { value: "default", label: "Default" },
+                    { value: "accept_edits", label: "Accept edits" },
+                    { value: "auto", label: "Auto" },
+                    { value: "bypass", label: "Bypass" },
+                  ]}
+                />
+              </label>
+              <div className="space-y-1 text-xs text-muted-foreground">
+                <button
+                  type="button"
+                  onClick={() => setAutoAdvance((value) => !value)}
+                  className={cn(
+                    "inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium transition",
+                    autoAdvance ? "border-border bg-muted text-foreground" : "border-border bg-card text-muted-foreground",
+                  )}
+                >
+                  <Icon name="ArrowTurnForward" className="size-4" />
+                  Auto-advance
+                </button>
+                <span className="block">Phases chain automatically; you approve before implementation and before the PR.</span>
+              </div>
+              <ModelSelect
+                hostId={hostId || null}
+                value={{ providerId, model, reasoningLevel }}
+                onChange={(next) => {
+                  setProviderId(next.providerId);
+                  setModel(next.model);
+                  setReasoningLevel(next.reasoningLevel);
+                }}
+                allowDefault
+                label="Model"
+              />
+              <span className="block text-xs text-muted-foreground">Applies to every session of this task. You can change it later in the task's Settings tab.</span>
             </div>
           </div>
+
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="submit"
+              disabled={busy || text.trim() === "" || projectId === ""}
+              className="inline-flex h-10 items-center gap-2 rounded-md border border-border bg-card px-4 text-sm font-semibold text-foreground transition hover:border-foreground/40 disabled:cursor-not-allowed disabled:text-muted-foreground disabled:opacity-60"
+            >
+              <Icon name="EditFile" className="size-4" />
+              Save as draft
+            </button>
+            <button
+              type="button"
+              onClick={createAndLaunch}
+              disabled={busy || text.trim() === "" || projectId === ""}
+              title={primaryLabel}
+              className="inline-flex h-10 items-center gap-2 rounded-md bg-foreground px-4 text-sm font-semibold text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Icon name="Play" className="size-4" />
+              {primaryLabel}
+            </button>
+          </div>
         </div>
-        <WorkflowStrip workflowType={workflowType} worktreeTiming={worktreeTiming} />
       </form>
 
       <div className="space-y-3">
@@ -1178,7 +1333,7 @@ function NewTaskPage({
               <button
                 key={task.id}
                 type="button"
-                onClick={() => navigate.toPluginPanel("rpi", { subPath: "tasks" })}
+                onClick={() => navigate.toPluginPanel("rpi", { subPath: `tasks/${task.id}` })}
                 className="flex w-full items-center justify-between rounded-lg border border-border bg-card/70 px-4 py-3 text-left transition hover:border-foreground/40"
               >
                 <div className="space-y-1">
@@ -1267,6 +1422,10 @@ function RecoverLaunchRow({ attempt, onResolved }: { attempt: LaunchAttemptRecor
       )}
     </div>
   );
+}
+
+function truncateForBanner(text: string): string {
+  return text.length > 22 ? `${text.slice(0, 22)}…` : text;
 }
 
 function capitalize(text: string): string {
@@ -1481,6 +1640,47 @@ const AUTO_ADVANCE_FLAGS = [
   { label: "worktree-setup", field: "aa_worktree_to_implementation", title: "Worktree to implementation" },
   { label: "implementation", field: "aa_implementation_to_pr", title: "Implementation to PR" },
 ] as const;
+
+// Task detail Settings tab's "Model" section: changing it here patches the task record (same
+// providerId/model/reasoningLevel launch.ts's optionalExecution copies onto threads.spawn), so it
+// applies to every session launched from now on. A running session already has its own execution
+// options resolved and keeps them; this only changes what the next launch uses.
+function TaskModelPanel({ task, onUpdated }: { task: TaskRecord; onUpdated: () => void }) {
+  const rpc = useRpc<RpcContract>();
+  const [catalog, setCatalog] = useState<ListModelsOutput | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchModelCatalog(rpc, task.hostId).then((result) => {
+      if (!cancelled) setCatalog(result);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [task.hostId]);
+
+  const save = async (next: ModelSelectValue) => {
+    await rpc.call("updateTask", { taskId: task.id, patch: { providerId: next.providerId, model: next.model, reasoningLevel: next.reasoningLevel } });
+    toast.success("Model updated for the next sessions");
+    onUpdated();
+  };
+
+  return (
+    <div className="max-w-sm space-y-2">
+      <ModelSelect
+        hostId={task.hostId}
+        value={{ providerId: task.providerId, model: task.model, reasoningLevel: task.reasoningLevel }}
+        onChange={(next) => void save(next)}
+        allowDefault
+        label="Model"
+      />
+      <p className="text-xs text-muted-foreground">
+        Current: {catalog ? modelDisplay(catalog, task.providerId, task.model) : "..."} · used by every session launched from now on; running sessions keep theirs.
+      </p>
+    </div>
+  );
+}
 
 function AutoAdvancePanel({ task, onUpdated }: { task: TaskRecord; onUpdated: () => void }) {
   const rpc = useRpc<RpcContract>();
@@ -2887,6 +3087,7 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
   const initializedFilterRef = useRef<string | null>(null);
   const [panelWidth, setRoot] = useElementWidth();
   const compact = panelWidth > 0 && panelWidth < 560;
+  const [modelCatalog, setModelCatalog] = useState<ListModelsOutput | null>(null);
 
   const refetch = () => {
     Promise.all([
@@ -2911,6 +3112,16 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
   useEffect(() => {
     if (artifactFileName) setTab("artifacts");
   }, [artifactFileName]);
+  useEffect(() => {
+    let cancelled = false;
+    fetchModelCatalog(rpc, task?.hostId ?? null).then((result) => {
+      if (!cancelled) setModelCatalog(result);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [task?.hostId]);
   useRealtime("tasks", refetch);
   useRealtime("rpi:sessions", refetch);
   useRealtime("rpi:ui-state", () => {
@@ -2996,6 +3207,11 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
               hint={task.autoAdvance
                 ? "The task moves to the next phase automatically when a phase finishes cleanly, except at gates you chose to keep manual."
                 : "You approve each phase transition yourself; nothing advances automatically."}
+            />
+            <span aria-hidden="true">·</span>
+            <TaskMetaTerm
+              text={task.providerId && task.model ? (modelCatalog ? modelDisplay(modelCatalog, task.providerId, task.model) : `${task.providerId}/${task.model}`) : "default model"}
+              hint="Model used for new sessions of this task; change it in Settings."
             />
           </p>
         </div>
@@ -3084,6 +3300,10 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
           </div>
         ) : tab === "settings" ? (
           <div className="space-y-6">
+            <div className="space-y-3">
+              <h3 className="text-sm font-semibold text-foreground">Model</h3>
+              <TaskModelPanel task={task} onUpdated={refetch} />
+            </div>
             <div className="space-y-3">
               <h3 className="text-sm font-semibold text-foreground">Workspace</h3>
               <WorkspacePanel taskId={taskId} />
@@ -3519,22 +3739,27 @@ export function RpiDefaultsSettings() {
         <p className="mt-1 text-sm text-muted-foreground">Provider, model, reasoning, and permission mode used for new tasks, per workflow type. Blank falls back to the row above.</p>
       </div>
       <div className="grid gap-3 lg:grid-cols-2">
-        <label className="space-y-1 rounded-md border border-border bg-card p-3 text-sm text-foreground">
-          <span className="block font-medium">Provider</span>
-          <Input value={prefs.defaults.providerId ?? ""} onChange={(event) => saveDefaults({ providerId: event.currentTarget.value || null })} placeholder="e.g. anthropic" />
-        </label>
-        <label className="space-y-1 rounded-md border border-border bg-card p-3 text-sm text-foreground">
-          <span className="block font-medium">Model</span>
-          <Input value={prefs.defaults.model ?? ""} onChange={(event) => saveDefaults({ model: event.currentTarget.value || null })} placeholder="e.g. claude-sonnet-5" />
-        </label>
-        <label className="space-y-1 rounded-md border border-border bg-card p-3 text-sm text-foreground">
-          <span className="block font-medium">Reasoning effort</span>
-          <Input value={prefs.defaults.reasoningLevel ?? ""} onChange={(event) => saveDefaults({ reasoningLevel: event.currentTarget.value || null })} placeholder="e.g. high" />
-        </label>
-        <label className="space-y-1 rounded-md border border-border bg-card p-3 text-sm text-foreground">
-          <span className="block font-medium">Research subagent model</span>
-          <Input value={prefs.defaults.researchModel ?? ""} onChange={(event) => saveDefaults({ researchModel: event.currentTarget.value || null })} placeholder="e.g. claude-haiku-4-5" />
-        </label>
+        <div className="rounded-md border border-border bg-card p-3">
+          <ModelSelect
+            hostId={null}
+            value={{ providerId: prefs.defaults.providerId ?? null, model: prefs.defaults.model ?? null, reasoningLevel: prefs.defaults.reasoningLevel ?? null }}
+            onChange={(next) => saveDefaults({ providerId: next.providerId, model: next.model, reasoningLevel: next.reasoningLevel })}
+            allowDefault
+            label="Default model"
+          />
+        </div>
+        <div className="rounded-md border border-border bg-card p-3">
+          {/* researchModel is a bare model string with no providerId of its own (see server.ts's
+              researchModelPreference); ModelSelect matches it by model id alone and this only ever
+              writes back the model half of what it reports. */}
+          <ModelSelect
+            hostId={null}
+            value={{ providerId: null, model: prefs.defaults.researchModel ?? null, reasoningLevel: null }}
+            onChange={(next) => saveDefaults({ researchModel: next.model })}
+            allowDefault
+            label="Research subagent model"
+          />
+        </div>
       </div>
       <div className="space-y-2">
         <h3 className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">Per workflow type</h3>
@@ -3543,9 +3768,7 @@ export function RpiDefaultsSettings() {
             <thead className="border-b border-border text-left text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
               <tr>
                 <th className="px-3 py-2 font-medium">Workflow</th>
-                <th className="px-3 py-2 font-medium">Provider</th>
                 <th className="px-3 py-2 font-medium">Model</th>
-                <th className="px-3 py-2 font-medium">Reasoning</th>
                 <th className="px-3 py-2 font-medium">Permission</th>
               </tr>
             </thead>
@@ -3555,14 +3778,15 @@ export function RpiDefaultsSettings() {
                 return (
                   <tr key={option.value} className="border-b border-border last:border-b-0">
                     <td className="px-3 py-2 font-medium text-foreground">{option.label}</td>
-                    <td className="px-3 py-2">
-                      <Input className="h-8" value={override.providerId ?? ""} onChange={(event) => saveWorkflow(option.value, { providerId: event.currentTarget.value || null })} />
-                    </td>
-                    <td className="px-3 py-2">
-                      <Input className="h-8" value={override.model ?? ""} onChange={(event) => saveWorkflow(option.value, { model: event.currentTarget.value || null })} />
-                    </td>
-                    <td className="px-3 py-2">
-                      <Input className="h-8" value={override.reasoningLevel ?? ""} onChange={(event) => saveWorkflow(option.value, { reasoningLevel: event.currentTarget.value || null })} />
+                    <td className="min-w-[220px] px-3 py-2">
+                      <ModelSelect
+                        hostId={null}
+                        value={{ providerId: override.providerId ?? null, model: override.model ?? null, reasoningLevel: override.reasoningLevel ?? null }}
+                        onChange={(next) => saveWorkflow(option.value, { providerId: next.providerId, model: next.model, reasoningLevel: next.reasoningLevel })}
+                        allowDefault
+                        size="sm"
+                        label={`${option.label} model`}
+                      />
                     </td>
                     <td className="px-3 py-2">
                       <ComposerToolbarSelect
@@ -3805,6 +4029,44 @@ export function RpiComposerBanner() {
   const threadId = view.scope.kind === "thread" ? view.scope.threadId : null;
   const { session, uiState, setUiState, hasPendingLaunchAttempt } = useRpiSessionState(threadId);
   const [pendingIterateConfirm, setPendingIterateConfirm] = useState(false);
+  // The session view (getSession) does not carry the task's providerId/model/reasoningLevel, so
+  // the compact model control below fetches the task itself; "tasks" is the same realtime channel
+  // updateTask publishes on, so a change from the task Settings tab shows up here too.
+  const [bannerTask, setBannerTask] = useState<TaskRecord | null>(null);
+  const [bannerModelCatalog, setBannerModelCatalog] = useState<ListModelsOutput | null>(null);
+  const bannerTaskId = session?.taskId ?? null;
+
+  useEffect(() => {
+    if (!bannerTaskId) {
+      setBannerTask(null);
+      return;
+    }
+    rpc.call("getTask", { taskId: bannerTaskId }).then(({ task }) => setBannerTask(task));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bannerTaskId]);
+  useRealtime("tasks", () => {
+    if (bannerTaskId) rpc.call("getTask", { taskId: bannerTaskId }).then(({ task }) => setBannerTask(task));
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchModelCatalog(rpc, bannerTask?.hostId ?? null).then((result) => {
+      if (!cancelled) setBannerModelCatalog(result);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bannerTask?.hostId]);
+
+  const saveBannerModel = async (next: ModelSelectValue) => {
+    if (!bannerTask) return;
+    const { task: updated } = await rpc.call("updateTask", {
+      taskId: bannerTask.id,
+      patch: { providerId: next.providerId, model: next.model, reasoningLevel: next.reasoningLevel },
+    });
+    setBannerTask(updated);
+  };
 
   if (!threadId || !session) return null;
 
@@ -3889,6 +4151,31 @@ export function RpiComposerBanner() {
             </span>
           ) : null}
         </span>
+      ) : null}
+      {bannerTask ? (
+        <Popover>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <PopoverTrigger asChild>
+                <Button type="button" variant="outline" className="h-7 gap-1 px-2 text-xs">
+                  <Icon name="ChevronDown" className="size-3.5" />
+                  {truncateForBanner(bannerModelCatalog ? modelDisplay(bannerModelCatalog, bannerTask.providerId, bannerTask.model) : "Model")}
+                </Button>
+              </PopoverTrigger>
+            </TooltipTrigger>
+            <TooltipContent>Model for the next session</TooltipContent>
+          </Tooltip>
+          <PopoverContent className="w-72">
+            <ModelSelect
+              hostId={bannerTask.hostId}
+              value={{ providerId: bannerTask.providerId, model: bannerTask.model, reasoningLevel: bannerTask.reasoningLevel }}
+              onChange={(next) => void saveBannerModel(next)}
+              allowDefault
+              size="sm"
+              label="Model"
+            />
+          </PopoverContent>
+        </Popover>
       ) : null}
       <ConfirmDialog
         open={pendingIterateConfirm}
