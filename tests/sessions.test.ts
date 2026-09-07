@@ -1212,3 +1212,28 @@ Context line`;
 Line 3`;
   assert.equal(extractLaunchToken(markerInMiddle), "middle-marker");
 });
+
+test("archiveTaskThreads archives only the task's unarchived session threads and tolerates one failure", async () => {
+  const db = makeDb();
+  seedSession(db, "thr_open");
+  const taskId = (db.prepare("SELECT task_id AS taskId FROM sessions WHERE thread_id = 'thr_open'").get() as { taskId: string }).taskId;
+  db.prepare(`
+    INSERT INTO sessions (
+      thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
+      rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason, created_at, updated_at, thread_archived_at
+    ) VALUES ('thr_done', ?, NULL, NULL, 'user', NULL, 'running', 1, 1, 0, NULL, 1, 1, 5),
+             ('thr_fail', ?, NULL, NULL, 'user', NULL, 'running', 1, 1, 0, NULL, 1, 1, NULL)
+  `).run(taskId, taskId);
+  seedSession(db, "thr_other_task");
+  const archived: string[] = [];
+  const warnings: string[] = [];
+  const bb = {
+    log: { warn: (message: string) => warnings.push(message) },
+    sdk: { threads: { archive: async ({ threadId }: { threadId: string }) => { if (threadId === "thr_fail") throw new Error("offline"); archived.push(threadId); return { ok: true }; } } },
+  };
+  const result = await archiveTaskThreads(bb as never, db, taskId);
+  assert.deepEqual(archived, ["thr_open"]);
+  assert.deepEqual(result, { archived: 1, failed: 1 });
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0]!, /thr_fail/);
+});

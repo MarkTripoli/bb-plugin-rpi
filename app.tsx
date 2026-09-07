@@ -1,5 +1,6 @@
 import { definePluginApp } from "@get-bb/plugin-sdk/app";
 import {
+  ARCHIVE_TASK_CONFIRM,
   RpiArtifactDirective,
   RpiArtifactThreadPanel,
   RpiComposerBanner,
@@ -126,7 +127,7 @@ export default definePluginApp((app) => {
     isAvailable: (context) => context.threadId !== null,
     run: async (context) => {
       if (!context.threadId) return;
-      if (!window.confirm("Archive this task? Sessions stay but the task leaves the active list.")) return;
+      if (!window.confirm(ARCHIVE_TASK_CONFIRM)) return;
       const { session } = (await callPluginRpc("getSession", { threadId: context.threadId })) as { session: { taskId: string } | null };
       if (!session) return;
       await callPluginRpc("archiveTask", { taskId: session.taskId });

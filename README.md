@@ -132,7 +132,7 @@ dedupe/suppression state.
 |---|---|
 | `T` | New task (while the RPI panel is mounted and has focus, not while typing) |
 | `g` then `t` | Go to the tasks list (same scoping as `T`) |
-| `⌘E` | Archive the current task (confirms first) |
+| `⌘E` | Archive the current task and its session threads (confirms first) |
 | `⌘⇧U` | Jump to the oldest outstanding notified session (configurable, works anywhere in bb) |
 | `⌘⇧P` | bb's command palette - lists "RPI: Open Artifacts / Open Scratch pad / Archive current task" |
 
@@ -144,8 +144,11 @@ injected into bb's native thread header), so it stays gated on the session
 actually being viewed. All three share one hook (`usePanelHotkeys` in
 `ui/rpi.tsx`), no-op while focus is in an editable field
 (`shouldHandleHotkey`), and skip a combo that collides with the configured
-jump hotkey so a rebound jump hotkey always wins. `⌘E` and the palette's
-archive action both ask for confirmation before archiving.
+jump hotkey so a rebound jump hotkey always wins. `⌘E`, the palette action,
+and the task page's Archive button all ask for confirmation before archiving.
+Archiving flags the task and cascades `threads.archive` to every session
+thread that is not already archived (also `bb rpi tasks archive --task <id>`);
+the `.rpi/tasks/<slug>/` mirror stays on disk and there is no unarchive yet.
 
 ## Licensing
 

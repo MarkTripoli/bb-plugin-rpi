@@ -63,6 +63,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { COARSE_POINTER_CHILD_ICON_BUTTON_CLASS, COARSE_POINTER_COMPACT_ICON_SIZE_CLASS } from "@/components/ui/coarse-pointer-sizing";
 import { cn } from "@/lib/utils";
 
+export const ARCHIVE_TASK_CONFIRM = "Archive this task? Its sessions are archived too and the task leaves the active list.";
+
 // Launch RPCs (launchDraft, launchSkill, proceed, resolveLaunchAttempt retry) can reject with a
 // LaunchRejectedError (launch.ts), e.g. code `no_source_host` when a task has no project source
 // and no host. Show its message instead of failing silently.
@@ -3490,6 +3492,18 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
               <TooltipContent>No live session yet</TooltipContent>
             </Tooltip>
           )}
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={async () => {
+              if (!window.confirm(ARCHIVE_TASK_CONFIRM)) return;
+              await rpc.call("archiveTask", { taskId });
+              navigate.toPluginPanel("rpi", { subPath: "" });
+            }}
+          >
+            <Icon name="Archive" className="size-4" />
+            Archive
+          </Button>
         </div>
       </div>
       <div role="tablist" onKeyDown={rovingKeyDown} className={cn("flex w-fit max-w-full gap-1 rounded-md border border-border p-1", compact && "overflow-x-auto")}>
@@ -4689,7 +4703,7 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
         open={pendingConfirm === "archive"}
         onOpenChange={(open) => setPendingConfirm(open ? "archive" : null)}
         title="Archive this task?"
-        description="Sessions stay but the task leaves the active list."
+        description="Its sessions are archived too and the task leaves the active list."
         confirmLabel="Archive"
         onConfirm={runArchive}
       />

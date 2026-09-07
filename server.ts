@@ -49,6 +49,7 @@ import {
 } from "./launch";
 import { hydrate, ingest, latestTaskThread, mirrorDeletedArtifact, mirrorRestoredArtifact, type MirrorFileOutcome } from "./mirror";
 import {
+  archiveTaskThreads,
   bindPendingThread,
   createLaunchBindingMirror,
   loadChildThreadMirror,
@@ -502,6 +503,18 @@ export default async function plugin(bb: BbPluginApi) {
     });
   }
 
+  // Shared by the archiveTask RPC and `bb rpi tasks archive`: flag the task, then cascade to its
+  // session threads so they leave the bb sidebar too. The flag is written first so a partially
+  // failed cascade still leaves the task archived (retention sweep keys off tasks.archived).
+  async function archiveTaskEverywhere(taskId: string) {
+    const task = archiveTask(db, taskId);
+    if (!task) return null;
+    await archiveTaskThreads(bb, db, taskId);
+    bb.realtime.publish("tasks", { taskId });
+    bb.realtime.publish("rpi:sessions", { taskId, threadId: null });
+    return task;
+  }
+
   bb.rpc.register(rpcContract, {
     listTasks: async (input) => ({
       tasks: listTasks(db, {
@@ -582,11 +595,7 @@ export default async function plugin(bb: BbPluginApi) {
       bb.realtime.publish("tasks", { taskId });
       return { task };
     },
-    archiveTask: async ({ taskId }) => {
-      const task = archiveTask(db, taskId);
-      bb.realtime.publish("tasks", { taskId });
-      return { task };
-    },
+    archiveTask: async ({ taskId }) => ({ task: await archiveTaskEverywhere(taskId) }),
     launchDraft: async ({ taskId }) => {
       return launchDraft(bb, db, sessionMirror, launchBindings, taskId);
     },
@@ -853,6 +862,11 @@ export default async function plugin(bb: BbPluginApi) {
         usage: "bb rpi tasks list [--json]",
       },
       {
+        name: "tasks-archive",
+        summary: "Archive a task and every bb thread of its sessions",
+        usage: "bb rpi tasks archive --task <taskId> [--json]",
+      },
+      {
         name: "sessions-list",
         summary: "List sessions",
         usage: "bb rpi sessions list [--task <taskId>] [--json]",
@@ -986,6 +1000,13 @@ export default async function plugin(bb: BbPluginApi) {
           if (!task) return { exitCode: 1, stderr: "task not found\n" };
           bb.realtime.publish("tasks", { taskId: input.taskId });
           return { exitCode: 0, stdout: json ? `${JSON.stringify({ task })}\n` : "updated\n" };
+        }
+        if (argv[0] === "tasks" && argv[1] === "archive") {
+          const opts = parseArgs(argv.slice(2));
+          if (!opts.task) return { exitCode: 2, stderr: "usage: bb rpi tasks archive --task <taskId> [--json]\n" };
+          const task = await archiveTaskEverywhere(opts.task);
+          if (!task) return { exitCode: 1, stderr: "task not found\n" };
+          return { exitCode: 0, stdout: json ? `${JSON.stringify({ task })}\n` : "archived\n" };
         }
         if (argv[0] === "proceed") {
           const opts = parseArgs(argv.slice(1));

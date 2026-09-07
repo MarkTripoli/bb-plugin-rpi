@@ -1100,6 +1100,23 @@ export function registerSessionRuntime(
   for (const threadId of mirror.keys()) reconcileAndPublish(threadId);
 }
 
+// Task archive cascade: archives every bb thread of the task's sessions that is not already
+// archived, so archiving a task also clears its threads from the bb sidebar (HL's
+// `--cascade-to-sessions`). The resulting `thread.archived` events stamp `thread_archived_at` and
+// drop the rows from the mirror through the existing handler; this only issues the calls. One
+// failing thread never blocks the others: failures are logged and counted, not thrown.
+export async function archiveTaskThreads(bb: BbPluginApi, db: Database, taskId: string) {
+  const rows = readRows<{ threadId: string }>(db, "SELECT thread_id AS threadId FROM sessions WHERE task_id = ? AND thread_archived_at IS NULL", taskId);
+  const results = await Promise.allSettled(rows.map((row) => bb.sdk.threads.archive({ threadId: row.threadId })));
+  let failed = 0;
+  results.forEach((result, index) => {
+    if (result.status !== "rejected") return;
+    failed += 1;
+    bb.log.warn(`RPI task archive: could not archive thread ${rows[index]!.threadId}: ${String(result.reason)}`);
+  });
+  return { archived: rows.length - failed, failed };
+}
+
 export function taskInstructions(row: SessionMirrorRow, options: { researchModel?: string | null } = {}) {
   const researchModel = resolveResearchModel(row, options.researchModel ?? null);
   return [
@@ -1107,6 +1124,7 @@ export function taskInstructions(row: SessionMirrorRow, options: { researchModel
     `RPI task: ${row.taskName} (slug ${row.taskSlug}). Task artifact directory: ${TASK_ROOT_DIR}/tasks/${row.taskSlug} (relative to the workspace root; a real directory, not a symlink).`,
     `Current phase: ${row.label ?? "none"}. Current skill command: ${row.skillId ? skillInfo(row.skillId)?.command ?? `/rpi-${row.skillId}` : "none"}. Workflow: ${row.workflowType}.`,
     "After writing or editing any file in the task artifact directory, call rpi_artifact_save with its file name and include the returned permalink line in your final answer.",
+    "Artifact context rule: read fully only the artifact your skill names as its primary input plus any file the user names. For every other task artifact rely on its summary in the rpi_task_context manifest and open it only when that summary shows it bears on the current step. Every artifact you write must carry a frontmatter `summary:` of two to four sentences stating what it establishes and what a later phase needs from it.",
     `Research subagents model hint: ${researchModel}.`,
   ].join("\n");
 }
