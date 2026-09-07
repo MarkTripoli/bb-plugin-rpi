@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { artifactLayoutMode, clampWidth, panelLayoutMode } from "../artifact-layout";
+import { artifactLayoutMode, clampWidth } from "../artifact-layout";
 
 test("panel width below the stack breakpoint always stacks, regardless of viewer width", () => {
   assert.equal(artifactLayoutMode(759, 0), "stacked");
@@ -19,10 +19,4 @@ test("clampWidth clamps to the given range", () => {
   assert.equal(clampWidth(100, { min: 200, max: 480 }), 200);
   assert.equal(clampWidth(300, { min: 200, max: 480 }), 300);
   assert.equal(clampWidth(9000, { min: 200, max: 480 }), 480);
-});
-
-test("panel layout stacks below 560px and shows the aside at or above it", () => {
-  assert.equal(panelLayoutMode(0), "aside"); // unmeasured (SSR/first paint) defaults to aside
-  assert.equal(panelLayoutMode(559), "stacked");
-  assert.equal(panelLayoutMode(560), "aside");
 });

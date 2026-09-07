@@ -32,7 +32,7 @@ import type {
   CommentThreadRecord,
 } from "../contract";
 import { AUTO_ADVANCE, BOARD_COLUMNS, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS, shouldShowComposerBanner, suggestedNextForSession, type SuggestedNext } from "../transitions";
-import { ARTIFACT_COMMENTS_WIDTH_RANGE, ARTIFACT_LIST_WIDTH_RANGE, ARTIFACT_PANEL_STACK_BREAKPOINT, artifactLayoutMode, clampWidth, panelLayoutMode } from "../artifact-layout";
+import { ARTIFACT_COMMENTS_WIDTH_RANGE, ARTIFACT_LIST_WIDTH_RANGE, ARTIFACT_PANEL_STACK_BREAKPOINT, artifactLayoutMode, clampWidth } from "../artifact-layout";
 import {
   attentionQueue,
   attentionText,
@@ -568,17 +568,109 @@ function useRpiSessionState(threadId: string | null) {
   return { session, uiState, setUiState, hasPendingLaunchAttempt, refetch };
 }
 
-function TaskTable({ tasks }: { tasks: TaskRow[] }) {
+// Attention count chip: a small filled badge, not a bare dot, so "N sessions need you" reads at a
+// glance without borrowing danger's red (PRODUCT.md #2).
+function AttentionCountChip({ n }: { n: number }) {
+  return (
+    <span
+      className={cn("inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-xs font-semibold", TONE_PILL_CLASS.attention)}
+      aria-label={`${n} sessions need you`}
+    >
+      {n}
+    </span>
+  );
+}
+
+// Mini phase strip for a task table row: same phaseProgress derivation the task detail page's
+// WorkflowStrip uses, without per-session sessions data (a task row does not fetch its sessions).
+function PhaseStripMini({ task }: { task: TaskRow }) {
+  const steps = useMemo(
+    () => phaseProgress({ workflowType: task.workflowType, worktreeTiming: task.worktreeTiming, currentLabel: task.currentLabel, sessions: [] }),
+    [task.workflowType, task.worktreeTiming, task.currentLabel],
+  );
+  const currentIndex = steps.findIndex((step) => step.state === "current");
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex items-center gap-0.5">
+        {steps.map((step, index) => (
+          <span
+            key={`${step.step}-${index}`}
+            className={cn(
+              "h-1 w-3 rounded-[2px]",
+              step.state === "done"
+                ? "bg-muted-foreground/50"
+                : step.state === "current"
+                  ? task.attentionCount > 0 ? "bg-attention" : "bg-success"
+                  : "bg-border",
+            )}
+          />
+        ))}
+      </div>
+      <div className="flex flex-col">
+        <span className="text-sm text-foreground">{task.stepLabel}</span>
+        {currentIndex >= 0 ? (
+          <span className="text-xs text-muted-foreground">{currentIndex + 1} of {steps.length}</span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+// >= 1100px fits four board columns, >= 760px fits two, otherwise one; measured from the panel's
+// own width (useElementWidth), not a viewport breakpoint, so a narrow split panel never gets
+// columns squeezed to nothing.
+function boardColumnsClass(width: number): string {
+  if (width >= 1100) return "grid-cols-4";
+  if (width >= 760) return "grid-cols-2";
+  return "grid-cols-1";
+}
+
+function TaskCompactRow({ task, onOpen }: { task: TaskRow; onOpen: () => void }) {
+  return (
+    <div
+      role="link"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        onOpen();
+      }}
+      className="flex cursor-pointer flex-col gap-1.5 border-b border-border px-4 py-3 last:border-b-0 hover:bg-card/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="truncate font-medium text-foreground">{task.name}</span>
+        <span className="shrink-0 text-xs text-muted-foreground">{task.sessionCount} sessions · {relativeTime(task.updatedAt)}</span>
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        {task.isDraft ? <LabelPill label="Draft" /> : <PhaseStripMini task={task} />}
+        {task.attentionCount > 0 ? <AttentionCountChip n={task.attentionCount} /> : null}
+      </div>
+    </div>
+  );
+}
+
+function TaskTable({ tasks, compact }: { tasks: TaskRow[]; compact: boolean }) {
   const navigate = useBbNavigate();
+  const open = (taskId: string) => navigate.toPluginPanel("rpi", { subPath: `tasks/${taskId}` });
+
+  if (compact) {
+    return (
+      <div className="overflow-hidden rounded-xl border border-border bg-card">
+        {tasks.map((task) => <TaskCompactRow key={task.id} task={task} onOpen={() => open(task.id)} />)}
+      </div>
+    );
+  }
+
   return (
     <div className="overflow-hidden rounded-xl border border-border bg-card">
       <table className="min-w-full border-collapse text-sm">
-        <thead className="border-b border-border text-left text-[11px] uppercase tracking-[0.24em] text-muted-foreground">
+        <thead className="border-b border-border text-left text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
           <tr>
-            <th className="px-4 py-3 font-medium">Name</th>
-            <th className="px-4 py-3 font-medium">Step</th>
+            <th className="px-4 py-3 font-medium">Task</th>
+            <th className="px-4 py-3 font-medium">Phase</th>
+            <th className="px-4 py-3 font-medium">Needs you</th>
             <th className="px-4 py-3 font-medium">Sessions</th>
-            <th className="px-4 py-3 font-medium">Created</th>
             <th className="px-4 py-3 font-medium">Updated</th>
           </tr>
         </thead>
@@ -586,23 +678,29 @@ function TaskTable({ tasks }: { tasks: TaskRow[] }) {
           {tasks.map((task) => (
             <tr
               key={task.id}
-              className={cn("cursor-pointer border-b border-border last:border-b-0 hover:bg-card/70", task.attentionCount > 0 && ROW_SHADE_CLASS.danger)}
-              onClick={() => navigate.toPluginPanel("rpi", { subPath: `tasks/${task.id}` })}
+              role="link"
+              tabIndex={0}
+              onClick={() => open(task.id)}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" && event.key !== " ") return;
+                event.preventDefault();
+                open(task.id);
+              }}
+              className="cursor-pointer border-b border-border last:border-b-0 hover:bg-card/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <td className="px-4 py-3">
                 <div className="flex flex-col gap-1">
                   <span className="font-medium text-foreground">{task.name}</span>
-                  <span className="inline-flex items-center gap-2 text-xs text-muted-foreground">
-                    {task.attentionCount > 0 ? <span className="size-2 rounded-full bg-destructive" aria-label={`${task.attentionCount} sessions need attention`} /> : null}
-                    {task.slug}
-                  </span>
+                  <span className="font-mono text-xs text-muted-foreground">{task.slug}</span>
                 </div>
               </td>
               <td className="px-4 py-3">
-                <TaskStepPill task={task} />
+                {task.isDraft ? <LabelPill label="Draft" /> : <PhaseStripMini task={task} />}
+              </td>
+              <td className="px-4 py-3">
+                {task.attentionCount > 0 ? <AttentionCountChip n={task.attentionCount} /> : <span className="text-xs text-muted-foreground">0</span>}
               </td>
               <td className="px-4 py-3 text-muted-foreground">{task.sessionCount}</td>
-              <td className="px-4 py-3 text-muted-foreground">{relativeTime(task.createdAt)}</td>
               <td className="px-4 py-3 text-muted-foreground">{relativeTime(task.updatedAt)}</td>
             </tr>
           ))}
@@ -612,7 +710,7 @@ function TaskTable({ tasks }: { tasks: TaskRow[] }) {
   );
 }
 
-function TaskBoard({ tasks }: { tasks: TaskRow[] }) {
+function TaskBoard({ tasks, width }: { tasks: TaskRow[]; width: number }) {
   const navigate = useBbNavigate();
   const groups = useMemo(() => {
     const base = {
@@ -635,7 +733,7 @@ function TaskBoard({ tasks }: { tasks: TaskRow[] }) {
   ] as const;
 
   return (
-    <div className="grid gap-3 xl:grid-cols-4">
+    <div className={cn("grid gap-3", boardColumnsClass(width))}>
       {columns.map((column) => (
         <section key={column.id} className="min-h-[240px] rounded-xl border border-border bg-card/60 p-3">
           <div className="mb-3 flex items-center justify-between gap-2">
@@ -649,19 +747,19 @@ function TaskBoard({ tasks }: { tasks: TaskRow[] }) {
               <article
                 key={task.id}
                 onClick={() => navigate.toPluginPanel("rpi", { subPath: `tasks/${task.id}` })}
-                className={cn("cursor-pointer rounded-lg border border-border bg-background/70 p-3 transition hover:border-foreground/40", task.attentionCount > 0 && ROW_SHADE_CLASS.danger)}
+                className="cursor-pointer rounded-lg border border-border bg-background/70 p-3 transition hover:border-foreground/40"
               >
                 <div className="space-y-2">
                   <div className="flex items-start justify-between gap-3">
                     <h4 className="font-medium leading-tight text-foreground">{task.name}</h4>
                     <span className="inline-flex items-center gap-2 text-xs text-muted-foreground">
-                      {task.attentionCount > 0 ? <span className="size-2 rounded-full bg-destructive" aria-label={`${task.attentionCount} sessions need attention`} /> : null}
                       {relativeTime(task.updatedAt)}
                     </span>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <TaskStepPill task={task} />
+                    {task.isDraft ? <LabelPill label="Draft" /> : <TaskStepPill task={task} />}
                     <span className="text-xs text-muted-foreground">{task.sessionCount} sessions</span>
+                    {task.attentionCount > 0 ? <AttentionCountChip n={task.attentionCount} /> : null}
                   </div>
                 </div>
               </article>
@@ -676,11 +774,15 @@ function TaskBoard({ tasks }: { tasks: TaskRow[] }) {
 function TaskListView({
   tasks,
   boardMode,
+  compact,
+  boardWidth,
 }: {
   tasks: TaskRow[];
   boardMode: boolean;
+  compact: boolean;
+  boardWidth: number;
 }) {
-  return boardMode ? <TaskBoard tasks={tasks} /> : <TaskTable tasks={tasks} />;
+  return boardMode ? <TaskBoard tasks={tasks} width={boardWidth} /> : <TaskTable tasks={tasks} compact={compact} />;
 }
 
 function ComposerToolbarSelect({
@@ -3193,33 +3295,177 @@ export function RpiComposerBanner() {
   );
 }
 
-function SidebarSummary({
-  tasks,
-  onCreateTask,
+function splitAttentionPrefix(text: string): [string | null, string] {
+  const separatorIndex = text.indexOf(": ");
+  if (separatorIndex === -1) return [null, text];
+  return [text.slice(0, separatorIndex), text.slice(separatorIndex + 2)];
+}
+
+function needsYouEmptyMessage(runningCount: number, hasTasks: boolean): string {
+  if (runningCount > 0) return `Nothing needs you. ${runningCount} sessions running.`;
+  if (!hasTasks) return "Nothing needs you. Create a task to start.";
+  return "Nothing needs you.";
+}
+
+// One band row: a real button (not a div+onClick) so the whole row is keyboard-operable. The
+// visual "Open" affordance is the actual Button component rendered `asChild` onto a plain span,
+// not a nested <button>, since a button-in-button is invalid HTML and the row is already the one
+// interactive element (per PRODUCT.md "one control per decision").
+function NeedsYouRow({
+  session,
+  task,
+  compact,
+  onOpen,
 }: {
-  tasks: TaskRow[];
-  onCreateTask: () => void;
+  session: SessionView;
+  task: TaskRow;
+  compact: boolean;
+  onOpen: () => void;
 }) {
-  const draftCount = tasks.filter((task) => task.isDraft).length;
-  const taskCount = tasks.filter((task) => !task.archived).length;
+  const meta = statusMeta(session.rpiStatus);
+  const [prefix, rest] = splitAttentionPrefix(attentionText(session));
+  const tint = session.rpiStatus === "ready_for_input" ? "bg-attention/5" : undefined;
+  const textCell = (
+    <>
+      {prefix ? <span className="text-muted-foreground">{prefix}: </span> : null}
+      {rest}
+    </>
+  );
+  const metaLine = (
+    <>
+      {labelStep(session.label) ?? session.label ?? "session"} · {relativeTime(session.threadUpdatedAt ?? session.updatedAt)}
+    </>
+  );
+  if (compact) {
+    return (
+      <button
+        type="button"
+        onClick={onOpen}
+        className={cn("flex w-full flex-col gap-1.5 px-3.5 py-2.5 text-left hover:bg-card/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", tint)}
+      >
+        <div className="flex items-center gap-2">
+          <StatusPill tone={meta.tone} label={meta.text} icon={meta.icon} hint={meta.hint || undefined} />
+          <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{task.name}</span>
+          <Button asChild variant="outline" className="h-9 w-9 shrink-0 p-0">
+            <span aria-hidden="true">
+              <Icon name="ArrowUpRight" className="size-4" />
+            </span>
+          </Button>
+        </div>
+        <div className="text-xs text-muted-foreground">{metaLine}</div>
+        <div className="text-sm text-foreground">{textCell}</div>
+      </button>
+    );
+  }
   return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-2">
-        <Button type="button" onClick={onCreateTask} className="h-10 px-4 text-xs uppercase tracking-[0.2em]">
-          <Icon name="Plus" className="size-4" />
-          Create task
-          <span className="ml-1 rounded bg-background/10 px-1.5 py-0.5 text-[10px] font-semibold">T</span>
-        </Button>
+    <button
+      type="button"
+      onClick={onOpen}
+      className={cn("flex w-full items-center gap-3.5 px-3.5 py-2.5 text-left hover:bg-card/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", tint)}
+    >
+      <span className="flex w-[118px] shrink-0">
+        <StatusPill tone={meta.tone} label={meta.text} icon={meta.icon} hint={meta.hint || undefined} />
+      </span>
+      <span className="flex w-[260px] shrink-0 flex-col gap-0.5">
+        <span className="truncate text-sm font-medium text-foreground">{task.name}</span>
+        <span className="text-xs text-muted-foreground">{metaLine}</span>
+      </span>
+      <span className="min-w-0 flex-1 truncate text-sm">{textCell}</span>
+      <Button asChild variant="outline" className="h-8 shrink-0">
+        <span>
+          Open
+          <Icon name="ArrowUpRight" className="size-3.5" />
+        </span>
+      </Button>
+    </button>
+  );
+}
+
+// The panel's inbox: sessions that need the human, ranked by urgency (attentionQueue, status.ts),
+// above the task table (PRODUCT.md #1: the panel is an inbox before it is a tracker).
+function NeedsYouBand({
+  queue,
+  runningCount,
+  hasTasks,
+  compact,
+  onOpen,
+}: {
+  queue: Array<{ session: SessionView; task: TaskRow }>;
+  runningCount: number;
+  hasTasks: boolean;
+  compact: boolean;
+  onOpen: (threadId: string) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-baseline justify-between px-1">
+        <div className="flex items-baseline gap-2">
+          <h2 className="text-sm font-semibold text-foreground">Needs you</h2>
+          <span className={cn("text-sm font-semibold", queue.length > 0 ? "text-attention" : "text-muted-foreground")}>{queue.length}</span>
+        </div>
+        <span className="text-xs text-muted-foreground">
+          {runningCount} sessions running.{queue.length > 0 ? " Press N to open the first item." : ""}
+        </span>
       </div>
-      <div className="space-y-2 text-sm">
-        <div className="flex items-center justify-between rounded-lg border border-border bg-card/70 px-3 py-2">
-          <span className="text-muted-foreground">Drafts</span>
-          <span className="font-medium text-foreground">{draftCount}</span>
+      {queue.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
+          {needsYouEmptyMessage(runningCount, hasTasks)}
         </div>
-        <div className="flex items-center justify-between rounded-lg border border-border bg-card/70 px-3 py-2">
-          <span className="text-muted-foreground">Tasks</span>
-          <span className="font-medium text-foreground">{taskCount}</span>
+      ) : (
+        <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
+          {queue.map((entry) => (
+            <NeedsYouRow
+              key={entry.session.threadId}
+              session={entry.session}
+              task={entry.task}
+              compact={compact}
+              onOpen={() => onOpen(entry.session.threadId)}
+            />
+          ))}
         </div>
+      )}
+    </div>
+  );
+}
+
+// Tasks/Drafts heading with the sole List/Board toggle (the aside toggle and the header "LIST
+// LIST" toggle are both gone; this is the only control left for it).
+function TasksSectionHeader({
+  title,
+  count,
+  boardMode,
+  setBoardMode,
+}: {
+  title: string;
+  count: number;
+  boardMode: boolean;
+  setBoardMode: (value: boolean) => void;
+}) {
+  return (
+    <div className="flex items-baseline justify-between px-1">
+      <div className="flex items-baseline gap-2">
+        <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+        <span className="text-sm font-semibold text-muted-foreground">{count}</span>
+      </div>
+      <div role="radiogroup" aria-label="Task view" className="flex gap-0.5 rounded-md border border-border p-0.5">
+        <button
+          type="button"
+          role="radio"
+          aria-checked={!boardMode}
+          onClick={() => setBoardMode(false)}
+          className={cn("h-7 rounded px-2.5 text-xs font-medium", !boardMode ? "bg-card text-foreground" : "text-muted-foreground")}
+        >
+          List
+        </button>
+        <button
+          type="button"
+          role="radio"
+          aria-checked={boardMode}
+          onClick={() => setBoardMode(true)}
+          className={cn("h-7 rounded px-2.5 text-xs font-medium", boardMode ? "bg-card text-foreground" : "text-muted-foreground")}
+        >
+          Board
+        </button>
       </div>
     </div>
   );
@@ -3229,8 +3475,9 @@ export function RpiPanel({ subPath }: { subPath: string }) {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
   const [tasks, setTasks] = useState<TaskRow[]>([]);
+  const [sessions, setSessions] = useState<SessionView[]>([]);
   const [showBoard, setShowBoard] = useState(false);
-  const [view, setView] = useState<"tasks" | "drafts" | "new">("tasks");
+  const [view, setView] = useState<"tasks" | "drafts" | "settings">("tasks");
   const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
   const { projectId } = useBbContext();
 
@@ -3239,11 +3486,22 @@ export function RpiPanel({ subPath }: { subPath: string }) {
       setTasks(nextTasks);
     });
   };
+  // Mirrors RpiThreadList's fetch: the same listSessions({taskId:null}) call, refetched on the
+  // same two realtime channels tasks refetches on, so the Needs-you band and the task table never
+  // drift apart.
+  const refetchSessions = () => {
+    rpc.call("listSessions", { taskId: null }).then(({ sessions: nextSessions }) => {
+      setSessions(nextSessions);
+    });
+  };
 
   useEffect(() => {
     refetch();
+    refetchSessions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
   useRealtime("tasks", refetch);
+  useRealtime("tasks", refetchSessions);
 
   useEffect(() => {
     const artifactMatch = /^tasks\/([^/]+)\/artifacts\/(.+)$/.exec(subPath);
@@ -3257,30 +3515,36 @@ export function RpiPanel({ subPath }: { subPath: string }) {
       return;
     }
     setDetailTaskId(null);
-    if (subPath === "new") {
-      setView("new");
-      return;
-    }
     if (subPath === "drafts") {
       setView("drafts");
+      return;
+    }
+    if (subPath === "settings") {
+      setView("settings");
       return;
     }
     setView("tasks");
   }, [subPath]);
   useRealtime("rpi:sessions", refetch);
+  useRealtime("rpi:sessions", refetchSessions);
+
+  const showNewTaskPage = subPath === "new" && !detailTaskId;
 
   const visibleTasks = useMemo(() => {
     if (view === "drafts") return tasks.filter((task) => task.isDraft);
     return tasks;
   }, [tasks, view]);
+  const draftCount = useMemo(() => tasks.filter((task) => task.isDraft).length, [tasks]);
+  const queue = useMemo(() => attentionQueue(sessions, tasks), [sessions, tasks]);
+  const runningCount = useMemo(
+    () => sessions.filter((session) => session.rpiStatus === "running" || session.rpiStatus === "launching" || session.rpiStatus === "resuming").length,
+    [sessions],
+  );
 
-  const onSwitch = (next: "tasks" | "drafts" | "new") => {
-    if (next === "new") {
-      navigate.toPluginPanel("rpi", { subPath: "new" });
-      return;
-    }
-    navigate.toPluginPanel("rpi", { subPath: next === "tasks" ? "" : "drafts" });
+  const onSwitch = (next: "tasks" | "drafts" | "settings") => {
+    navigate.toPluginPanel("rpi", { subPath: next === "tasks" ? "" : next });
   };
+  const onCreateTask = () => navigate.toPluginPanel("rpi", { subPath: "new" });
 
   // T (new task) and the g-then-t chord (go to tasks) while this panel has focus. Scoped to this
   // panel's own root element (`panelRootRef`), never `document`, so the key is only ever seen, and
@@ -3297,7 +3561,7 @@ export function RpiPanel({ subPath }: { subPath: string }) {
     chordTimerRef.current = null;
   });
   const panelWidth = useElementWidth(panelRootRef);
-  const layoutMode = panelLayoutMode(panelWidth);
+  const compact = panelWidth > 0 && panelWidth < 560;
   usePanelHotkeys(panelRootRef, (event) => {
     if (shouldHandleHotkey(event, jumpHotkey)) return;
     if (awaitingTRef.current) {
@@ -3315,109 +3579,94 @@ export function RpiPanel({ subPath }: { subPath: string }) {
     }
     if (shouldHandleHotkey(event, "t")) {
       event.preventDefault();
-      onSwitch("new");
+      onCreateTask();
+      return;
     }
-  }, [jumpHotkey, navigate]);
+    if (shouldHandleHotkey(event, "n") && queue.length > 0) {
+      event.preventDefault();
+      navigate.toThread(queue[0]!.session.threadId);
+    }
+  }, [jumpHotkey, navigate, queue]);
   // Dispose the pending chord timer on unmount (task switch, panel close), same reasoning as the
   // scratch pad's debounce cleanup: an in-flight "g" wait must not leak a timer past the panel's
   // own lifetime.
   useEffect(() => clearChordRef.current, []);
 
   return (
+    <TooltipProvider delayDuration={300}>
     <div ref={panelRootRef} className="flex h-full min-h-0 flex-col gap-4 overflow-hidden p-4">
       <RpiNotificationBridge />
       <div className="flex items-center justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight text-foreground">RPI</h1>
-          <p className="text-xs text-muted-foreground">Tasks, drafts, and phase planning inside bb.</p>
+        <div role="tablist" className="flex gap-1 rounded-md border border-border p-1">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "tasks"}
+            aria-controls="rpi-panel-content"
+            onClick={() => onSwitch("tasks")}
+            className={cn("rounded px-3 py-1.5 text-sm font-medium transition", view === "tasks" ? "bg-card text-foreground" : "text-muted-foreground")}
+          >
+            Tasks
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "drafts"}
+            aria-controls="rpi-panel-content"
+            onClick={() => onSwitch("drafts")}
+            className={cn("rounded px-3 py-1.5 text-sm font-medium transition", view === "drafts" ? "bg-card text-foreground" : "text-muted-foreground")}
+          >
+            Drafts {draftCount}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "settings"}
+            aria-controls="rpi-panel-content"
+            onClick={() => onSwitch("settings")}
+            className={cn("rounded px-3 py-1.5 text-sm font-medium transition", view === "settings" ? "bg-card text-foreground" : "text-muted-foreground")}
+          >
+            Settings
+          </button>
         </div>
-        <Button type="button" onClick={() => onSwitch("new")} className="h-10 px-4 text-xs uppercase tracking-[0.2em]">
+        <Button type="button" onClick={onCreateTask} className="h-10 px-4 text-xs uppercase tracking-[0.2em]">
           <Icon name="Plus" className="size-4" />
           Create task
           <span className="ml-1 rounded bg-background/10 px-1.5 py-0.5 text-[10px] font-semibold">T</span>
         </Button>
       </div>
 
-      <div className="flex items-center gap-2 border-b border-border pb-2 text-sm font-medium uppercase tracking-[0.22em] text-muted-foreground">
-        <button
-          type="button"
-          onClick={() => onSwitch("tasks")}
-          className={cn("rounded-md px-3 py-1.5 transition", view === "tasks" && "bg-card text-foreground")}
-        >
-          Tasks
-        </button>
-        <button
-          type="button"
-          onClick={() => onSwitch("drafts")}
-          className={cn("rounded-md px-3 py-1.5 transition", view === "drafts" && "bg-card text-foreground")}
-        >
-          Drafts
-        </button>
-        <button
-          type="button"
-          onClick={() => onSwitch("new")}
-          className={cn("rounded-md px-3 py-1.5 transition", view === "new" && "bg-card text-foreground")}
-        >
-          New task
-        </button>
-      </div>
-
-      <div className={cn("grid min-h-0 flex-1 gap-4", layoutMode === "aside" && "grid-cols-[220px_minmax(0,1fr)]")}>
-        <aside className="space-y-4 overflow-hidden rounded-2xl border border-border bg-card/40 p-4">
-          <SidebarSummary tasks={tasks} onCreateTask={() => onSwitch("new")} />
-          <div className="space-y-2">
-            <SectionTitle title="Task view" />
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => setShowBoard(false)}
-                className={cn("rounded-md border px-3 py-2 text-xs uppercase tracking-[0.22em]", !showBoard ? "border-foreground bg-background text-foreground" : "border-border text-muted-foreground")}
-              >
-                List
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowBoard(true)}
-                className={cn("rounded-md border px-3 py-2 text-xs uppercase tracking-[0.22em]", showBoard ? "border-foreground bg-background text-foreground" : "border-border text-muted-foreground")}
-              >
-                Board
-              </button>
+      <main id="rpi-panel-content" className="flex min-h-0 flex-1 flex-col overflow-auto rounded-2xl border border-border bg-background/80 p-4">
+        {detailTaskId ? (
+          <TaskDetailPage taskId={detailTaskId} artifactFileName={/^tasks\/[^/]+\/artifacts\/(.+)$/.exec(subPath)?.[1] ? decodeURIComponent(/^tasks\/[^/]+\/artifacts\/(.+)$/.exec(subPath)![1]!) : null} />
+        ) : showNewTaskPage ? (
+          <NewTaskPage tasks={tasks} />
+        ) : view === "settings" ? (
+          <RpiDefaultsSettings />
+        ) : (
+          <div className="space-y-5">
+            {view === "tasks" ? (
+              <NeedsYouBand
+                queue={queue}
+                runningCount={runningCount}
+                hasTasks={tasks.length > 0}
+                compact={compact}
+                onOpen={(threadId) => navigate.toThread(threadId)}
+              />
+            ) : null}
+            <div className="space-y-3">
+              <TasksSectionHeader
+                title={view === "drafts" ? "Drafts" : "Tasks"}
+                count={visibleTasks.length}
+                boardMode={showBoard}
+                setBoardMode={setShowBoard}
+              />
+              <TaskListView tasks={visibleTasks} boardMode={showBoard} compact={compact} boardWidth={panelWidth} />
             </div>
           </div>
-        </aside>
-
-        <main className="flex min-h-0 flex-col overflow-auto rounded-2xl border border-border bg-background/80 p-4">
-          {detailTaskId ? (
-            <TaskDetailPage taskId={detailTaskId} artifactFileName={/^tasks\/[^/]+\/artifacts\/(.+)$/.exec(subPath)?.[1] ? decodeURIComponent(/^tasks\/[^/]+\/artifacts\/(.+)$/.exec(subPath)![1]!) : null} />
-          ) : view === "new" ? (
-            <NewTaskPage tasks={tasks} />
-          ) : (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2 text-xs uppercase tracking-[0.24em] text-muted-foreground">
-                  <span>{view === "drafts" ? "Drafts" : "Tasks"}</span>
-                  <span className="text-border">•</span>
-                  <span>{visibleTasks.length} tasks</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs uppercase tracking-[0.24em] text-muted-foreground">List</span>
-                  <button
-                    type="button"
-                    onClick={() => setShowBoard((value) => !value)}
-                    className={cn(
-                      "inline-flex items-center gap-2 rounded-md border px-3 py-2 text-xs uppercase tracking-[0.24em]",
-                      showBoard ? "border-foreground bg-card text-foreground" : "border-border text-muted-foreground",
-                    )}
-                  >
-                    {showBoard ? "Board" : "List"}
-                  </button>
-                </div>
-              </div>
-              <TaskListView tasks={visibleTasks} boardMode={showBoard} />
-            </div>
-          )}
-        </main>
-      </div>
+        )}
+      </main>
     </div>
+    </TooltipProvider>
   );
 }
