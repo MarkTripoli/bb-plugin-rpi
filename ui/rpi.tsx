@@ -1830,9 +1830,36 @@ const ARTIFACT_GROUP_ORDER = [
   "other",
 ] as const;
 
+// Sentence-case rail group labels, keyed the same as ARTIFACT_GROUP_ORDER/artifacts.ts's
+// ARTIFACT_TYPE_ORDER.
+const ARTIFACT_GROUP_LABELS: Record<(typeof ARTIFACT_GROUP_ORDER)[number], string> = {
+  "research-questions": "Research questions",
+  research: "Research",
+  "design-discussion": "Design discussion",
+  prd: "PRD",
+  tdd: "TDD",
+  "structure-outline": "Structure outline",
+  plan: "Plan",
+  "pr-description": "PR description",
+  other: "Task files",
+};
+
+// Mirrors artifacts.ts's middleEllipsis (kept as a small duplicate, not an import: artifacts.ts
+// pulls in node:crypto/better-sqlite3 for its write path, so it is backend-only and never bundled
+// into this frontend file, the same reason ARTIFACT_GROUP_ORDER above duplicates artifacts.ts's
+// ARTIFACT_TYPE_ORDER instead of importing it).
+function middleEllipsis(name: string, max: number): string {
+  if (name.length <= max) return name;
+  const head = name.slice(0, Math.max(0, max - 12));
+  const tail = name.slice(name.length - 11);
+  return `${head}\u2026${tail}`;
+}
+
 function ArtifactIcon({ artifact }: { artifact: ArtifactRecord }) {
   const isImage = artifact.contentType.startsWith("image/");
-  return <Icon name={isImage ? "Code" : "Code"} className={cn("size-4", isImage ? "text-foreground" : "text-muted-foreground")} />;
+  const isText = artifact.contentType.startsWith("text/");
+  const name: IconName = isImage ? "Eye" : isText ? "FileText" : "Code";
+  return <Icon name={name} className={cn("size-4", isImage || isText ? "text-foreground" : "text-muted-foreground")} />;
 }
 
 function ArtifactRow({
@@ -1848,14 +1875,22 @@ function ArtifactRow({
   onDelete: () => void;
   onRestore: () => void;
 }) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const path = `/plugins/rpi/tasks/${encodeURIComponent(artifact.taskId)}/artifacts/${encodeURIComponent(artifact.fileName)}`;
   return (
-    <div className={cn("flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2", selected && "border-foreground")}>
+    <div className={cn("flex items-center gap-2 rounded-md border px-3 py-2", selected ? "border-foreground/50 bg-card" : "border-transparent hover:bg-card/70")}>
       <button type="button" onClick={onSelect} className="flex min-w-0 flex-1 items-center gap-2 text-left">
         <ArtifactIcon artifact={artifact} />
-        <span className={cn("truncate text-sm font-medium", artifact.isDeleted ? "text-muted-foreground line-through" : "text-foreground")}>{artifact.fileName}</span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className={cn("truncate text-sm font-medium", artifact.isDeleted ? "text-muted-foreground line-through" : "text-foreground")}>
+              {middleEllipsis(artifact.fileName, 34)}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>{artifact.fileName}</TooltipContent>
+        </Tooltip>
       </button>
-      <span className="text-xs text-muted-foreground">{artifact.commentCount}</span>
+      {artifact.commentCount > 0 ? <span className="shrink-0 text-xs text-muted-foreground">{artifact.commentCount}</span> : null}
       <Popover>
         <PopoverTrigger asChild>
           <button type="button" className={cn("flex items-center justify-center rounded-md border border-border text-muted-foreground hover:text-foreground", COARSE_POINTER_CHILD_ICON_BUTTON_CLASS)}>
@@ -1868,10 +1903,18 @@ function ArtifactRow({
           {artifact.isDeleted ? (
             <button type="button" onClick={onRestore} className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted">Restore</button>
           ) : (
-            <button type="button" onClick={onDelete} className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted">Delete</button>
+            <button type="button" onClick={() => setConfirmDelete(true)} className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted">Delete</button>
           )}
         </PopoverContent>
       </Popover>
+      <ConfirmDialog
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        title={`Delete ${artifact.fileName}?`}
+        description="It can be restored from this menu until the task is archived."
+        confirmLabel="Delete"
+        onConfirm={onDelete}
+      />
     </div>
   );
 }
@@ -1966,6 +2009,47 @@ function usePersistedWidth(key: string, fallback: number, range: { min: number; 
   };
 }
 
+function readPersistedSet(key: string): Set<string> | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(key) ?? "");
+    return Array.isArray(parsed) ? new Set(parsed.filter((item): item is string => typeof item === "string")) : null;
+  } catch {
+    return null;
+  }
+}
+
+// A set of ids persisted to localStorage as a JSON array, same read-once-then-persist-on-change
+// shape as usePersistedWidth above. Backs the Artifacts rail's collapsed-group state
+// (`rpi:artifacts:collapsed:<taskId>`, one such set per task): membership means "collapsed", so
+// the default (nothing saved yet) is every group expanded. `key` changing (a different task)
+// re-reads localStorage for the new key, since this hook's owner does not remount across tasks.
+function usePersistedSet(key: string) {
+  const [value, setValue] = useState<Set<string>>(() => readPersistedSet(key) ?? new Set());
+  useEffect(() => {
+    setValue(readPersistedSet(key) ?? new Set());
+  }, [key]);
+  const persist = (next: Set<string>) => {
+    if (typeof window !== "undefined") window.localStorage.setItem(key, JSON.stringify([...next]));
+    return next;
+  };
+  return {
+    has: (id: string) => value.has(id),
+    toggle: (id: string) => setValue((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return persist(next);
+    }),
+    expand: (id: string) => setValue((current) => {
+      if (!current.has(id)) return current;
+      const next = new Set(current);
+      next.delete(id);
+      return persist(next);
+    }),
+  };
+}
+
 // Draggable divider: plain pointer events (no drag-and-drop API) on a 6px `cursor-col-resize`
 // handle. `onDrag` runs during the pointer move (in-memory only); `onCommit` persists once on
 // pointerup, or immediately after each keyboard step. Keyboard: `role="separator"`
@@ -2015,7 +2099,35 @@ function SplitHandle({
   );
 }
 
-function ArtifactViewer({ taskId, fileName, onRestore, panelWidth }: { taskId: string; fileName: string; onRestore: () => void; panelWidth: number }) {
+// createdBy is either the literal "ui"/"cli" senders or a session threadId; resolves it to
+// something a human reads as an author ("you", "cli", a session's title, or the raw value as a
+// last resort for a session no longer in `sessions`).
+function versionAuthor(createdBy: string, sessions: SessionView[]): string {
+  if (createdBy === "ui") return "you";
+  if (createdBy === "cli") return "cli";
+  const session = sessions.find((candidate) => candidate.threadId === createdBy);
+  return session ? session.title ?? createdBy : createdBy;
+}
+
+function versionTimeLabel(createdAt: number): string {
+  const date = new Date(createdAt);
+  const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return date.toDateString() === new Date().toDateString() ? time : `${date.toLocaleDateString()} ${time}`;
+}
+
+// Default send target for a fresh artifact/version: the session that wrote the version being
+// viewed if it is still live, else the newest live session, else the newest session of any kind.
+function defaultSendThreadId(sessions: SessionView[], task: TaskRecord, versionCreatedBy: string | null | undefined): string {
+  const notSuperseded = sessions.filter((session) => effectiveStatus(session, sessions, task) !== SUPERSEDED);
+  const author = versionCreatedBy ? notSuperseded.find((session) => session.threadId === versionCreatedBy) : undefined;
+  if (author) return author.threadId;
+  const newestLive = [...notSuperseded].sort((a, b) => b.createdAt - a.createdAt)[0];
+  if (newestLive) return newestLive.threadId;
+  const newest = [...sessions].sort((a, b) => b.createdAt - a.createdAt)[0];
+  return newest?.threadId ?? "";
+}
+
+function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string; fileName: string; task: TaskRecord; panelWidth: number }) {
   const rpc = useRpc<RpcContract>();
   const { values: settings } = useSettings();
   const [mode, setMode] = useState<"preview" | "raw">("preview");
@@ -2044,6 +2156,7 @@ function ArtifactViewer({ taskId, fileName, onRestore, panelWidth }: { taskId: s
     setCommentThreads([]);
     setCommentsNextOffset(null);
     setComposingBlock(null);
+    setSendThreadId("");
   }, [taskId, fileName]);
 
   useEffect(() => {
@@ -2066,8 +2179,8 @@ function ArtifactViewer({ taskId, fileName, onRestore, panelWidth }: { taskId: s
       setUrl(artifactResult.url);
       setVersion(artifactResult.version?.version ?? null);
       setSessions(sessionResult.sessions);
-      const latestThreadId = sessionResult.sessions[0]?.threadId;
-      if (latestThreadId) setSendThreadId((current) => current || latestThreadId);
+      const defaultThreadId = defaultSendThreadId(sessionResult.sessions, task, artifactResult.version?.createdBy ?? null);
+      if (defaultThreadId) setSendThreadId((current) => current || defaultThreadId);
       if (artifactResult.artifact) {
         void rpc.call("listComments", { artifactId: artifactResult.artifact.id, includeResolved: showResolved, offset: 0 }).then((result) => {
           if (!cancelled) {
@@ -2080,7 +2193,7 @@ function ArtifactViewer({ taskId, fileName, onRestore, panelWidth }: { taskId: s
     return () => {
       cancelled = true;
     };
-  }, [fileName, taskId, pinnedVersion, rpc, showResolved]);
+  }, [fileName, taskId, pinnedVersion, rpc, showResolved, task]);
   useRealtime("rpi:artifacts", (payload) => {
     if (!payload || typeof payload !== "object" || (payload as { taskId?: unknown }).taskId !== taskId) return;
     void Promise.all([
@@ -2145,13 +2258,13 @@ function ArtifactViewer({ taskId, fileName, onRestore, panelWidth }: { taskId: s
             <div key={block.index} className="group grid grid-cols-[28px_minmax(0,1fr)] gap-2 rounded-md border border-transparent hover:border-border">
               <button
                 type="button"
-                aria-label="Add comment"
+                aria-label={`Add comment on line ${block.index + 1}`}
                 title="Add comment"
                 onClick={() => {
                   setComposingBlock(block.index);
                   setComposerText("");
                 }}
-                className="mt-2 flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground opacity-0 transition hover:text-foreground group-hover:opacity-100"
+                className="mt-1.5 flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground opacity-60 transition hover:text-foreground hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100 pointer-coarse:size-9 pointer-coarse:opacity-100"
               >
                 <Icon name="Plus" className="size-4" />
               </button>
@@ -2206,19 +2319,27 @@ function ArtifactViewer({ taskId, fileName, onRestore, panelWidth }: { taskId: s
   );
 
   return (
-    <div ref={setViewerRoot} className="flex min-h-0 flex-1 flex-col gap-3 rounded-md border border-border bg-card p-3">
+    <div
+      ref={setViewerRoot}
+      className={cn("flex min-h-0 flex-1 flex-col gap-3 rounded-md border border-border bg-card p-3", layoutMode !== "split-rail" && "overflow-auto")}
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
-          <h3 className="truncate text-sm font-semibold text-foreground">{artifact.fileName}</h3>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <h3 className="truncate text-sm font-semibold text-foreground">{artifact.fileName}</h3>
+            </TooltipTrigger>
+            <TooltipContent>{artifact.fileName}</TooltipContent>
+          </Tooltip>
           <div className="text-xs text-muted-foreground">
-            v{version ?? artifact.currentVersion}
-            {versionMeta ? ` by ${versionMeta.createdBy} at ${new Date(versionMeta.createdAt).toLocaleString()}` : ""}
+            v{version ?? artifact.currentVersion} · written by {versionMeta ? versionAuthor(versionMeta.createdBy, sessions) : "?"}
+            {versionMeta ? ` · ${versionTimeLabel(versionMeta.createdAt)}` : ""}
           </div>
         </div>
         <div className="flex items-center gap-2">
           <select value={version ?? artifact.currentVersion} onChange={(event) => setPinnedVersion(Number.parseInt(event.target.value, 10))} className="h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground">
             {versions.map((item) => (
-              <option key={item.id} value={item.version}>v{item.version} {item.createdBy}</option>
+              <option key={item.id} value={item.version}>v{item.version} · {versionAuthor(item.createdBy, sessions)}</option>
             ))}
           </select>
           <button type="button" onClick={() => setMode("preview")} className={cn("h-8 rounded-md border px-2 text-xs", mode === "preview" ? "border-foreground text-foreground" : "border-border text-muted-foreground")}>Preview</button>
@@ -2226,9 +2347,8 @@ function ArtifactViewer({ taskId, fileName, onRestore, panelWidth }: { taskId: s
         </div>
       </div>
       {artifact.isDeleted ? (
-        <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
-          <span>This artifact is deleted.</span>
-          <Button type="button" variant="outline" className="h-8" onClick={onRestore}>Restore</Button>
+        <div className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
+          This artifact is deleted. Restore it from its row menu in the list.
         </div>
       ) : null}
       {layoutMode === "split-rail" ? (
@@ -2243,18 +2363,28 @@ function ArtifactViewer({ taskId, fileName, onRestore, panelWidth }: { taskId: s
           <div style={{ width: commentsWidth.width }} className="min-h-0 min-w-0 shrink-0">{commentRailNode}</div>
         </div>
       ) : (
-        <div className="flex min-h-[260px] flex-1 flex-col gap-3">
-          <div className="min-h-0 flex-1 overflow-auto rounded-md border border-border bg-background p-3">{previewNode}</div>
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col rounded-md border border-border">
-            <div className="shrink-0 px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
-              Comments ({commentThreads.length})
+        <>
+          <div className="rounded-md border border-border bg-background p-3">{previewNode}</div>
+          <div className="rounded-md border border-border">
+            <div className="flex items-baseline gap-2 px-3 py-2 text-xs font-semibold text-muted-foreground">
+              <span className="text-foreground">Comments</span>
+              <span>{commentThreads.length}</span>
             </div>
-            <div className="min-h-0 min-w-0 flex-1 overflow-auto p-3 pt-0">{commentRailNode}</div>
+            <div className="p-3 pt-0">{commentRailNode}</div>
           </div>
-        </div>
+        </>
       )}
     </div>
   );
+}
+
+// "Design" for a labeled phase session, else the session's own title truncated to 24 chars: the
+// send button and its confirming toast both name the target this way.
+function shortSessionTitle(session: SessionView): string {
+  const step = labelStep(session.label);
+  if (step) return capitalize(step);
+  const title = session.title ?? session.threadId;
+  return title.length > 24 ? `${title.slice(0, 24)}\u2026` : title;
 }
 
 function CommentRail({
@@ -2290,9 +2420,11 @@ function CommentRail({
   const unanchored = threads.filter((thread) => thread.root.anchor?.orphaned);
   const unresolvedIds = threads.filter((thread) => !thread.root.isResolved).map((thread) => thread.root.id);
   const sendIds = unresolvedIds.slice(0, 100);
+  const sendTarget = sessions.find((session) => session.threadId === sendThreadId);
+  const sendTargetTitle = sendTarget ? shortSessionTitle(sendTarget) : "session";
   const sendLabel = unresolvedIds.length > sendIds.length
-    ? `${sending ? "Sending" : "Send"} first ${sendIds.length} of ${unresolvedIds.length}`
-    : `${sending ? "Sending" : "Send"} ${sendIds.length} comments to session`;
+    ? `${sending ? "Sending" : "Send"} first ${sendIds.length} of ${plural(unresolvedIds.length, "comment")} to ${sendTargetTitle}`
+    : `${sending ? "Sending" : "Send"} ${plural(sendIds.length, "comment")} to ${sendTargetTitle}`;
 
   const update = async (action: Promise<unknown>) => {
     await action;
@@ -2306,13 +2438,14 @@ function CommentRail({
       const requestId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
       await rpc.call("sendCommentsToSession", { threadId: sendThreadId, artifactId: artifact.id, commentIds: sendIds, mode: sendMode, requestId });
       await refetch();
+      toast.success(`Sent ${plural(sendIds.length, "comment")} to ${sendTargetTitle}`);
     } finally {
       setSending(false);
     }
   };
 
   return (
-    <aside className="min-h-0 min-w-0 overflow-auto rounded-md border border-border bg-background p-3">
+    <aside className="min-w-0 rounded-md border border-border bg-background p-3">
       <div className="mb-3 flex items-center justify-between gap-2">
         <h4 className="text-sm font-semibold text-foreground">Comments</h4>
         <label className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -2338,7 +2471,7 @@ function CommentRail({
         ))}
         {unanchored.length > 0 ? (
           <section className="space-y-2 border-t border-border pt-3">
-            <div className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">Unanchored</div>
+            <div className="text-xs font-medium text-muted-foreground">Unanchored</div>
             {unanchored.map((thread) => <CommentThread key={thread.root.id} artifactId={artifact.id} thread={thread} update={update} />)}
           </section>
         ) : null}
@@ -2357,13 +2490,18 @@ function CommentThread({ artifactId, thread, update }: { artifactId: string; thr
   const [reply, setReply] = useState("");
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(thread.root.contentText);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const root = thread.root;
+  const deleteComment = async () => {
+    await update(rpc.call("deleteComment", { artifactId, commentIds: [root.id] }));
+    toast.success("Comment deleted");
+  };
   return (
     <article className="space-y-2 rounded-md border border-border bg-card p-3">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="text-xs font-medium text-foreground">{root.createdByAgent ? "Agent" : "You"} <span className="text-muted-foreground">{relativeTime(root.createdAt)}</span></div>
-          <div className="text-xs text-muted-foreground">block {root.anchor?.orphaned ? "unanchored" : root.anchor?.blockIndex ?? "?"}</div>
+          <div className="text-xs text-muted-foreground">{root.anchor?.orphaned ? "unanchored" : `line ${(root.anchor?.blockIndex ?? 0) + 1}`}</div>
         </div>
         <button type="button" className="text-xs text-muted-foreground hover:text-foreground" onClick={() => void update(rpc.call("resolveComments", { artifactId, commentIds: [root.id], resolved: !root.isResolved }))}>
           {root.isResolved ? "Unresolve" : "Resolve"}
@@ -2383,8 +2521,16 @@ function CommentThread({ artifactId, thread, update }: { artifactId: string; thr
       <div className="flex flex-wrap gap-2 text-xs">
         <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => setReply((value) => value || " ")}>Reply</button>
         {!root.createdByAgent ? <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => setEditing(true)}>Edit</button> : null}
-        <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => void update(rpc.call("deleteComment", { artifactId, commentIds: [root.id] }))}>Delete</button>
+        <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => setConfirmDelete(true)}>Delete</button>
       </div>
+      <ConfirmDialog
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        title="Delete this comment?"
+        description="Also deletes any replies."
+        confirmLabel="Delete"
+        onConfirm={() => void deleteComment()}
+      />
       {thread.replies.map((item) => (
         <div key={item.id} className="rounded-md border border-border bg-background p-2">
           <div className="text-xs font-medium text-foreground">{item.createdByAgent ? "Agent" : "You"} <span className="text-muted-foreground">{relativeTime(item.createdAt)}</span></div>
@@ -2415,13 +2561,14 @@ function isSandboxedPreview(contentType: string) {
 function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFileName?: string | null }) {
   const rpc = useRpc<RpcContract>();
   const [artifacts, setArtifacts] = useState<ArtifactRecord[]>([]);
-  const [grouped, setGrouped] = useState(true);
+  const [task, setTask] = useState<TaskRecord | null>(null);
   const [selected, setSelected] = useState<string | null>(initialFileName ?? null);
   const [busy, setBusy] = useState(false);
   const [panelWidth, setPanelRoot] = useElementWidth();
   // Forced stacked below the breakpoint regardless of viewer width; see artifact-layout.ts.
   const stacked = panelWidth > 0 && panelWidth < ARTIFACT_PANEL_STACK_BREAKPOINT;
   const listWidth = usePersistedWidth("rpi.artifacts.split.list", 300, ARTIFACT_LIST_WIDTH_RANGE);
+  const collapsedGroups = usePersistedSet(`rpi:artifacts:collapsed:${taskId}`);
 
   const refetch = () => {
     rpc.call("listArtifacts", { taskId, includeDeleted: true }).then(({ artifacts: next }) => {
@@ -2436,6 +2583,8 @@ function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFi
 
   useEffect(() => {
     refetch();
+    rpc.call("getTask", { taskId }).then(({ task: next }) => setTask(next));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskId, initialFileName]);
   useRealtime("artifacts", refetch);
   useRealtime("rpi:artifacts", refetch);
@@ -2445,11 +2594,21 @@ function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFi
   const groups = useMemo(() => ARTIFACT_GROUP_ORDER.map((group) => ({
     group,
     artifacts: liveArtifacts.filter((artifact) => artifact.groupType === group),
-  })).filter((group) => group.artifacts.length > 0 || group.group === "other"), [liveArtifacts]);
+  })).filter((group) => group.artifacts.length > 0), [liveArtifacts]);
+
+  // A deep-linked or freshly-loaded selection always becomes visible, even if the user (or a
+  // previous visit to this task) left its group collapsed.
+  useEffect(() => {
+    if (!selected) return;
+    const artifact = artifacts.find((item) => item.fileName === selected);
+    if (artifact) collapsedGroups.expand(artifact.groupType);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, artifacts]);
 
   const mutate = async (action: "deleteArtifact" | "restoreArtifact", fileName: string) => {
     await rpc.call(action, { taskId, fileName });
     refetch();
+    toast.success(action === "deleteArtifact" ? `Deleted ${fileName}` : `Restored ${fileName}`);
   };
 
   const hydrateNow = async () => {
@@ -2474,75 +2633,110 @@ function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFi
     />
   ));
 
+  const groupHeader = (group: { group: (typeof ARTIFACT_GROUP_ORDER)[number]; artifacts: ArtifactRecord[] }) => {
+    const collapsed = collapsedGroups.has(group.group);
+    const openComments = group.artifacts.reduce((sum, artifact) => sum + artifact.commentCount, 0);
+    return (
+      <button
+        type="button"
+        aria-expanded={!collapsed}
+        onClick={() => collapsedGroups.toggle(group.group)}
+        className="flex w-full items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+      >
+        <Icon name={collapsed ? "ChevronRight" : "ChevronDown"} className="size-3.5 shrink-0" />
+        <span className="flex-1 truncate text-left">{ARTIFACT_GROUP_LABELS[group.group]}</span>
+        <span>{group.artifacts.length}</span>
+        {openComments > 0 ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className={cn("inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-xs font-semibold", TONE_PILL_CLASS.attention)}>{openComments}</span>
+            </TooltipTrigger>
+            <TooltipContent>{plural(openComments, "open comment")}</TooltipContent>
+          </Tooltip>
+        ) : null}
+      </button>
+    );
+  };
+
   const listNode = (
     <div className="min-h-0 min-w-0 space-y-3 overflow-auto">
       {artifacts.length === 0 ? (
-        <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">No artifacts yet.</div>
-      ) : grouped ? (
+        <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">
+          No artifacts yet. The first phase writes task.md and 01-research-questions-*.md here.
+        </div>
+      ) : (
         <>
           {groups.map((group) => (
-            <section key={group.group} className="space-y-2">
-              <div className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">{group.group.replaceAll("-", " ")} ({group.artifacts.length})</div>
-              <div className="space-y-2">{rows(group.artifacts)}</div>
+            <section key={group.group} className="space-y-1.5">
+              {groupHeader(group)}
+              {collapsedGroups.has(group.group) ? null : <div className="space-y-1.5 pl-1">{rows(group.artifacts)}</div>}
             </section>
           ))}
           {deletedArtifacts.length > 0 ? (
-            <section className="space-y-2">
-              <div className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">DELETED ({deletedArtifacts.length})</div>
-              <div className="space-y-2">{rows(deletedArtifacts)}</div>
+            <section className="space-y-1.5">
+              <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                <span className="flex-1 truncate">Deleted</span>
+                <span>{deletedArtifacts.length}</span>
+              </div>
+              <div className="space-y-1.5 pl-1">{rows(deletedArtifacts)}</div>
             </section>
           ) : null}
         </>
-      ) : (
-        <div className="space-y-3">
-          <div className="space-y-2">{rows(liveArtifacts)}</div>
-          {deletedArtifacts.length > 0 ? (
-            <section className="space-y-2">
-              <div className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">DELETED ({deletedArtifacts.length})</div>
-              <div className="space-y-2">{rows(deletedArtifacts)}</div>
-            </section>
-          ) : null}
-        </div>
       )}
     </div>
   );
 
-  const viewerNode = selected ? (
-    <ArtifactViewer taskId={taskId} fileName={selected} panelWidth={panelWidth} onRestore={() => void mutate("restoreArtifact", selected)} />
+  const viewerNode = selected && task ? (
+    <ArtifactViewer taskId={taskId} fileName={selected} task={task} panelWidth={panelWidth} />
   ) : null;
 
   return (
+    <TooltipProvider delayDuration={300}>
     <div ref={setPanelRoot} className="flex h-full min-h-0 flex-1 flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <button type="button" onClick={() => setGrouped((value) => !value)} className={cn("inline-flex h-9 items-center gap-2 rounded-md border px-3 text-xs uppercase tracking-[0.2em]", grouped ? "border-foreground text-foreground" : "border-border text-muted-foreground")}>
-            Grouped
-          </button>
-          <span className="text-xs text-muted-foreground">{artifacts.length} artifacts</span>
+        <div className="flex items-baseline gap-2">
+          <h3 className="text-sm font-semibold text-foreground">Artifacts</h3>
+          <span className="text-sm font-semibold text-muted-foreground">{artifacts.length}</span>
         </div>
-        <Button type="button" variant="outline" className="h-9" disabled={busy} onClick={hydrateNow}>
-          <Icon name="Download" className="size-4" />
-          Hydrate now
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button type="button" variant="outline" className="h-8" disabled={busy} onClick={() => void hydrateNow()}>
+              <Icon name="Download" className="size-4" />
+              Reimport files
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            Re-import artifact files from .rpi/tasks/{task?.slug ?? taskId}/ in the workspace into the plugin. Use it after editing files outside bb.
+          </TooltipContent>
+        </Tooltip>
       </div>
       {stacked ? (
-        <div className="flex min-h-0 flex-1 flex-col gap-3">
-          <div className={cn("flex min-h-0 flex-col rounded-md border border-border", viewerNode ? "max-h-[40%] shrink-0" : "flex-1")}>
-            <div className="shrink-0 px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
-              Artifacts ({artifacts.length})
-            </div>
-            <div className="min-h-0 flex-1 overflow-auto p-3 pt-0">{listNode}</div>
+        selected ? (
+          <div className="flex min-h-0 flex-1 flex-col gap-3">
+            <Button type="button" variant="outline" className="h-8 w-fit" onClick={() => setSelected(null)}>
+              <Icon name="ChevronLeft" className="size-4" />
+              Artifacts {artifacts.length}
+            </Button>
+            {viewerNode}
           </div>
-          {viewerNode}
-        </div>
+        ) : (
+          <div className="min-h-0 flex-1 overflow-auto">{listNode}</div>
+        )
       ) : (
         <div className="flex min-h-0 flex-1 gap-0">
           <div style={{ width: listWidth.width }} className="min-h-0 min-w-0 shrink-0">{listNode}</div>
           <SplitHandle ariaLabel="Resize artifact list" onDrag={listWidth.drag} onStep={listWidth.step} onCommit={listWidth.commit} />
-          <div className="min-h-0 min-w-0 flex-1">{viewerNode}</div>
+          <div className="min-h-0 min-w-0 flex-1">
+            {viewerNode ?? (
+              <div className="flex h-full min-h-[200px] items-center justify-center rounded-md border border-dashed border-border p-4 text-center text-sm text-muted-foreground">
+                Select an artifact to read it. Hover a line and press + to comment.
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
+    </TooltipProvider>
   );
 }
 
