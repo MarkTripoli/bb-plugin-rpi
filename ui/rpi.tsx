@@ -37,7 +37,8 @@ import { markdownBlocks } from "../blocks";
 import { ScratchPadSync } from "../scratch-pad-sync";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Icon } from "@/components/ui/icon";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Icon, type IconName } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
@@ -79,51 +80,90 @@ function SectionTitle({
   );
 }
 
-function pillClassName(kind: "draft" | "step" | "ghost") {
-  return cn(
-    "inline-flex items-center rounded-md border px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.18em]",
-    kind === "draft" && "border-border bg-muted text-muted-foreground",
-    kind === "step" && "border-border bg-card text-foreground",
-    kind === "ghost" && "border-dashed border-border text-muted-foreground",
-  );
-}
+type StatusTone = "success" | "warning" | "danger" | "muted" | "active";
 
-function TaskStepPill({ task }: { task: TaskRow }) {
-  const label = task.stepLabel;
-  return <span className={pillClassName(task.isDraft ? "draft" : "step")}>{label}</span>;
-}
-
-function statusMeta(status: string) {
+// Single tone table backing status pills, row shading, and icon-only glyphs (thread list,
+// minimap). Replaces the former pillClassName (3-variant badge) + statusMeta/SessionStatus
+// (tinted-text) split with one coloring function per status.
+function statusMeta(status: string): { text: string; icon: IconName; tone: StatusTone } {
   switch (status) {
     case "ready_for_input":
-      return { text: "idle", icon: "AlertCircle" as const, className: "text-destructive" };
+      return { text: "idle", icon: "AlertCircle", tone: "danger" };
     case "needs_approval":
-      return { text: "needs approval", icon: "AlertTriangle" as const, className: "text-warning" };
+      return { text: "needs approval", icon: "AlertTriangle", tone: "warning" };
     case "running":
-      return { text: "running", icon: "Loading" as const, className: "text-success animate-pulse" };
+      return { text: "running", icon: "Loading", tone: "active" };
     case "launching":
     case "resuming":
-      return { text: status.replaceAll("_", " "), icon: "Spinner" as const, className: "text-success animate-pulse" };
+      return { text: status.replaceAll("_", " "), icon: "Spinner", tone: "active" };
     case "failed":
-      return { text: "failed", icon: "AlertCircle" as const, className: "text-destructive" };
+      return { text: "failed", icon: "AlertCircle", tone: "danger" };
     case "interrupted":
     case "interrupt_requested":
-      return { text: status.replaceAll("_", " "), icon: "CircleX" as const, className: "text-muted-foreground" };
+      return { text: status.replaceAll("_", " "), icon: "CircleX", tone: "muted" };
     case "lost":
-      return { text: "lost", icon: "AlertCircle" as const, className: "text-muted-foreground" };
+      return { text: "lost", icon: "AlertCircle", tone: "muted" };
     default:
-      return { text: status.replaceAll("_", " "), icon: "Circle" as const, className: "text-muted-foreground" };
+      return { text: status.replaceAll("_", " "), icon: "Circle", tone: "muted" };
   }
+}
+
+// Text-only coloring for icon glyphs that render a status without a pill (thread list, minimap).
+const TONE_TEXT_CLASS: Record<StatusTone, string> = {
+  success: "text-success",
+  warning: "text-warning",
+  danger: "text-destructive",
+  muted: "text-muted-foreground",
+  active: "text-success animate-pulse",
+};
+
+const TONE_PILL_CLASS: Record<StatusTone, string> = {
+  success: "bg-success/10 text-success",
+  warning: "bg-warning/10 text-warning",
+  danger: "bg-destructive/10 text-destructive",
+  muted: "bg-muted text-muted-foreground",
+  active: "bg-success/10 text-success animate-pulse",
+};
+
+// Active/failed row shading (design discussion's row-shading precedent); tones with no entry
+// keep their plain row styling.
+const ROW_SHADE_CLASS: Partial<Record<StatusTone, string>> = {
+  danger: "bg-destructive/5 ring-1 ring-destructive/20",
+  active: "bg-background/70 shadow-sm ring-1 ring-border/60",
+};
+
+function StatusPill({ tone, label, icon }: { tone: StatusTone; label: string; icon: IconName }) {
+  return (
+    <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium", TONE_PILL_CLASS[tone])}>
+      <Icon name={icon} className="size-3.5" />
+      {label}
+    </span>
+  );
 }
 
 function SessionStatus({ status }: { status: string }) {
   const meta = statusMeta(status);
+  return <StatusPill tone={meta.tone} label={meta.text} icon={meta.icon} />;
+}
+
+// Replaces pillClassName's three-variant badge (draft/step/ghost) with one filled/outline
+// distinction: draft and ghost were always muted variants of the same visual idea as a status
+// pill, so they collapse into the same non-emphasis style.
+function LabelPill({ label, emphasis = false }: { label: string; emphasis?: boolean }) {
   return (
-    <span className={cn("inline-flex items-center gap-2 text-sm font-medium", meta.className)}>
-      <Icon name={meta.icon} className="size-4" />
-      {meta.text}
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
+        emphasis ? "border border-border bg-card text-foreground" : TONE_PILL_CLASS.muted,
+      )}
+    >
+      {label}
     </span>
   );
+}
+
+function TaskStepPill({ task }: { task: TaskRow }) {
+  return <LabelPill label={task.stepLabel} emphasis={!task.isDraft} />;
 }
 
 // Warning threshold (plan §2.8, now resolved per session): `contextThresholdFor` in
@@ -552,7 +592,7 @@ function TaskTable({ tasks }: { tasks: TaskRow[] }) {
           {tasks.map((task) => (
             <tr
               key={task.id}
-              className="cursor-pointer border-b border-border last:border-b-0 hover:bg-card/70"
+              className={cn("cursor-pointer border-b border-border last:border-b-0 hover:bg-card/70", task.attentionCount > 0 && ROW_SHADE_CLASS.danger)}
               onClick={() => navigate.toPluginPanel("rpi", { subPath: `tasks/${task.id}` })}
             >
               <td className="px-4 py-3">
@@ -615,7 +655,7 @@ function TaskBoard({ tasks }: { tasks: TaskRow[] }) {
               <article
                 key={task.id}
                 onClick={() => navigate.toPluginPanel("rpi", { subPath: `tasks/${task.id}` })}
-                className="cursor-pointer rounded-lg border border-border bg-background/70 p-3 transition hover:border-foreground/40"
+                className={cn("cursor-pointer rounded-lg border border-border bg-background/70 p-3 transition hover:border-foreground/40", task.attentionCount > 0 && ROW_SHADE_CLASS.danger)}
               >
                 <div className="space-y-2">
                   <div className="flex items-start justify-between gap-3">
@@ -1107,7 +1147,7 @@ function RecoverLaunchRow({ attempt, onResolved }: { attempt: LaunchAttemptRecor
           <div className="text-sm font-medium text-foreground">{isPending ? "Launching..." : isFailed ? "Launch failed" : "Recover launch"}</div>
           <div className="text-xs text-muted-foreground">{attempt.id}</div>
         </div>
-        <span className={pillClassName(isFailed ? "draft" : "ghost")}>{isPending ? "launching..." : attempt.status}</span>
+        <LabelPill label={isPending ? "launching..." : attempt.status} />
       </div>
       {isPending ? null : isFailed ? (
         // Only Retry is actionable for a failed attempt; adopt/dismiss are server-rejected no-ops
@@ -1128,7 +1168,7 @@ function RecoverLaunchRow({ attempt, onResolved }: { attempt: LaunchAttemptRecor
                   className="flex w-full items-center justify-between gap-2 rounded-md border border-border px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted disabled:opacity-60"
                 >
                   <span className="truncate">{candidate.title ?? candidate.threadId}</span>
-                  <span className={pillClassName(candidate.strong ? "step" : "ghost")}>{candidate.strong ? "strong" : "weak"}</span>
+                  <LabelPill label={candidate.strong ? "strong" : "weak"} emphasis={candidate.strong} />
                 </button>
               ))}
             </div>
@@ -1167,10 +1207,12 @@ function SessionsTable({ sessions }: { sessions: SessionView[] }) {
           </tr>
         </thead>
         <tbody>
-          {sessions.map((session) => (
+          {sessions.map((session) => {
+            const tone = statusMeta(session.rpiStatus).tone;
+            return (
             <tr
               key={session.threadId}
-              className="cursor-pointer border-b border-border last:border-b-0 hover:bg-background/70"
+              className={cn("cursor-pointer border-b border-border last:border-b-0 hover:bg-background/70", ROW_SHADE_CLASS[tone])}
               onClick={() => navigate.toThread(session.threadId)}
             >
               <td className="px-4 py-3"><SessionStatus status={session.rpiStatus} /></td>
@@ -1181,12 +1223,13 @@ function SessionsTable({ sessions }: { sessions: SessionView[] }) {
                   {nextStep(session) ? <span className="text-xs text-muted-foreground">Next: {nextStep(session)?.nextStepSummary}</span> : null}
                 </div>
               </td>
-              <td className="px-4 py-3">{session.label ? <span className={pillClassName("step")}>{session.label}</span> : <span className={pillClassName("ghost")}>none</span>}</td>
+              <td className="px-4 py-3">{session.label ? <LabelPill label={session.label} emphasis /> : <LabelPill label="none" />}</td>
               <td className="px-4 py-3"><ContextGauge usage={session.contextUsage} threshold={session.contextWarnThreshold} /></td>
               <td className="max-w-[320px] truncate px-4 py-3 text-muted-foreground">{session.workingDirectory ?? "unknown"}</td>
               <td className="px-4 py-3 text-muted-foreground">{relativeTime(session.threadUpdatedAt ?? session.updatedAt)}</td>
             </tr>
-          ))}
+          );
+          })}
         </tbody>
       </table>
     </div>
@@ -1503,7 +1546,7 @@ function MinimapPanel({ taskId }: { taskId: string }) {
               className="inline-flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-xs transition hover:border-foreground/40"
             >
               <span className="text-muted-foreground">{index + 1}</span>
-              <Icon name={meta.icon} className={cn("size-3.5", meta.className)} />
+              <Icon name={meta.icon} className={cn("size-3.5", TONE_TEXT_CLASS[meta.tone])} />
               <span className="font-medium text-foreground">{session.label ?? "freeform"}</span>
               <span className="text-muted-foreground">{relativeTime(session.threadUpdatedAt ?? session.updatedAt)}</span>
             </button>
@@ -1552,11 +1595,13 @@ function ArtifactRow({
         <span className={cn("truncate text-sm font-medium", artifact.isDeleted ? "text-muted-foreground line-through" : "text-foreground")}>{artifact.fileName}</span>
       </button>
       <span className="text-xs text-muted-foreground">{artifact.commentCount}</span>
-      <details className="relative">
-        <summary className="flex size-7 cursor-pointer list-none items-center justify-center rounded-md border border-border text-muted-foreground hover:text-foreground">
-          <Icon name="MoreHorizontal" className="size-4" />
-        </summary>
-        <div className="absolute right-0 z-10 mt-1 w-36 rounded-md border border-border bg-popover p-1 shadow-sm">
+      <Popover>
+        <PopoverTrigger asChild>
+          <button type="button" className="flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-foreground">
+            <Icon name="MoreHorizontal" className="size-4" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent className="w-36 p-1">
           <button type="button" onClick={onSelect} className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted">Open</button>
           <button type="button" onClick={() => void navigator.clipboard?.writeText(path)} className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted">Copy path</button>
           {artifact.isDeleted ? (
@@ -1564,9 +1609,42 @@ function ArtifactRow({
           ) : (
             <button type="button" onClick={onDelete} className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted">Delete</button>
           )}
-        </div>
-      </details>
+        </PopoverContent>
+      </Popover>
     </div>
+  );
+}
+
+// Shared destructive-confirmation dialog (phase 2 swap-in for window.confirm): gets the mobile
+// bottom-sheet behavior of components/ui/dialog.tsx for free at every call site that uses it.
+function ConfirmDialog({
+  open,
+  onOpenChange,
+  title,
+  description,
+  confirmLabel,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  title: string;
+  description: string;
+  confirmLabel: string;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button type="button" variant="destructive" onClick={() => { onOpenChange(false); onConfirm(); }}>{confirmLabel}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -2270,9 +2348,9 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
         <div className="space-y-2">
           <h2 className="text-2xl font-semibold tracking-tight text-foreground">{task.name}</h2>
           <div className="flex flex-wrap gap-2">
-            <span className={pillClassName(task.isDraft ? "draft" : "step")}>{task.isDraft ? "Draft" : workspace.currentLabel ?? "Session"}</span>
-            <span className={pillClassName("ghost")}>{task.workflowType}</span>
-            <span className={pillClassName("ghost")}>{task.worktreeTiming}</span>
+            <LabelPill label={task.isDraft ? "Draft" : workspace.currentLabel ?? "Session"} emphasis={!task.isDraft} />
+            <LabelPill label={task.workflowType} />
+            <LabelPill label={task.worktreeTiming} />
           </div>
         </div>
         {task.isDraft ? (
@@ -2536,7 +2614,7 @@ export function RpiThreadList({ activeThreadId, isCompactViewport, onNavigate, O
                       thread.id === activeThreadId ? "bg-card text-foreground" : "text-muted-foreground hover:bg-card/60",
                     )}
                   >
-                    <Icon name={meta.icon} className={cn("size-3.5 shrink-0", meta.className)} />
+                    <Icon name={meta.icon} className={cn("size-3.5 shrink-0", TONE_TEXT_CLASS[meta.tone])} />
                     <span className="truncate">{thread.title ?? thread.titleFallback ?? "Untitled"}</span>
                     <span className={cn("ml-auto shrink-0 text-[10px]", isCompactViewport && "hidden")}>{session.label ?? ""}</span>
                   </button>
@@ -2871,10 +2949,11 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
   const { values: settings } = useSettings();
-  const iterate = async () => {
-    // showIterateConfirmation (item 8: wired, was stored-but-unread): true is bb's own default, so
-    // omitted/unloaded settings keep today's confirm-first behavior.
-    if (settings?.showIterateConfirmation !== false && !window.confirm("Start a fresh session from here? The current session keeps running.")) return;
+  // Which confirmation dialog (if any) is pending; a single discriminant covers both
+  // destructive confirmations this component owns (item 8's `showIterateConfirmation` opt-out
+  // still short-circuits straight to the RPC call, unchanged from the window.confirm version).
+  const [pendingConfirm, setPendingConfirm] = useState<"iterate" | "archive" | null>(null);
+  const runIterate = async () => {
     try {
       const result = await rpc.call("iterateInFreshSession", { threadId });
       navigate.toThread(result.threadId);
@@ -2882,7 +2961,18 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
       reportLaunchError(error);
     }
   };
+  const iterate = () => {
+    if (settings?.showIterateConfirmation !== false) {
+      setPendingConfirm("iterate");
+      return;
+    }
+    void runIterate();
+  };
   const { session } = useRpiSessionState(threadId);
+  const runArchive = () => {
+    if (!session) return;
+    void rpc.call("archiveTask", { taskId: session.taskId }).then(() => navigate.toPluginPanel("rpi", { subPath: "" }));
+  };
 
   useEffect(() => {
     viewing.add(threadId);
@@ -2907,9 +2997,8 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
     if (shouldHandleHotkey(event, jumpHotkeyForArchive)) return;
     if (!shouldHandleHotkey(event, "mod+e")) return;
     event.preventDefault();
-    if (!window.confirm("Archive this task? Sessions stay but the task leaves the active list.")) return;
-    void rpc.call("archiveTask", { taskId: session.taskId }).then(() => navigate.toPluginPanel("rpi", { subPath: "" }));
-  }, [session, jumpHotkeyForArchive, rpc, navigate]);
+    setPendingConfirm("archive");
+  }, [session, jumpHotkeyForArchive]);
 
   if (!session) return null;
 
@@ -2917,7 +3006,7 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
     <div ref={actionRootRef} className="flex h-7 items-center gap-2">
       <RpiNotificationBridge />
       {settings?.showTaskPhaseLabels === false ? null : (
-        <span className={pillClassName(session.label ? "step" : "ghost")}>{session.label ?? "freeform"}</span>
+        <LabelPill label={session.label ?? "freeform"} emphasis={Boolean(session.label)} />
       )}
       <SessionStatus status={session.rpiStatus} />
       <ContextGauge usage={session.contextUsage} threshold={session.contextWarnThreshold} />
@@ -2954,6 +3043,22 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
           </button>
         </PopoverContent>
       </Popover>
+      <ConfirmDialog
+        open={pendingConfirm === "iterate"}
+        onOpenChange={(open) => setPendingConfirm(open ? "iterate" : null)}
+        title="Start a fresh session?"
+        description="The current session keeps running."
+        confirmLabel="Iterate"
+        onConfirm={runIterate}
+      />
+      <ConfirmDialog
+        open={pendingConfirm === "archive"}
+        onOpenChange={(open) => setPendingConfirm(open ? "archive" : null)}
+        title="Archive this task?"
+        description="Sessions stay but the task leaves the active list."
+        confirmLabel="Archive"
+        onConfirm={runArchive}
+      />
     </div>
   );
 }
@@ -2972,6 +3077,7 @@ export function RpiComposerBanner() {
   const view = useComposerView();
   const threadId = view.scope.kind === "thread" ? view.scope.threadId : null;
   const { session, uiState, setUiState, hasPendingLaunchAttempt } = useRpiSessionState(threadId);
+  const [pendingIterateConfirm, setPendingIterateConfirm] = useState(false);
 
   if (!threadId || !session) return null;
 
@@ -2982,14 +3088,20 @@ export function RpiComposerBanner() {
   const contextWarn = Boolean(gauge?.warn);
   if (!shouldShowComposerBanner({ extracted, suggested, contextWarn, dismissed: contextWarningDismissed })) return null;
 
-  const iterate = async () => {
-    if (settings?.showIterateConfirmation !== false && !window.confirm("Start a fresh session from here? The current session keeps running.")) return;
+  const runIterate = async () => {
     try {
       const result = await rpc.call("iterateInFreshSession", { threadId });
       navigate.toThread(result.threadId);
     } catch (error) {
       reportLaunchError(error);
     }
+  };
+  const iterate = () => {
+    if (settings?.showIterateConfirmation !== false) {
+      setPendingIterateConfirm(true);
+      return;
+    }
+    void runIterate();
   };
 
   return (
@@ -3050,6 +3162,14 @@ export function RpiComposerBanner() {
           ) : null}
         </span>
       ) : null}
+      <ConfirmDialog
+        open={pendingIterateConfirm}
+        onOpenChange={setPendingIterateConfirm}
+        title="Start a fresh session?"
+        description="The current session keeps running."
+        confirmLabel="Iterate"
+        onConfirm={runIterate}
+      />
     </div>
   );
 }
