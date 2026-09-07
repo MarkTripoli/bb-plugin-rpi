@@ -51,7 +51,7 @@ import {
   type PhaseProgressEntry,
   type StatusTone,
 } from "../status";
-import { markdownBlocks } from "../blocks";
+import { markdownBlocks, markdownGroups } from "../blocks";
 import { ScratchPadSync } from "../scratch-pad-sync";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -2607,6 +2607,7 @@ function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string
 
   const versionMeta = versions.find((item) => item.version === version);
   const blocks = !isBinary && content !== null ? markdownBlocks(content) : [];
+  const groups = content !== null ? markdownGroups(content, blocks) : [];
 
   const saveComment = async (block: (typeof blocks)[number]) => {
     if (!versionMeta || composerText.trim() === "") return;
@@ -2656,7 +2657,12 @@ function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string
           onKeyDown={gutterKeyDown}
           className="space-y-0.5 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          {blocks.map((block) => (
+          {groups.map((group) => {
+            // The gutter anchors the comment to the group's first line; the group is only the
+            // rendering unit, so anchors, reanchoring and existing comments stay per line.
+            const block = group.blocks[0]!;
+            const source = content!.slice(group.start, group.end).replace(/\n$/, "");
+            return (
             <div key={block.index} className="group grid grid-cols-[28px_minmax(0,1fr)] gap-2 rounded-md border border-transparent hover:border-border focus-within:border-border">
               <button
                 type="button"
@@ -2672,10 +2678,10 @@ function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string
                 <Icon name="Plus" className="size-4" />
               </button>
               <div className="min-w-0">
-                {block.code ? (
-                  <pre className="whitespace-pre-wrap font-mono text-xs text-foreground">{content!.slice(block.start, block.end).replace(/\n$/, "")}</pre>
+                {group.kind === "frontmatter" ? (
+                  <pre className="whitespace-pre-wrap font-mono text-xs text-muted-foreground">{source}</pre>
                 ) : (
-                  <Markdown content={block.text} />
+                  <Markdown content={source} />
                 )}
                 {composingBlock === block.index ? (
                   <div className="mb-2 space-y-2 rounded-md border border-border bg-card p-2">
@@ -2697,7 +2703,8 @@ function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string
                 ) : null}
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       ) : isBinary ? (
         <div className="text-sm text-muted-foreground">Binary preview is available through the HTTP route.</div>
