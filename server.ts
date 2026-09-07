@@ -28,6 +28,7 @@ import {
   sweepOldSendReceipts,
 } from "./comments";
 import { markdownBlocks } from "./blocks";
+import { normalizeModelCatalog, type RawProviderModelsResponse } from "./models";
 import {
   iterateInFreshSession,
   latestLaunchAttemptLabel,
@@ -752,6 +753,45 @@ export default async function plugin(bb: BbPluginApi) {
           status: host.status ?? "unknown",
         })),
       ),
+    // A single unscoped bb.sdk.providers.models() call only returns one (host-default) provider's
+    // models, verified live against a running bb instance (`bb provider models --json` matched
+    // `bb provider models codex --json` exactly). To surface every provider the host has access
+    // to, list the providers first and fetch each one's own catalog, then merge with the pure
+    // normalizer (models.ts). Any failure (a provider lookup throwing, or the whole thing) reports
+    // as a catalog error instead of failing the RPC, so one broken provider does not blank the
+    // whole picker.
+    listModels: async ({ hostId }) => {
+      const routing = hostId ? { hostId } : {};
+      try {
+        const providers = await bb.sdk.providers.list(routing);
+        const entries: RawProviderModelsResponse[] = await Promise.all(
+          providers.map(async (provider): Promise<RawProviderModelsResponse> => {
+            try {
+              const response = await bb.sdk.providers.models({ ...routing, providerId: provider.id });
+              return {
+                provider: {
+                  id: provider.id,
+                  displayName: provider.displayName,
+                  available: provider.available,
+                  serviceTiers: provider.serviceTiers,
+                },
+                models: response.models,
+                modelLoadError: response.modelLoadError,
+              };
+            } catch {
+              return {
+                provider: { id: provider.id, displayName: provider.displayName, available: provider.available, serviceTiers: provider.serviceTiers },
+                models: [],
+                modelLoadError: { code: "failed", providerId: provider.id },
+              };
+            }
+          }),
+        );
+        return normalizeModelCatalog(entries);
+      } catch {
+        return { providers: [], models: [], error: { code: "failed", providerId: "" } };
+      }
+    },
     getPrefs: async () => {
       const storedPrefs = await bb.storage.kv.get<unknown>(PREFS_KEY);
       const parsed = prefsSchema.parse(storedPrefs ?? defaultTaskPrefs({}));
