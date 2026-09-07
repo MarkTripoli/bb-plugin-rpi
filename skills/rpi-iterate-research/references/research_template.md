@@ -5,6 +5,7 @@ branch: [branch]
 repository: [repo]
 topic: "[topic]"
 type: research
+summary: "[Two to four sentences: what this document establishes, the decisions it fixes, and what a later phase needs from it. Downstream sessions read this instead of the full file.]"
 tags: [research, iteration]
 status: complete
 ---

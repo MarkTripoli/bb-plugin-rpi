@@ -1,6 +1,7 @@
 ---
 task: eng-xxxx-description
 type: design-prd
+summary: "[Two to four sentences: what this document establishes, the decisions it fixes, and what a later phase needs from it. Downstream sessions read this instead of the full file.]"
 repo: [repository name]
 branch: [branch name]
 sha: [current commit]

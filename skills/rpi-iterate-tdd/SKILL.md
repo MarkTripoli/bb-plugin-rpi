@@ -50,7 +50,8 @@ If the user asks to keep working through technical questions:
 1. **Find and read the task directory**:
    - Resolve the target TDD from `@file` when present, otherwise use the artifact manifest.
    - Ask the user to choose only if multiple TDD artifacts are plausible.
-   - Read the TDD, task or ticket, research, design notes, PRD if present, mockups, and user-mentioned files fully.
+   - Primary inputs, read fully: the TDD, the feedback, its mockups, and user-mentioned files.
+   - Task or ticket, research, design notes, and PRD: use their `summary` fields from the `rpi_task_context` manifest. Open one only when the feedback touches something its summary covers, and read that section by heading rather than the whole file.
    - Do not read research-question artifacts unless explicitly requested.
 
 2. **Validate feedback**:

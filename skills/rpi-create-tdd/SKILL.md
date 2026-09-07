@@ -37,9 +37,8 @@ System Design must be approved before Program Design begins. Within each phase, 
 <instructions>
 
 - List the task directory with `ls -La <task-dir>`.
-- Read relevant task artifacts fully, excluding research-question artifacts.
-- Read PRD if present, otherwise fall back to task or ticket, research, and design discussion.
-- Read every user-mentioned file fully.
+- Primary inputs, read fully: the PRD if present, otherwise task or ticket plus the design discussion (or the newest completed research when there is no design discussion), and every user-mentioned file.
+- Every other artifact in the `rpi_task_context` manifest: use its `summary` field and open the file only when the summary shows it bears on the design, reading the relevant section by heading. Exclude research-question artifacts.
 - Read `references/tdd_template.md` before creating the artifact.
 
 </instructions>

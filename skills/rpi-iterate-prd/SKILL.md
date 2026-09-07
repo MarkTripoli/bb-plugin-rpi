@@ -52,8 +52,8 @@ If the user wants to keep resolving product choices:
 1. **Find and read the task directory**:
    - Resolve the target PRD from `@file` when present, otherwise use the artifact manifest.
    - If more than one PRD could be the target, ask the user to choose.
-   - Read the PRD, task or ticket, completed research, design discussion, mockups, and user-mentioned files fully.
-   - Do not read partial task files.
+   - Primary inputs, read fully: the PRD, the feedback, its mockups, and user-mentioned files.
+   - Task or ticket, completed research, and design discussion: use their `summary` fields from the `rpi_task_context` manifest. Open one only when the feedback touches something its summary covers, and read that section by heading rather than the whole file.
 
 2. **Validate feedback**:
    - Do not accept corrections blindly.

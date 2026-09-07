@@ -22,13 +22,14 @@ You are creating a phased implementation outline from the research and design ar
 
 ## Steps
 
-1. **Read all input documents fully**:
-   - Read completed research, design discussion, PRD, TDD, task or ticket, and any user-mentioned files that affect the outline.
+1. **Read the primary inputs fully, the rest by summary**:
+   - Primary inputs, read fully: task or ticket, the newest design artifact (TDD, PRD, or design discussion, in that preference order), and any user-mentioned files that affect the outline.
+   - Every other artifact in the `rpi_task_context` manifest, including completed research: use its `summary` field. Open the file only when the summary shows it bears on a phase boundary, and then read the relevant section by heading rather than the whole file.
    - Do not read research-question artifacts.
-   - Understand current codebase behavior and patterns from the research before choosing phases.
+   - Take current codebase behavior and patterns from the design artifact and research summaries before choosing phases.
 
 2. **Check related task content**:
-   - If a task path is mentioned, list that path with `ls -La` and read relevant files fully.
+   - If a task path is mentioned, list that path with `ls -La` and read the named files fully.
    - Read source files mentioned in the artifacts when those details are needed to shape phase boundaries.
 
 3. **Spawn follow-up research if necessary**:

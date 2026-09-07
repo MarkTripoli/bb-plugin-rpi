@@ -5,6 +5,7 @@ import { MIGRATIONS } from "../db";
 import { createDraftTask } from "../tasks";
 import {
   ARTIFACT_SIZE_LIMIT_BYTES,
+  artifactSummary,
   artifactType,
   assertSafeArtifactFileName,
   deleteArtifact,
@@ -133,7 +134,6 @@ test("frontmatter and type inference handle eof fences, quoted scalars, and long
   assert.equal(artifactType("02-pr-description-cache.md", {}), "pr-description");
   assert.equal(artifactType("03-unknown-cache.md", {}), "other");
 });
-
 test("middleEllipsis: returns short names unchanged, truncates long ones to exactly max", () => {
   assert.equal(middleEllipsis("01-research-questions.md", 34), "01-research-questions.md");
   const truncated = middleEllipsis("01-research-questions-dashboard-caching-strategy.md", 34);
@@ -141,4 +141,15 @@ test("middleEllipsis: returns short names unchanged, truncates long ones to exac
   assert.ok(truncated.includes("\u2026"));
   assert.equal(truncated.slice(0, 22), "01-research-questions-dashboard-caching-strategy.md".slice(0, 22));
   assert.equal(truncated.slice(-11), "01-research-questions-dashboard-caching-strategy.md".slice(-11));
+});
+
+test("artifactSummary bounds frontmatter summary and drops template placeholders", () => {
+  assert.equal(artifactSummary({}), null);
+  assert.equal(artifactSummary({ summary: 42 }), null);
+  assert.equal(artifactSummary({ summary: "   " }), null);
+  assert.equal(artifactSummary({ summary: "[Two to four sentences: what this establishes.]" }), null);
+  assert.equal(artifactSummary({ summary: "Fixes the\n  archive  cascade." }), "Fixes the archive cascade.");
+  const long = artifactSummary({ summary: "x".repeat(1000) });
+  assert.equal(long?.length, 400);
+  assert.ok(long?.endsWith("\u2026"));
 });

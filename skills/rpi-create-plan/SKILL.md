@@ -16,10 +16,10 @@ You are in the plan-writing phase. Expand the structure outline into a detailed 
 
 ## Steps
 
-1. **Read all input files fully**:
+1. **Read the primary inputs fully, the rest by summary**:
    - Read supplied paths without partial reads.
-   - List the task directory with `ls -La <task-dir>` and read relevant artifacts.
-   - Read the available upstream artifacts: task or ticket, research, design notes, PRD, TDD, and structure outline.
+   - Primary inputs, read fully: `task.md` or `ticket.md`, plus the newest design artifact in this preference order: TDD, PRD, structure outline, design discussion.
+   - Every other artifact in the `rpi_task_context` manifest (older design artifacts, completed research): use its `summary` field. Open the file only when the design leaves a gap the plan must fill, and then read the relevant section by heading rather than the whole file.
    - Exclude research-question artifacts; use completed research instead.
 
 2. **Read relevant source files**:

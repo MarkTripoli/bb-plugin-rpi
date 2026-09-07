@@ -30,14 +30,14 @@ I can revise the structure outline now. Send the phase, scope, validation, or op
 
 ## Steps
 
-1. **Read all input documents fully**:
-   - Read the current outline, completed research, design discussion, PRD, TDD, task or ticket, and user-mentioned files.
-   - Understand current implementation patterns from the research.
+1. **Read the primary inputs fully, the rest by summary**:
+   - Primary inputs, read fully: the current outline, the feedback, and user-mentioned files.
+   - Completed research, design discussion, PRD, TDD, task or ticket: use their `summary` fields from the `rpi_task_context` manifest. Open one only when the feedback touches something its summary covers, and read that section by heading rather than the whole file.
    - Do not read research-question artifacts unless asked.
 
 2. **Check related task content**:
    - List mentioned task paths with `ls -La`.
-   - Read relevant artifacts and source files fully.
+   - Read the named artifacts and the source files the change depends on fully.
 
 3. **Verify user input**:
    - Do not accept corrections blindly.

@@ -126,6 +126,19 @@ export function parseFrontmatter(input: string | Buffer): Frontmatter {
   return result;
 }
 
+// Frontmatter `summary:` surfaced in the rpi_task_context manifest so a downstream session can
+// decide which upstream artifacts to open instead of reading every one fully. Bounded because
+// the manifest lists up to 200 artifacts and the value is agent-written (untrusted length).
+export const ARTIFACT_SUMMARY_LIMIT = 400;
+
+export function artifactSummary(frontmatter: Frontmatter): string | null {
+  const raw = frontmatter.summary;
+  if (typeof raw !== "string") return null;
+  const text = raw.replace(/\s+/g, " ").trim();
+  if (text === "" || /^\[.*\]$/.test(text)) return null;
+  return text.length > ARTIFACT_SUMMARY_LIMIT ? `${text.slice(0, ARTIFACT_SUMMARY_LIMIT - 1)}\u2026` : text;
+}
+
 export function artifactType(fileName: string, frontmatter: Frontmatter) {
   const fromFrontmatter = frontmatter.type;
   if (typeof fromFrontmatter === "string" && fromFrontmatter.trim() !== "") return fromFrontmatter.trim();

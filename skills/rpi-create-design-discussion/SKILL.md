@@ -16,18 +16,16 @@ You are in the design discussion phase. Convert the task request and completed r
 
 ## Work sequence after the request arrives
 
-1. **Read the task inputs and completed research**:
-   - List the task directory from `rpi_task_context` with `ls -La`.
-   - Read `task.md` or `ticket.md` if present.
-   - Read completed research artifacts, usually named `NN-research-*.md`.
-   - Read every explicit `@file` or path the user supplied.
+1. **Read the primary inputs**:
+   - Primary inputs, read fully: `task.md` or `ticket.md` if present, the newest completed research artifact (`NN-research-*.md`), and every explicit `@file` or path the user supplied.
+   - Every other artifact in the `rpi_task_context` manifest: use its `summary` field. Open the file only when the summary shows it bears on this design decision, and then read the relevant section by heading rather than the whole file.
    - Exclude research-question artifacts unless the user specifically asks you to audit the research setup.
-   - Do not start child research until you have read the primary task artifacts yourself.
+   - Do not start child research until you have read the primary inputs yourself.
 
 2. **Check for related task content**:
-   - If the user mentions another path inside the task directory, list that directory with `ls -La` and read the relevant files fully.
-   - Use the artifact manifest before trying wider discovery.
-   - Read prior design discussion artifacts only when they are directly relevant to the new design decision.
+   - If the user mentions another path inside the task directory, list that directory with `ls -La` and read the named files fully.
+   - Use the artifact manifest and its summaries before trying wider discovery.
+   - Prior design discussion artifacts count as "every other artifact" above: summary first, full read only when directly relevant.
 
 3. **Run follow-up research only when the design needs more evidence**:
 

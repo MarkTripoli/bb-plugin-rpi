@@ -32,8 +32,8 @@ Run this as a guided conversation. Settle the foundation first: the problem and 
 <instructions>
 
 - List the task directory with `ls -La <task-dir>`.
-- Read all relevant task artifacts fully, excluding research-question artifacts.
-- Read task or ticket input, completed research, design discussion if present, and every explicit user-mentioned file.
+- Primary inputs, read fully: task or ticket input, the design discussion if present (otherwise the newest completed research), and every explicit user-mentioned file.
+- Every other artifact in the `rpi_task_context` manifest: use its `summary` field and open the file only when the summary shows it bears on the PRD, reading the relevant section by heading. Exclude research-question artifacts.
 - Read `references/prd_template.md` before writing.
 
 </instructions>

@@ -4,6 +4,7 @@ import type * as BetterSqlite3 from "better-sqlite3";
 import {
   artifactPanelPath,
   artifactPermalink,
+  artifactSummary,
   getArtifact,
   getArtifactVersion,
   listArtifacts,
@@ -95,6 +96,7 @@ export const hlTaskContextOutputSchema = z.object({
     name: z.string(),
     type: z.string(),
     version: z.number().int(),
+    summary: z.string().nullable(),
   }).strict()),
   taskMd: z.string().nullable(),
 }).strict();
@@ -138,9 +140,10 @@ export function registerArtifactTools(
         name: artifact.fileName,
         type: artifact.type,
         version: artifact.currentVersion,
+        summary: artifactSummary(artifact.frontmatter),
       }));
       if (allArtifacts.length > artifacts.length) {
-        artifacts.push({ name: "[truncated]", type: "other", version: 0 });
+        artifacts.push({ name: "[truncated]", type: "other", version: 0, summary: null });
       }
       const task = getArtifactVersion(db, row.taskId, "task.md");
       const taskWorkspace = db.prepare(`

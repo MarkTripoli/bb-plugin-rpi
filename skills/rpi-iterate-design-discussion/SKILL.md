@@ -28,9 +28,8 @@ Do not edit until the user gives a change, names comments, or asks you to contin
 
 1. **Find and read the task directory**:
    - List the task directory with `ls -La <task-dir>`. Avoid search, glob, plain `ls`, and `ls -l` inside `.rpi/tasks` because task paths may be linked.
-   - Read the current design discussion fully.
-   - Read `task.md` or `ticket.md`, completed research, and earlier design artifacts needed to understand the change.
-   - Read any explicit user-mentioned file fully.
+   - Primary inputs, read fully: the current design discussion, the feedback, and any explicit user-mentioned file.
+   - `task.md` or `ticket.md`, completed research, and earlier design artifacts: use their `summary` fields from the `rpi_task_context` manifest. Open one only when the feedback touches something its summary covers, and read that section by heading rather than the whole file.
    - Do not read research-question artifacts unless asked to review research setup.
 
 2. **Check the user's input before applying it**:

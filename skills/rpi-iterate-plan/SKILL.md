@@ -16,9 +16,9 @@ You are revising an existing implementation plan. Check feedback before applying
 
 ## Steps
 
-1. **Read all input files fully**:
-   - Read the plan and the relevant upstream artifacts: task or ticket, research, design notes, PRD, TDD, and structure outline.
-   - Read supplied feedback files fully.
+1. **Read the primary inputs fully, the rest by summary**:
+   - Primary inputs, read fully: the plan and the supplied feedback (files, comments, or the user's message).
+   - Upstream artifacts (task or ticket, research, design notes, PRD, TDD, structure outline): use their `summary` fields from the `rpi_task_context` manifest. Open one only when the feedback touches something its summary covers, and read that section by heading rather than the whole file.
    - List the task directory with `ls -La <task-dir>`. Avoid plain `ls`, `ls -l`, search, and glob expansion inside `.rpi/tasks` because the path may be linked.
    - Do not use partial reads.
 
@@ -79,7 +79,7 @@ git rev-parse --git-dir
 
 ## Artifact and Reading Rules
 
-- Read task artifacts fully. Do not read research-question artifacts; use completed research instead.
+- Read the plan and feedback fully; take other task artifacts by manifest summary first. Do not read research-question artifacts; use completed research instead.
 - Do not inspect unrelated task directories unless the user explicitly asks.
 - Treat failed artifact saves, failed comment calls, or unavailable task context as blockers.
 - Normal iteration edits the existing plan file; do not allocate a new artifact number unless the user asks for a separate plan.
