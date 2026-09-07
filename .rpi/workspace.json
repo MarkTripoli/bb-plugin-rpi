@@ -1,0 +1,20 @@
+{
+  "repos": [
+    {
+      "localPath": ".",
+      "description": "bb-plugin-rpi",
+      "primary": true
+    }
+  ],
+  "disabled": false,
+  "sourceRef": "HEAD",
+  "branchTemplate": "{{ TASKSLUG }}",
+  "pathTemplate": "~/.rpi/workspaces/{{ TASKSLUG }}/{{ REPOBASENAME }}",
+  "setupCommand": "npm install",
+  "copyGlobs": [
+    ".rpi/workspace.local.json",
+    "CLAUDE.local.md",
+    ".env*",
+    ".claude/settings.local.json"
+  ]
+}
