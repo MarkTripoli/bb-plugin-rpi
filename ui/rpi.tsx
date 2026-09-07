@@ -33,6 +33,16 @@ import type {
 } from "../contract";
 import { AUTO_ADVANCE, BOARD_COLUMNS, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS, shouldShowComposerBanner, suggestedNextForSession, type SuggestedNext } from "../transitions";
 import { ARTIFACT_COMMENTS_WIDTH_RANGE, ARTIFACT_LIST_WIDTH_RANGE, ARTIFACT_PANEL_STACK_BREAKPOINT, artifactLayoutMode, clampWidth, panelLayoutMode } from "../artifact-layout";
+import {
+  attentionQueue,
+  attentionText,
+  labelStep,
+  needsHuman,
+  phaseProgress,
+  statusMeta,
+  workflowSteps,
+  type StatusTone,
+} from "../status";
 import { markdownBlocks } from "../blocks";
 import { ScratchPadSync } from "../scratch-pad-sync";
 import { Button } from "@/components/ui/button";
@@ -41,6 +51,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Icon, type IconName } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { COARSE_POINTER_CHILD_ICON_BUTTON_CLASS, COARSE_POINTER_COMPACT_ICON_SIZE_CLASS } from "@/components/ui/coarse-pointer-sizing";
 import { cn } from "@/lib/utils";
 
@@ -81,70 +92,52 @@ function SectionTitle({
   );
 }
 
-type StatusTone = "success" | "warning" | "danger" | "muted" | "active";
-
-// Single tone table backing status pills, row shading, and icon-only glyphs (thread list,
-// minimap). Replaces the former pillClassName (3-variant badge) + statusMeta/SessionStatus
-// (tinted-text) split with one coloring function per status.
-function statusMeta(status: string): { text: string; icon: IconName; tone: StatusTone } {
-  switch (status) {
-    case "ready_for_input":
-      return { text: "idle", icon: "AlertCircle", tone: "danger" };
-    case "needs_approval":
-      return { text: "needs approval", icon: "AlertTriangle", tone: "warning" };
-    case "running":
-      return { text: "running", icon: "Loading", tone: "active" };
-    case "launching":
-    case "resuming":
-      return { text: status.replaceAll("_", " "), icon: "Spinner", tone: "active" };
-    case "failed":
-      return { text: "failed", icon: "AlertCircle", tone: "danger" };
-    case "interrupted":
-    case "interrupt_requested":
-      return { text: status.replaceAll("_", " "), icon: "CircleX", tone: "muted" };
-    case "lost":
-      return { text: "lost", icon: "AlertCircle", tone: "muted" };
-    default:
-      return { text: status.replaceAll("_", " "), icon: "Circle", tone: "muted" };
-  }
-}
-
 // Text-only coloring for icon glyphs that render a status without a pill (thread list, minimap).
 const TONE_TEXT_CLASS: Record<StatusTone, string> = {
   success: "text-success",
   warning: "text-warning",
   danger: "text-destructive",
+  attention: "text-attention",
   muted: "text-muted-foreground",
-  active: "text-success animate-pulse",
+  active: "text-success motion-safe:animate-pulse",
 };
 
 const TONE_PILL_CLASS: Record<StatusTone, string> = {
   success: "bg-success/10 text-success",
   warning: "bg-warning/10 text-warning",
   danger: "bg-destructive/10 text-destructive",
+  attention: "bg-attention/15 text-attention",
   muted: "bg-muted text-muted-foreground",
-  active: "bg-success/10 text-success animate-pulse",
+  active: "bg-success/10 text-success motion-safe:animate-pulse",
 };
 
-// Active/failed row shading (design discussion's row-shading precedent); tones with no entry
-// keep their plain row styling.
+// Row shading only for a session that needs a retry (failed) or is actively working (active); a
+// session merely waiting on the human (attention) is the normal state and gets no tint
+// (PRODUCT.md #2: red is reserved for failure).
 const ROW_SHADE_CLASS: Partial<Record<StatusTone, string>> = {
   danger: "bg-destructive/5 ring-1 ring-destructive/20",
   active: "bg-background/70 shadow-sm ring-1 ring-border/60",
 };
 
-function StatusPill({ tone, label, icon }: { tone: StatusTone; label: string; icon: IconName }) {
-  return (
+function StatusPill({ tone, label, icon, hint }: { tone: StatusTone; label: string; icon: IconName; hint?: string }) {
+  const pill = (
     <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium", TONE_PILL_CLASS[tone])}>
       <Icon name={icon} className={COARSE_POINTER_COMPACT_ICON_SIZE_CLASS} />
       {label}
     </span>
   );
+  if (!hint) return pill;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{pill}</TooltipTrigger>
+      <TooltipContent>{hint}</TooltipContent>
+    </Tooltip>
+  );
 }
 
 function SessionStatus({ status }: { status: string }) {
   const meta = statusMeta(status);
-  return <StatusPill tone={meta.tone} label={meta.text} icon={meta.icon} />;
+  return <StatusPill tone={meta.tone} label={meta.text} icon={meta.icon} hint={meta.hint || undefined} />;
 }
 
 // Replaces pillClassName's three-variant badge (draft/step/ghost) with one filled/outline
@@ -723,19 +716,7 @@ function WorkflowStrip({
   worktreeTiming: "now" | "later" | "never";
   currentLabel?: string | null;
 }) {
-  const baseSteps =
-    workflowType === "rpi"
-      ? ["questions", "research", "design", "plan", "implementation", "PR"]
-      : workflowType === "outline_only"
-        ? ["questions", "research", "structure", "implementation", "PR"]
-      : workflowType === "prd_tdd"
-        ? ["research", "PRD", "TDD", "plan", "implementation", "PR"]
-        : ["single session"];
-  const steps = worktreeTiming === "never" || baseSteps[0] === "single session"
-    ? baseSteps
-    : worktreeTiming === "now"
-      ? ["worktree", ...baseSteps]
-      : [...baseSteps.slice(0, Math.max(0, baseSteps.indexOf("implementation"))), "worktree", ...baseSteps.slice(Math.max(0, baseSteps.indexOf("implementation")))];
+  const steps = workflowSteps(workflowType, worktreeTiming);
   const currentStep = labelStep(currentLabel);
   const currentIndex = steps.findIndex((step) => step === currentStep);
   return (
@@ -768,18 +749,6 @@ function WorkflowStrip({
       </div>
     </div>
   );
-}
-
-function labelStep(label: string | null | undefined) {
-  const normalized = label?.startsWith("rpi:") ? label.slice(4) : label;
-  if (normalized === "research-questions") return "questions";
-  if (normalized === "worktree-setup") return "worktree";
-  if (normalized === "structure") return "structure";
-  if (normalized === "implementation") return "implementation";
-  if (normalized === "describe-pr") return "PR";
-  if (normalized === "design-prd") return "PRD";
-  if (normalized === "design-tdd") return "TDD";
-  return normalized ?? null;
 }
 
 const PHASE_TIPS: Record<string, string[]> = {
@@ -2279,6 +2248,30 @@ function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFi
   );
 }
 
+const WORKTREE_TIMING_META: Record<"now" | "later" | "never", { text: string; hint: string }> = {
+  now: { text: "worktree from the start", hint: "The task gets its own branch and worktree directory before research starts." },
+  later: { text: "worktree after planning", hint: "Research and planning run in the main checkout; implementation gets its own branch and directory." },
+  never: { text: "no worktree", hint: "Every phase runs in the main checkout; no separate branch or directory is created." },
+};
+
+const PERMISSION_MODE_HINT: Record<string, string> = {
+  default: "The agent asks before edits and commands it is not already approved for.",
+  accept_edits: "The agent applies file edits without asking, but still asks before running commands.",
+  auto: "The agent edits files and runs commands without asking, within its allowed scope.",
+  bypass: "The agent skips bb's permission prompts entirely for this task.",
+};
+
+function TaskMetaTerm({ text, hint }: { text: string; hint: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="cursor-default underline decoration-dotted decoration-muted-foreground/60 underline-offset-2">{text}</span>
+      </TooltipTrigger>
+      <TooltipContent>{hint}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifactFileName?: string | null }) {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
@@ -2354,9 +2347,26 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
           <h2 className="text-2xl font-semibold tracking-tight text-foreground">{task.name}</h2>
           <div className="flex flex-wrap gap-2">
             <LabelPill label={task.isDraft ? "Draft" : workspace.currentLabel ?? "Session"} emphasis={!task.isDraft} />
-            <LabelPill label={task.workflowType} />
-            <LabelPill label={task.worktreeTiming} />
           </div>
+          <p className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+            <span className="font-mono">{task.slug}</span>
+            <span aria-hidden="true">·</span>
+            <span>{WORKFLOW_GRAPH_LABELS[task.workflowType]} workflow</span>
+            <span aria-hidden="true">·</span>
+            <TaskMetaTerm text={WORKTREE_TIMING_META[task.worktreeTiming].text} hint={WORKTREE_TIMING_META[task.worktreeTiming].hint} />
+            <span aria-hidden="true">·</span>
+            <TaskMetaTerm
+              text={`${task.permissionMode ?? "default"} permissions`}
+              hint={PERMISSION_MODE_HINT[task.permissionMode ?? "default"] ?? PERMISSION_MODE_HINT.default!}
+            />
+            <span aria-hidden="true">·</span>
+            <TaskMetaTerm
+              text={task.autoAdvance ? "auto-advance on" : "auto-advance off"}
+              hint={task.autoAdvance
+                ? "The task moves to the next phase automatically when a phase finishes cleanly, except at gates you chose to keep manual."
+                : "You approve each phase transition yourself; nothing advances automatically."}
+            />
+          </p>
         </div>
         {task.isDraft ? (
           <Button
@@ -3008,6 +3018,7 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
   if (!session) return null;
 
   return (
+    <TooltipProvider delayDuration={300}>
     <div ref={actionRootRef} className="flex h-7 items-center gap-2">
       <RpiNotificationBridge />
       {settings?.showTaskPhaseLabels === false ? null : (
@@ -3065,6 +3076,7 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
         onConfirm={runArchive}
       />
     </div>
+    </TooltipProvider>
   );
 }
 
@@ -3110,6 +3122,7 @@ export function RpiComposerBanner() {
   };
 
   return (
+    <TooltipProvider delayDuration={300}>
     <div className="flex w-full flex-wrap items-center justify-end gap-2">
       {contextWarn && !contextWarningDismissed ? (
         <span className="inline-flex h-7 items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-2 text-xs text-warning">
@@ -3176,6 +3189,7 @@ export function RpiComposerBanner() {
         onConfirm={runIterate}
       />
     </div>
+    </TooltipProvider>
   );
 }
 
