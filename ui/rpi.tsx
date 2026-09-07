@@ -1268,44 +1268,194 @@ function RecoverLaunchRow({ attempt, onResolved }: { attempt: LaunchAttemptRecor
   );
 }
 
-function SessionsTable({ sessions }: { sessions: SessionView[] }) {
+function capitalize(text: string): string {
+  return text.length === 0 ? text : text[0]!.toUpperCase() + text.slice(1);
+}
+
+// Attempt N (1-based, oldest first) among sessions of the task sharing the same non-null label;
+// `total` is the group size, so callers only show ", attempt N" when there was more than one.
+function attemptOrdinals(sessions: SessionView[]): Map<string, { ordinal: number; total: number }> {
+  const byLabel = new Map<string, SessionView[]>();
+  for (const session of sessions) {
+    if (session.label === null) continue;
+    const list = byLabel.get(session.label) ?? [];
+    list.push(session);
+    byLabel.set(session.label, list);
+  }
+  const ordinals = new Map<string, { ordinal: number; total: number }>();
+  for (const list of byLabel.values()) {
+    const ordered = [...list].sort((a, b) => a.createdAt - b.createdAt);
+    ordered.forEach((session, index) => ordinals.set(session.threadId, { ordinal: index + 1, total: ordered.length }));
+  }
+  return ordinals;
+}
+
+function startedAgoText(createdAt: number): string {
+  const rt = relativeTime(createdAt);
+  return rt === "now" ? "just started" : `started ${rt} ago`;
+}
+
+// "What it wants" cell: needsHuman statuses reuse attentionText verbatim; a superseded session
+// says what it handed off (its own next-step extraction, if any); running/interrupted get a short
+// present-tense line; anything else (launching, resuming, interrupt_requested) falls back to
+// statusMeta's hint.
+function sessionWhatItWants(session: SessionView, effective: string): string {
+  if (needsHuman(effective)) return attentionText(session);
+  if (effective === SUPERSEDED) {
+    const summary = nextStepSummary(session.nextStepJson);
+    return summary ? `Handed off: ${summary}` : "Finished";
+  }
+  if (effective === "running") return "Working";
+  if (effective === "interrupted") return "Stopped by you";
+  return statusMeta(effective).hint;
+}
+
+function sessionRowOrder(a: { effective: string; session: SessionView }, b: { effective: string; session: SessionView }): number {
+  const rank = (effective: string) => (needsHuman(effective) ? 0 : 1);
+  const rankDiff = rank(a.effective) - rank(b.effective);
+  if (rankDiff !== 0) return rankDiff;
+  const aTime = a.session.threadUpdatedAt ?? a.session.updatedAt;
+  const bTime = b.session.threadUpdatedAt ?? b.session.updatedAt;
+  return bTime - aTime;
+}
+
+// `sessions` is the (possibly phase-filtered) rows to render; `allSessions` is every session of
+// the task, unfiltered, since effectiveStatus/attemptOrdinals/forkedFrom lookups all need the
+// task's whole history, not just the visible slice.
+function SessionsTable({
+  sessions,
+  allSessions,
+  task,
+  compact,
+}: {
+  sessions: SessionView[];
+  allSessions: SessionView[];
+  task: TaskRecord;
+  compact: boolean;
+}) {
   const navigate = useBbNavigate();
+  const open = (threadId: string) => navigate.toThread(threadId);
+  const ordinals = useMemo(() => attemptOrdinals(allSessions), [allSessions]);
+  const rows = useMemo(
+    () =>
+      sessions
+        .map((session) => ({ session, effective: effectiveStatus(session, allSessions, task) }))
+        .sort(sessionRowOrder),
+    [sessions, allSessions, task],
+  );
+
+  if (compact) {
+    return (
+      <div className="space-y-2">
+        {rows.map(({ session, effective }) => {
+          const meta = statusMeta(effective);
+          const ordinal = ordinals.get(session.threadId);
+          const attemptSuffix = ordinal && ordinal.total > 1 ? `, attempt ${ordinal.ordinal}` : "";
+          const forkedFrom = session.forkedFromThreadId ? allSessions.find((other) => other.threadId === session.forkedFromThreadId) : undefined;
+          const subLine = forkedFrom
+            ? `forked from attempt ${ordinals.get(forkedFrom.threadId)?.ordinal ?? 1}`
+            : startedAgoText(session.createdAt);
+          return (
+            <div
+              key={session.threadId}
+              role="link"
+              tabIndex={0}
+              onClick={() => open(session.threadId)}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" && event.key !== " ") return;
+                event.preventDefault();
+                open(session.threadId);
+              }}
+              className={cn(
+                "cursor-pointer space-y-1.5 rounded-lg border border-border bg-card p-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                (effective === "failed" || effective === "lost") && ROW_SHADE_CLASS.danger,
+              )}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <StatusPill tone={meta.tone} label={meta.text} icon={meta.icon} hint={meta.hint || undefined} />
+                <span className="truncate text-sm font-medium text-foreground">{capitalize(labelStep(session.label) ?? "Session")}{attemptSuffix}</span>
+              </div>
+              <div className="text-xs text-muted-foreground">{subLine}</div>
+              <div className="text-sm text-foreground">{sessionWhatItWants(session, effective)}</div>
+              <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                <ContextGauge usage={session.contextUsage} threshold={session.contextWarnThreshold} />
+                <span>{relativeTime(session.threadUpdatedAt ?? session.updatedAt)}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   return (
     <div className="overflow-hidden rounded-xl border border-border bg-card">
       <table className="min-w-full border-collapse text-sm">
-        <thead className="border-b border-border text-left text-[11px] uppercase tracking-[0.24em] text-muted-foreground">
+        <thead className="border-b border-border text-left text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
           <tr>
-            <th className="px-4 py-3 font-medium">Status</th>
-            <th className="px-4 py-3 font-medium">Title</th>
-            <th className="px-4 py-3 font-medium">Label</th>
+            <th className="w-[130px] px-4 py-3 font-medium">Status</th>
+            <th className="px-4 py-3 font-medium">Session</th>
+            <th className="px-4 py-3 font-medium">What it wants</th>
             <th className="px-4 py-3 font-medium">Context</th>
-            <th className="px-4 py-3 font-medium">Working directory</th>
             <th className="px-4 py-3 font-medium">Updated</th>
+            <th className="px-4 py-3 font-medium" aria-hidden="true" />
           </tr>
         </thead>
         <tbody>
-          {sessions.map((session) => {
-            const tone = statusMeta(session.rpiStatus).tone;
+          {rows.map(({ session, effective }) => {
+            const meta = statusMeta(effective);
+            const ordinal = ordinals.get(session.threadId);
+            const attemptSuffix = ordinal && ordinal.total > 1 ? `, attempt ${ordinal.ordinal}` : "";
+            const forkedFrom = session.forkedFromThreadId ? allSessions.find((other) => other.threadId === session.forkedFromThreadId) : undefined;
+            const subLine = forkedFrom
+              ? `forked from attempt ${ordinals.get(forkedFrom.threadId)?.ordinal ?? 1}`
+              : startedAgoText(session.createdAt);
             return (
-            <tr
-              key={session.threadId}
-              className={cn("cursor-pointer border-b border-border last:border-b-0 hover:bg-background/70", ROW_SHADE_CLASS[tone])}
-              onClick={() => navigate.toThread(session.threadId)}
-            >
-              <td className="px-4 py-3"><SessionStatus status={session.rpiStatus} /></td>
-              <td className="px-4 py-3">
-                <div className="flex flex-col gap-1">
-                  <span className="font-medium text-foreground">{session.title ?? session.threadId}</span>
-                  {session.blockedReason ? <span className="text-xs text-muted-foreground">blocked: {session.blockedReason}</span> : null}
-                  {nextStep(session) ? <span className="text-xs text-muted-foreground">Next: {nextStep(session)?.nextStepSummary}</span> : null}
-                </div>
-              </td>
-              <td className="px-4 py-3">{session.label ? <LabelPill label={session.label} emphasis /> : <LabelPill label="none" />}</td>
-              <td className="px-4 py-3"><ContextGauge usage={session.contextUsage} threshold={session.contextWarnThreshold} /></td>
-              <td className="max-w-[320px] truncate px-4 py-3 text-muted-foreground">{session.workingDirectory ?? "unknown"}</td>
-              <td className="px-4 py-3 text-muted-foreground">{relativeTime(session.threadUpdatedAt ?? session.updatedAt)}</td>
-            </tr>
-          );
+              <tr
+                key={session.threadId}
+                role="link"
+                tabIndex={0}
+                onClick={() => open(session.threadId)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  open(session.threadId);
+                }}
+                className={cn(
+                  "cursor-pointer border-b border-border last:border-b-0 hover:bg-background/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  (effective === "failed" || effective === "lost") && ROW_SHADE_CLASS.danger,
+                )}
+              >
+                <td className="w-[130px] px-4 py-3"><StatusPill tone={meta.tone} label={meta.text} icon={meta.icon} hint={meta.hint || undefined} /></td>
+                <td className="px-4 py-3">
+                  <div className="flex flex-col gap-0.5">
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="w-fit truncate font-medium text-foreground">{capitalize(labelStep(session.label) ?? "Session")}{attemptSuffix}</span>
+                      </TooltipTrigger>
+                      <TooltipContent>{session.workingDirectory ?? "Working directory unknown"}</TooltipContent>
+                    </Tooltip>
+                    <span className="text-xs text-muted-foreground">{subLine}</span>
+                  </div>
+                </td>
+                <td className="max-w-[360px] truncate px-4 py-3 text-muted-foreground">{sessionWhatItWants(session, effective)}</td>
+                <td className="px-4 py-3"><ContextGauge usage={session.contextUsage} threshold={session.contextWarnThreshold} /></td>
+                <td className="px-4 py-3 text-muted-foreground">{relativeTime(session.threadUpdatedAt ?? session.updatedAt)}</td>
+                <td className="px-4 py-3">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-8"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      open(session.threadId);
+                    }}
+                  >
+                    Open
+                  </Button>
+                </td>
+              </tr>
+            );
           })}
         </tbody>
       </table>
@@ -1354,7 +1504,11 @@ function AutoAdvancePanel({ task, onUpdated }: { task: TaskRecord; onUpdated: ()
   );
 }
 
-function TipsPanel({ taskId, label }: { taskId: string; label: string | null | undefined }) {
+// `variant="panel"` (default) is the standalone thread-side-panel look (RpiTipsThreadPanel);
+// `variant="inline"` is the task detail page's compact dismissible row under the phase strip.
+// Only presentation differs; the tips-per-phase list, dismissed state, and showPhaseTips setting
+// are the same fetch and the same "Hide tips"/"Don't show again" action either way.
+function TipsPanel({ taskId, label, variant = "panel" }: { taskId: string; label: string | null | undefined; variant?: "inline" | "panel" }) {
   const rpc = useRpc<RpcContract>();
   const { values: settings } = useSettings();
   const [state, setState] = useState<TaskUiState>({ dismissedTips: {} });
@@ -1376,6 +1530,26 @@ function TipsPanel({ taskId, label }: { taskId: string; label: string | null | u
   }, [taskId]);
   useRealtime("rpi:ui-state", refetch);
 
+  const dismiss = async () => {
+    const next = await rpc.call("dismissTaskTip", { taskId, label: tipKey });
+    setState(next);
+  };
+
+  if (variant === "inline") {
+    if (hidden) return null;
+    return (
+      <div className="flex items-start justify-between gap-3 rounded-md border border-border bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
+        <div className="flex items-start gap-2">
+          <Icon name="Info" className="mt-0.5 size-3.5 shrink-0 text-primary" />
+          <span>{tips.join(" ")}</span>
+        </div>
+        <Button type="button" variant="ghost" className="h-6 shrink-0 px-2 text-xs" onClick={dismiss}>
+          Hide tips
+        </Button>
+      </div>
+    );
+  }
+
   if (hidden) {
     return (
       <div className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground">
@@ -1391,15 +1565,7 @@ function TipsPanel({ taskId, label }: { taskId: string; label: string | null | u
           <h3 className="text-sm font-semibold text-foreground">Tips</h3>
           <p className="text-xs text-muted-foreground">{tipKey.replaceAll("-", " ")}</p>
         </div>
-        <Button
-          type="button"
-          variant="outline"
-          className="h-8"
-          onClick={async () => {
-            const next = await rpc.call("dismissTaskTip", { taskId, label: tipKey });
-            setState(next);
-          }}
-        >
+        <Button type="button" variant="outline" className="h-8" onClick={dismiss}>
           Don't show again
         </Button>
       </div>
@@ -2386,14 +2552,130 @@ function TaskMetaTerm({ text, hint }: { text: string; hint: string }) {
   );
 }
 
+// Current step's 4px bar reuses the tone's own color; "active" (running) and "success" (settled)
+// both read as the same green bar the rest of the panel already uses for in-progress/done work.
+const TONE_BAR_CLASS: Record<StatusTone, string> = {
+  attention: "bg-attention",
+  warning: "bg-warning",
+  danger: "bg-destructive",
+  success: "bg-success",
+  active: "bg-success",
+  muted: "bg-muted-foreground",
+};
+
+// Live phase strip: one button per workflow step (phaseProgress, status.ts), replacing the old
+// static "RPI WORKFLOW" card. Clicking a step sets/clears the sessions-section phase filter.
+function PhaseStrip({
+  workflowType,
+  worktreeTiming,
+  currentLabel,
+  sessions,
+  activeFilter,
+  onSelect,
+  compact,
+}: {
+  workflowType: WorkflowType;
+  worktreeTiming: "now" | "later" | "never";
+  currentLabel: string | null;
+  sessions: SessionView[];
+  activeFilter: string | null;
+  onSelect: (step: string) => void;
+  compact: boolean;
+}) {
+  const steps = useMemo(
+    () => phaseProgress({ workflowType, worktreeTiming, currentLabel, sessions }),
+    [workflowType, worktreeTiming, currentLabel, sessions],
+  );
+  const firstFutureIndex = steps.findIndex((entry) => entry.state === "future");
+  return (
+    <div className={cn("flex gap-1.5", compact && "flex-wrap")}>
+      {steps.map((entry: PhaseProgressEntry, index) => {
+        const isActive = activeFilter === entry.step;
+        const barClass = entry.state === "current" ? TONE_BAR_CLASS[entry.tone ?? "muted"] : entry.state === "done" ? "bg-muted-foreground/50" : "bg-border";
+        return (
+          <Tooltip key={entry.step}>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-current={entry.state === "current" ? "step" : undefined}
+                aria-pressed={isActive}
+                onClick={() => onSelect(entry.step)}
+                className={cn(
+                  "min-w-0 flex-1 rounded-md border px-3 py-2 text-left",
+                  compact && "min-w-[120px]",
+                  entry.state === "current" ? "border-foreground bg-card" : entry.state === "future" ? "border-dashed border-border" : "border-border",
+                )}
+              >
+                <span className={cn("block h-1 rounded-sm", barClass)} />
+                <span className="mt-1.5 flex items-center justify-between gap-2">
+                  <span
+                    className={cn(
+                      "truncate text-xs",
+                      entry.state === "current" ? "font-medium text-foreground" : entry.state === "done" ? "text-muted-foreground" : "text-muted-foreground/70",
+                    )}
+                  >
+                    {entry.step}
+                  </span>
+                  <span className="shrink-0 text-xs">
+                    {entry.needsHuman > 0 ? (
+                      <>
+                        <span className={TONE_TEXT_CLASS[entry.tone ?? "muted"]}>
+                          {entry.needsHuman} {entry.needsHuman === 1 ? "needs you" : "need you"}
+                        </span>
+                        <span className="text-muted-foreground"> / {entry.count}</span>
+                      </>
+                    ) : entry.count > 0 ? (
+                      <span className="text-muted-foreground">{entry.count}</span>
+                    ) : index === firstFutureIndex ? (
+                      <span className="text-muted-foreground">next</span>
+                    ) : null}
+                  </span>
+                </span>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{PHASE_DESCRIPTIONS[entry.step] ?? entry.step}</TooltipContent>
+          </Tooltip>
+        );
+      })}
+    </div>
+  );
+}
+
+// The task's newest still-relevant session: needsHuman ones first, then running, then anything
+// else live (settled/interrupted); a superseded session is never a candidate. Backs the header's
+// "Open current session" button.
+function currentSessionFor(sessions: SessionView[], task: TaskRecord): SessionView | null {
+  const live = sessions
+    .map((session) => ({ session, effective: effectiveStatus(session, sessions, task) }))
+    .filter(({ effective }) => effective !== SUPERSEDED);
+  if (live.length === 0) return null;
+  const rank = (effective: string) => (needsHuman(effective) ? 0 : effective === "running" ? 1 : 2);
+  live.sort((a, b) => {
+    const rankDiff = rank(a.effective) - rank(b.effective);
+    if (rankDiff !== 0) return rankDiff;
+    const aTime = a.session.threadUpdatedAt ?? a.session.updatedAt;
+    const bTime = b.session.threadUpdatedAt ?? b.session.updatedAt;
+    return bTime - aTime;
+  });
+  return live[0]!.session;
+}
+
 function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifactFileName?: string | null }) {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
   const [task, setTask] = useState<TaskRecord | null>(null);
   const [workspace, setWorkspace] = useState<TaskWorkspaceState | null>(null);
   const [sessions, setSessions] = useState<SessionView[]>([]);
-  const [tab, setTab] = useState<"sessions" | "artifacts" | "workspace" | "auto-advance" | "scratch" | "minimap" | "tips">(artifactFileName ? "artifacts" : "sessions");
+  const [artifactCount, setArtifactCount] = useState<number | null>(null);
+  const [tab, setTab] = useState<"sessions" | "artifacts" | "settings">(artifactFileName ? "artifacts" : "sessions");
   const [uiState, setUiState] = useState<TaskUiState | null>(null);
+  // Which workflow step the sessions table is filtered to; null shows every session. Set from
+  // PhaseStrip clicks, and once from the current step on first load (see the effect below).
+  const [phaseFilter, setPhaseFilter] = useState<string | null>(null);
+  const initializedFilterRef = useRef<string | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const panelWidth = useElementWidth(rootRef);
+  const compact = panelWidth > 0 && panelWidth < 560;
 
   const refetch = () => {
     Promise.all([
@@ -2405,10 +2687,15 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
       setSessions(sessionResult.sessions);
     });
   };
+  const refetchArtifactCount = () => {
+    rpc.call("listArtifacts", { taskId }).then(({ artifacts }) => setArtifactCount(artifacts.length));
+  };
 
   useEffect(() => {
     refetch();
+    refetchArtifactCount();
     rpc.call("getTaskUiState", { taskId }).then(setUiState);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskId]);
   useEffect(() => {
     if (artifactFileName) setTab("artifacts");
@@ -2418,6 +2705,17 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
   useRealtime("rpi:ui-state", () => {
     rpc.call("getTaskUiState", { taskId }).then(setUiState);
   });
+  useRealtime("artifacts", refetchArtifactCount);
+  useRealtime("rpi:artifacts", refetchArtifactCount);
+
+  useEffect(() => {
+    if (!workspace) return;
+    if (initializedFilterRef.current === taskId) return;
+    initializedFilterRef.current = taskId;
+    const currentStep = labelStep(workspace.currentLabel);
+    const hasSessions = currentStep !== null && sessions.some((session) => labelStep(session.label) === currentStep);
+    setPhaseFilter(hasSessions ? currentStep : null);
+  }, [taskId, workspace, sessions]);
 
   if (!task || !workspace) {
     return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
@@ -2431,15 +2729,25 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
     (attempt.status === "failed" && attempt.retryMarker === null),
   );
 
+  const liveSessionCount = sessions.filter((session) => effectiveStatus(session, sessions, task) !== SUPERSEDED).length;
+  const filteredSessions = phaseFilter ? sessions.filter((session) => labelStep(session.label) === phaseFilter) : sessions;
+  const currentSession = currentSessionFor(sessions, task);
+
+  const tabs: Array<{ id: "sessions" | "artifacts" | "settings"; label: string }> = [
+    { id: "sessions", label: `Sessions ${liveSessionCount}` },
+    { id: "artifacts", label: artifactCount === null ? "Artifacts" : `Artifacts ${artifactCount}` },
+    { id: "settings", label: "Settings" },
+  ];
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4">
+    <div ref={rootRef} className="flex min-h-0 flex-1 flex-col gap-4">
       <button
         type="button"
         onClick={() => navigate.toPluginPanel("rpi", { subPath: "" })}
         className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
       >
         <Icon name="ChevronLeft" className="size-4" />
-        Tasks
+        All tasks
       </button>
       {uiState?.legacyTaskDirWarning ? (
         <div className="flex items-start justify-between gap-3 rounded-md border border-border bg-card p-3 text-sm text-foreground">
@@ -2459,9 +2767,6 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="space-y-2">
           <h2 className="text-2xl font-semibold tracking-tight text-foreground">{task.name}</h2>
-          <div className="flex flex-wrap gap-2">
-            <LabelPill label={task.isDraft ? "Draft" : workspace.currentLabel ?? "Session"} emphasis={!task.isDraft} />
-          </div>
           <p className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
             <span className="font-mono">{task.slug}</span>
             <span aria-hidden="true">·</span>
@@ -2482,63 +2787,127 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
             />
           </p>
         </div>
-        {task.isDraft ? (
-          <Button
-            type="button"
-            onClick={async () => {
-              try {
-                const result = await rpc.call("launchDraft", { taskId });
-                navigate.toThread(result.threadId);
-              } catch (error) {
-                reportLaunchError(error);
-              }
-            }}
-          >
-            <Icon name="Play" className="size-4" />
-            Launch
-          </Button>
-        ) : null}
-      </div>
-      <div className="flex items-center gap-2 border-b border-border pb-2 text-xs font-medium uppercase tracking-[0.24em] text-muted-foreground">
-        <button type="button" onClick={() => setTab("sessions")} className={cn("rounded-md px-3 py-1.5", tab === "sessions" && "bg-card text-foreground")}>Sessions</button>
-        <button type="button" onClick={() => setTab("artifacts")} className={cn("rounded-md px-3 py-1.5", tab === "artifacts" && "bg-card text-foreground")}>Artifacts</button>
-        <button type="button" onClick={() => setTab("workspace")} className={cn("rounded-md px-3 py-1.5", tab === "workspace" && "bg-card text-foreground")}>Workspace</button>
-        <button type="button" onClick={() => setTab("auto-advance")} className={cn("rounded-md px-3 py-1.5", tab === "auto-advance" && "bg-card text-foreground")}>Auto-advance</button>
-        <button type="button" onClick={() => setTab("scratch")} className={cn("rounded-md px-3 py-1.5", tab === "scratch" && "bg-card text-foreground")}>Scratch</button>
-        <button type="button" onClick={() => setTab("minimap")} className={cn("rounded-md px-3 py-1.5", tab === "minimap" && "bg-card text-foreground")}>Minimap</button>
-        <button type="button" onClick={() => setTab("tips")} className={cn("rounded-md px-3 py-1.5", tab === "tips" && "bg-card text-foreground")}>Tips</button>
-      </div>
-      <WorkflowStrip workflowType={task.workflowType} worktreeTiming={task.worktreeTiming} currentLabel={workspace.currentLabel} />
-      {tab === "artifacts" ? (
-        <div className="flex min-h-[520px] flex-1 flex-col">
-          <ArtifactsPanel taskId={taskId} initialFileName={artifactFileName} />
-        </div>
-      ) : tab === "workspace" ? (
-        <WorkspacePanel taskId={taskId} />
-      ) : tab === "auto-advance" ? (
-        <AutoAdvancePanel task={task} onUpdated={refetch} />
-      ) : tab === "scratch" ? (
-        <ScratchPadPanel taskId={taskId} />
-      ) : tab === "minimap" ? (
-        <MinimapPanel taskId={taskId} />
-      ) : tab === "tips" ? (
-        <TipsPanel taskId={taskId} label={workspace.currentLabel} />
-      ) : (
-        <>
-          {visibleAttempts.length > 0 ? (
-            <div className="space-y-2">
-              {visibleAttempts.map((attempt) => <RecoverLaunchRow key={attempt.id} attempt={attempt} onResolved={refetch} />)}
-            </div>
-          ) : null}
-          {sessions.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-border bg-card/60 px-4 py-6 text-sm text-muted-foreground">
-              No sessions yet.
-            </div>
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button type="button" variant="outline">
+                <Icon name="FileText" className="size-4" />
+                Scratch
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[440px] max-w-[90vw] p-0">
+              <div className="p-3">
+                <ScratchPadPanel taskId={taskId} />
+              </div>
+            </PopoverContent>
+          </Popover>
+          {task.isDraft ? (
+            <Button
+              type="button"
+              onClick={async () => {
+                try {
+                  const result = await rpc.call("launchDraft", { taskId });
+                  navigate.toThread(result.threadId);
+                } catch (error) {
+                  reportLaunchError(error);
+                }
+              }}
+            >
+              <Icon name="Play" className="size-4" />
+              Launch
+            </Button>
+          ) : currentSession ? (
+            <Button type="button" onClick={() => navigate.toThread(currentSession.threadId)}>
+              <Icon name="ArrowUpRight" className="size-4" />
+              Open current session
+            </Button>
           ) : (
-            <SessionsTable sessions={sessions} />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Button type="button" disabled>
+                    <Icon name="ArrowUpRight" className="size-4" />
+                    Open current session
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>No live session yet</TooltipContent>
+            </Tooltip>
           )}
-        </>
-      )}
+        </div>
+      </div>
+      <div role="tablist" className={cn("flex w-fit max-w-full gap-1 rounded-md border border-border p-1", compact && "overflow-x-auto")}>
+        {tabs.map((entry) => (
+          <button
+            key={entry.id}
+            type="button"
+            role="tab"
+            id={`rpi-task-tab-${entry.id}`}
+            aria-selected={tab === entry.id}
+            aria-controls={`rpi-task-tabpanel-${entry.id}`}
+            onClick={() => setTab(entry.id)}
+            className={cn(
+              "shrink-0 whitespace-nowrap rounded px-3 py-1.5 text-sm font-medium transition",
+              tab === entry.id ? "bg-card text-foreground" : "text-muted-foreground",
+            )}
+          >
+            {entry.label}
+          </button>
+        ))}
+      </div>
+      <PhaseStrip
+        workflowType={task.workflowType}
+        worktreeTiming={task.worktreeTiming}
+        currentLabel={workspace.currentLabel}
+        sessions={sessions}
+        activeFilter={phaseFilter}
+        onSelect={(step) => setPhaseFilter((current) => (current === step ? null : step))}
+        compact={compact}
+      />
+      <TipsPanel taskId={taskId} label={workspace.currentLabel} variant="inline" />
+      <div id={`rpi-task-tabpanel-${tab}`} role="tabpanel" aria-labelledby={`rpi-task-tab-${tab}`} className="flex min-h-0 flex-1 flex-col">
+        {tab === "artifacts" ? (
+          <div className="flex min-h-[520px] flex-1 flex-col">
+            <ArtifactsPanel taskId={taskId} initialFileName={artifactFileName} />
+          </div>
+        ) : tab === "settings" ? (
+          <div className="space-y-6">
+            <div className="space-y-3">
+              <h3 className="text-sm font-semibold text-foreground">Workspace</h3>
+              <WorkspacePanel taskId={taskId} />
+            </div>
+            <div className="space-y-3">
+              <h3 className="text-sm font-semibold text-foreground">Auto-advance</h3>
+              <AutoAdvancePanel task={task} onUpdated={refetch} />
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {visibleAttempts.length > 0 ? (
+              <div className="space-y-2">
+                {visibleAttempts.map((attempt) => <RecoverLaunchRow key={attempt.id} attempt={attempt} onResolved={refetch} />)}
+              </div>
+            ) : null}
+            <div className="flex items-baseline justify-between gap-3">
+              <h3 className="text-sm font-semibold text-foreground">
+                {phaseFilter ? `Sessions in ${phaseFilter} ${filteredSessions.length}` : `Sessions ${filteredSessions.length}`}
+              </h3>
+              {phaseFilter ? (
+                <Button type="button" variant="link" className="h-auto p-0 text-xs" onClick={() => setPhaseFilter(null)}>
+                  Show all {sessions.length}
+                </Button>
+              ) : null}
+            </div>
+            {filteredSessions.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-border bg-card/60 px-4 py-6 text-sm text-muted-foreground">
+                No sessions yet.
+              </div>
+            ) : (
+              <SessionsTable sessions={filteredSessions} allSessions={sessions} task={task} compact={compact} />
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
