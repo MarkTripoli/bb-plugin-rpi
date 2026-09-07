@@ -8,6 +8,17 @@
 export const ARTIFACT_PANEL_STACK_BREAKPOINT = 760;
 export const ARTIFACT_VIEWER_RAIL_BREAKPOINT = 620;
 
+// RpiPanel's aside/main split (220px fixed sidebar + main content) is a different layout problem
+// than the Artifacts three-way split above, so it gets its own threshold rather than reusing
+// ARTIFACT_PANEL_STACK_BREAKPOINT (design discussion decision #2).
+export const PANEL_ASIDE_STACK_BREAKPOINT = 560;
+
+export type PanelLayoutMode = "stacked" | "aside";
+
+export function panelLayoutMode(panelWidth: number): PanelLayoutMode {
+  return panelWidth > 0 && panelWidth < PANEL_ASIDE_STACK_BREAKPOINT ? "stacked" : "aside";
+}
+
 export const ARTIFACT_LIST_WIDTH_RANGE = { min: 200, max: 480 } as const;
 export const ARTIFACT_COMMENTS_WIDTH_RANGE = { min: 260, max: 520 } as const;
 

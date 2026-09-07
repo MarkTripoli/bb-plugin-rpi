@@ -32,7 +32,7 @@ import type {
   CommentThreadRecord,
 } from "../contract";
 import { AUTO_ADVANCE, BOARD_COLUMNS, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS, shouldShowComposerBanner, suggestedNextForSession, type SuggestedNext } from "../transitions";
-import { ARTIFACT_COMMENTS_WIDTH_RANGE, ARTIFACT_LIST_WIDTH_RANGE, ARTIFACT_PANEL_STACK_BREAKPOINT, artifactLayoutMode, clampWidth } from "../artifact-layout";
+import { ARTIFACT_COMMENTS_WIDTH_RANGE, ARTIFACT_LIST_WIDTH_RANGE, ARTIFACT_PANEL_STACK_BREAKPOINT, artifactLayoutMode, clampWidth, panelLayoutMode } from "../artifact-layout";
 import { markdownBlocks } from "../blocks";
 import { ScratchPadSync } from "../scratch-pad-sync";
 import { Button } from "@/components/ui/button";
@@ -41,6 +41,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Icon, type IconName } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { COARSE_POINTER_CHILD_ICON_BUTTON_CLASS, COARSE_POINTER_COMPACT_ICON_SIZE_CLASS } from "@/components/ui/coarse-pointer-sizing";
 import { cn } from "@/lib/utils";
 
 // Launch RPCs (launchDraft, launchSkill, proceed, resolveLaunchAttempt retry) can reject with a
@@ -135,7 +136,7 @@ const ROW_SHADE_CLASS: Partial<Record<StatusTone, string>> = {
 function StatusPill({ tone, label, icon }: { tone: StatusTone; label: string; icon: IconName }) {
   return (
     <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium", TONE_PILL_CLASS[tone])}>
-      <Icon name={icon} className="size-3.5" />
+      <Icon name={icon} className={COARSE_POINTER_COMPACT_ICON_SIZE_CLASS} />
       {label}
     </span>
   );
@@ -1597,7 +1598,7 @@ function ArtifactRow({
       <span className="text-xs text-muted-foreground">{artifact.commentCount}</span>
       <Popover>
         <PopoverTrigger asChild>
-          <button type="button" className="flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-foreground">
+          <button type="button" className={cn("flex items-center justify-center rounded-md border border-border text-muted-foreground hover:text-foreground", COARSE_POINTER_CHILD_ICON_BUTTON_CLASS)}>
             <Icon name="MoreHorizontal" className="size-4" />
           </button>
         </PopoverTrigger>
@@ -3277,6 +3278,8 @@ export function RpiPanel({ subPath }: { subPath: string }) {
     if (chordTimerRef.current) clearTimeout(chordTimerRef.current);
     chordTimerRef.current = null;
   });
+  const panelWidth = useElementWidth(panelRootRef);
+  const layoutMode = panelLayoutMode(panelWidth);
   usePanelHotkeys(panelRootRef, (event) => {
     if (shouldHandleHotkey(event, jumpHotkey)) return;
     if (awaitingTRef.current) {
@@ -3341,7 +3344,7 @@ export function RpiPanel({ subPath }: { subPath: string }) {
         </button>
       </div>
 
-      <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
+      <div className={cn("grid min-h-0 flex-1 gap-4", layoutMode === "aside" && "grid-cols-[220px_minmax(0,1fr)]")}>
         <aside className="space-y-4 overflow-hidden rounded-2xl border border-border bg-card/40 p-4">
           <SidebarSummary tasks={tasks} onCreateTask={() => onSwitch("new")} />
           <div className="space-y-2">
