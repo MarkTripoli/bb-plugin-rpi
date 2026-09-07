@@ -51,7 +51,7 @@ import {
   type PhaseProgressEntry,
   type StatusTone,
 } from "../status";
-import { markdownBlocks } from "../blocks";
+import { markdownBlocks, markdownGroups } from "../blocks";
 import { ScratchPadSync } from "../scratch-pad-sync";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -2206,17 +2206,6 @@ const ARTIFACT_GROUP_LABELS: Record<(typeof ARTIFACT_GROUP_ORDER)[number], strin
   other: "Task files",
 };
 
-// Mirrors artifacts.ts's middleEllipsis (kept as a small duplicate, not an import: artifacts.ts
-// pulls in node:crypto/better-sqlite3 for its write path, so it is backend-only and never bundled
-// into this frontend file, the same reason ARTIFACT_GROUP_ORDER above duplicates artifacts.ts's
-// ARTIFACT_TYPE_ORDER instead of importing it).
-function middleEllipsis(name: string, max: number): string {
-  if (name.length <= max) return name;
-  const head = name.slice(0, Math.max(0, max - 12));
-  const tail = name.slice(name.length - 11);
-  return `${head}\u2026${tail}`;
-}
-
 function ArtifactIcon({ artifact }: { artifact: ArtifactRecord }) {
   const isImage = artifact.contentType.startsWith("image/");
   const isText = artifact.contentType.startsWith("text/");
@@ -2230,21 +2219,19 @@ function ArtifactRow({
   onSelect,
   onDelete,
   onRestore,
-  nameMaxLength,
 }: {
   artifact: ArtifactRecord;
   selected: boolean;
   onSelect: () => void;
   onDelete: () => void;
   onRestore: () => void;
-  nameMaxLength: number;
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const path = `/plugins/rpi/tasks/${encodeURIComponent(artifact.taskId)}/artifacts/${encodeURIComponent(artifact.fileName)}`;
   return (
-    <div className={cn("flex items-center gap-2 rounded-md border px-3 py-2", selected ? "border-foreground/50 bg-card" : "border-transparent hover:bg-card/70")}>
+    <div className={cn("group flex items-center gap-2 rounded-md border px-3 py-1.5", selected ? "border-foreground/50 bg-card" : "border-transparent hover:bg-card/70")}>
       {/* The button is the tooltip trigger (focusable) and carries the full name; the visible
-          text is the middle-ellipsized form, so keyboard and screen-reader users get the whole name. */}
+          text is one truncated line, so keyboard and screen-reader users get the whole name. */}
       <Tooltip>
         <TooltipTrigger asChild>
           <button
@@ -2254,8 +2241,8 @@ function ArtifactRow({
             className="flex min-w-0 flex-1 items-center gap-2 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <ArtifactIcon artifact={artifact} />
-            <span className={cn("text-sm font-medium", artifact.isDeleted ? "text-muted-foreground line-through" : "text-foreground")}>
-              {middleEllipsis(artifact.fileName, nameMaxLength)}
+            <span className={cn("min-w-0 truncate text-sm font-medium", artifact.isDeleted ? "text-muted-foreground line-through" : "text-foreground")}>
+              {artifact.fileName}
             </span>
           </button>
         </TooltipTrigger>
@@ -2264,7 +2251,15 @@ function ArtifactRow({
       {artifact.commentCount > 0 ? <span className="shrink-0 text-xs text-muted-foreground">{artifact.commentCount}</span> : null}
       <Popover>
         <PopoverTrigger asChild>
-          <button type="button" aria-label="Artifact actions" className={cn("flex items-center justify-center rounded-md border border-border text-muted-foreground hover:text-foreground", COARSE_POINTER_CHILD_ICON_BUTTON_CLASS)}>
+          <button
+            type="button"
+            aria-label="Artifact actions"
+            // Revealed on hover, focus, while open, or on touch, like bb's sidebar row menu.
+            className={cn(
+              "flex items-center justify-center rounded-md text-muted-foreground opacity-0 transition hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 data-[state=open]:opacity-100 pointer-coarse:opacity-100",
+              COARSE_POINTER_CHILD_ICON_BUTTON_CLASS,
+            )}
+          >
             <Icon name="MoreHorizontal" className="size-4" />
           </button>
         </PopoverTrigger>
@@ -2527,6 +2522,10 @@ function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string
   const [sessions, setSessions] = useState<SessionView[]>([]);
   const [sendThreadId, setSendThreadId] = useState("");
   const [sendMode, setSendMode] = useState<"send" | "send-and-resolve">("send-and-resolve");
+  // null = follow the comments: the rail is chrome with nothing to send when there are none, so it
+  // stays out of the way until the first comment lands or the reader asks for it.
+  const [railOpen, setRailOpen] = useState<boolean | null>(null);
+  const showRail = railOpen ?? commentThreads.length > 0;
   const [viewerWidth, setViewerRoot] = useElementWidth();
   const layoutMode = artifactLayoutMode(panelWidth, viewerWidth);
   const commentsWidth = usePersistedWidth("rpi.artifacts.split.comments", 320, ARTIFACT_COMMENTS_WIDTH_RANGE);
@@ -2607,6 +2606,7 @@ function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string
 
   const versionMeta = versions.find((item) => item.version === version);
   const blocks = !isBinary && content !== null ? markdownBlocks(content) : [];
+  const groups = content !== null ? markdownGroups(content, blocks) : [];
 
   const saveComment = async (block: (typeof blocks)[number]) => {
     if (!versionMeta || composerText.trim() === "") return;
@@ -2656,7 +2656,12 @@ function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string
           onKeyDown={gutterKeyDown}
           className="space-y-0.5 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          {blocks.map((block) => (
+          {groups.map((group) => {
+            // The gutter anchors the comment to the group's first line; the group is only the
+            // rendering unit, so anchors, reanchoring and existing comments stay per line.
+            const block = group.blocks[0]!;
+            const source = content!.slice(group.start, group.end).replace(/\n$/, "");
+            return (
             <div key={block.index} className="group grid grid-cols-[28px_minmax(0,1fr)] gap-2 rounded-md border border-transparent hover:border-border focus-within:border-border">
               <button
                 type="button"
@@ -2672,10 +2677,10 @@ function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string
                 <Icon name="Plus" className="size-4" />
               </button>
               <div className="min-w-0">
-                {block.code ? (
-                  <pre className="whitespace-pre-wrap font-mono text-xs text-foreground">{content!.slice(block.start, block.end).replace(/\n$/, "")}</pre>
+                {group.kind === "frontmatter" ? (
+                  <pre className="whitespace-pre-wrap font-mono text-xs text-muted-foreground">{source}</pre>
                 ) : (
-                  <Markdown content={block.text} />
+                  <Markdown content={source} />
                 )}
                 {composingBlock === block.index ? (
                   <div className="mb-2 space-y-2 rounded-md border border-border bg-card p-2">
@@ -2697,7 +2702,8 @@ function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string
                 ) : null}
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       ) : isBinary ? (
         <div className="text-sm text-muted-foreground">Binary preview is available through the HTTP route.</div>
@@ -2733,7 +2739,10 @@ function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string
   return (
     <div
       ref={setViewerRoot}
-      className={cn("flex min-h-0 flex-1 flex-col gap-3 rounded-md border border-border bg-card p-3", layoutMode !== "split-rail" && "overflow-auto")}
+      // Stacked (phone) mode has one scroll owner, the panel MAIN (or the thread panel wrapper): the
+      // viewer sizes to its content and is never its own scroller. Split modes bound it to the
+      // panel height instead. No card of its own: the preview pane and the rail are the surfaces.
+      className={cn("flex min-h-0 flex-1 flex-col gap-3", layoutMode === "split-below" && "overflow-auto")}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
@@ -2752,6 +2761,17 @@ function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string
             ))}
           </select>
           <Segmented label="View" value={mode} onChange={setMode} options={[{ value: "preview", label: "Preview" }, { value: "raw", label: "Raw" }]} />
+          <Button
+            type="button"
+            variant="outline"
+            aria-pressed={showRail}
+            aria-label={showRail ? "Hide comments" : "Show comments"}
+            onClick={() => setRailOpen(!showRail)}
+            className={cn("h-8 gap-1.5 px-2.5", showRail && "bg-state-active text-foreground")}
+          >
+            <Icon name="MessageSquare" className="size-4" />
+            {commentThreads.length}
+          </Button>
         </div>
       </div>
       {artifact.isDeleted ? (
@@ -2762,25 +2782,23 @@ function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string
       {layoutMode === "split-rail" ? (
         <div className="flex min-h-[260px] flex-1 gap-0 overflow-hidden">
           <div className="min-h-0 min-w-0 flex-1 overflow-auto rounded-md border border-border bg-background p-3">{previewNode}</div>
-          <SplitHandle
-            ariaLabel="Resize comments rail"
-            width={commentsWidth}
-            onDrag={(delta) => commentsWidth.drag(-delta)}
-            onStep={(delta) => commentsWidth.step(-delta)}
-            onCommit={commentsWidth.commit}
-          />
-          <div style={{ width: commentsWidth.width }} className="min-h-0 min-w-0 shrink-0">{commentRailNode}</div>
+          {showRail ? (
+            <>
+              <SplitHandle
+                ariaLabel="Resize comments rail"
+                width={commentsWidth}
+                onDrag={(delta) => commentsWidth.drag(-delta)}
+                onStep={(delta) => commentsWidth.step(-delta)}
+                onCommit={commentsWidth.commit}
+              />
+              <div style={{ width: commentsWidth.width }} className="flex min-h-0 min-w-0 shrink-0 flex-col">{commentRailNode}</div>
+            </>
+          ) : null}
         </div>
       ) : (
         <>
           <div className="rounded-md border border-border bg-background p-3">{previewNode}</div>
-          <div className="rounded-md border border-border">
-            <div className="flex items-baseline gap-2 px-3 py-2 text-xs font-semibold text-muted-foreground">
-              <span className="text-foreground">Comments</span>
-              <span>{commentThreads.length}</span>
-            </div>
-            <div className="p-3 pt-0">{commentRailNode}</div>
-          </div>
+          {showRail ? commentRailNode : null}
         </>
       )}
     </div>
@@ -2854,7 +2872,7 @@ function CommentRail({
   };
 
   return (
-    <aside className="min-w-0 rounded-md border border-border bg-background p-3">
+    <aside className="min-h-0 min-w-0 overflow-auto rounded-md border border-border bg-background p-3">
       <div className="mb-3 flex items-center justify-between gap-2">
         <h4 className="text-sm font-semibold text-foreground">Comments</h4>
         <label className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -2862,7 +2880,7 @@ function CommentRail({
           Show resolved
         </label>
       </div>
-      <div className="mb-3 space-y-2 rounded-md border border-border bg-card p-2">
+      <div className="mb-3 space-y-2">
         <select value={sendThreadId} onChange={(event) => setSendThreadId(event.target.value)} aria-label="Send to session" className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs text-foreground">
           {sessions.map((session) => <option key={session.threadId} value={session.threadId}>{session.title ?? session.threadId}</option>)}
         </select>
@@ -2871,7 +2889,7 @@ function CommentRail({
           <option value="send">Send</option>
         </select>
         <Button type="button" className="h-8 w-full" disabled={!sendThreadId || sendIds.length === 0 || sending} onClick={() => void sendSelected()}>
-          {sendLabel}
+          <span className="min-w-0 truncate">{sendLabel}</span>
         </Button>
       </div>
       <div className="space-y-3">
@@ -3039,7 +3057,6 @@ function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFi
       onSelect={() => setSelected(artifact.fileName)}
       onDelete={() => void mutate("deleteArtifact", artifact.fileName)}
       onRestore={() => void mutate("restoreArtifact", artifact.fileName)}
-      nameMaxLength={stacked ? 30 : 40}
     />
   ));
 
@@ -3131,18 +3148,15 @@ function ArtifactsPanel({ taskId, initialFileName }: { taskId: string; initialFi
         </Tooltip>
       </div>
       {stacked ? (
-        selected ? (
-          <div className="flex min-h-0 flex-1 flex-col gap-3">
-            {viewerNode}
-          </div>
-        ) : (
-          <div className="min-h-0 flex-1 overflow-auto">{listNode}</div>
-        )
+        // Content-sized, not bounded: MAIN owns the scroll below the breakpoint.
+        selected ? <div className="flex flex-col gap-3">{viewerNode}</div> : <div>{listNode}</div>
       ) : (
         <div className="flex min-h-0 flex-1 gap-0">
-          <div style={{ width: listWidth.width }} className="min-h-0 min-w-0 shrink-0">{listNode}</div>
+          {/* Both columns are flex columns so the list's and viewer's overflow-auto bind to the
+              panel height; as blocks they sized to content and MAIN became a 25k px scroller. */}
+          <div style={{ width: listWidth.width }} className="flex min-h-0 min-w-0 shrink-0 flex-col">{listNode}</div>
           <SplitHandle ariaLabel="Resize artifact list" width={listWidth} onDrag={listWidth.drag} onStep={listWidth.step} onCommit={listWidth.commit} />
-          <div className="min-h-0 min-w-0 flex-1">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             {viewerNode ?? (
               <div className="flex h-full min-h-[200px] items-center justify-center rounded-md border border-dashed border-border p-4 text-center text-sm text-muted-foreground">
                 Select an artifact to read it. Hover a line and press + to comment.
@@ -3497,7 +3511,7 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
       </div>
       <div id={`rpi-task-tabpanel-${tab}`} role="tabpanel" aria-labelledby={`rpi-task-tab-${tab}`} className="flex min-h-0 flex-1 flex-col">
         {tab === "artifacts" ? (
-          <div className="flex min-h-[520px] flex-1 flex-col">
+          <div className="flex min-h-0 flex-1 flex-col">
             <ArtifactsPanel taskId={taskId} initialFileName={artifactFileName} />
           </div>
         ) : tab === "settings" ? (
@@ -3568,7 +3582,9 @@ export function RpiArtifactThreadPanel({ threadId, params }: { threadId: string;
   if (session === undefined) return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
   if (!session) return <div className="p-4 text-sm text-muted-foreground">Not an RPI task session</div>;
   return (
-    <div className="h-full min-h-0 p-3">
+    // Scroll owner for the stacked layout: below the breakpoint ArtifactsPanel sizes to its content
+    // (the nav panel's MAIN scrolls it there); in a thread panel this wrapper is that scroller.
+    <div className="h-full min-h-0 overflow-auto p-3">
       <ArtifactsPanel taskId={session.taskId} initialFileName={initialFileName} />
     </div>
   );
