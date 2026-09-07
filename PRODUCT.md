@@ -20,7 +20,7 @@ Success for the user of the panel: knowing within seconds which sessions are wai
 
 ## Positioning
 
-A phase-per-session workflow with durable, versioned, commentable artifacts and derived session status, living inside the IDE that already owns the agent threads. A generic task tracker has none of the phase graph, the fresh-context handoff, the artifact manifest, or comments that are addressed to an agent. The reference for behavior (statuses, tables, notification rules, naming of internal states) is the HumanLayer workflow recorded in the design record; that parity is binding for internals. Display labels in the UI are the plugin's own (confirmed 2026-09-06).
+A phase-per-session workflow with durable, versioned, commentable artifacts and derived session status, living inside the IDE that already owns the agent threads. A generic task tracker has none of the phase graph, the fresh-context handoff, the artifact manifest, or comments that are addressed to an agent. The reference for behavior (statuses, tables, notification rules, naming of internal states) is the reference workflow recorded in the design record; that parity is binding for internals. Display labels in the UI are the plugin's own (confirmed 2026-09-06).
 
 ## Operating Context
 
@@ -48,7 +48,7 @@ Name: RPI (plugin id `rpi`, tools `rpi_*`, skills `rpi-*`, CLI `bb rpi`). Must r
 
 - Live plugin with real data at `http://127.0.0.1:38886/plugins/rpi/rpi` (local bb); 17 screenshots from 2026-09-06 at `/tmp/rpi-critique/` (transient).
 - Critique snapshot: `.impeccable/critique/2026-09-07T02-41-23Z__ui-rpi-tsx.md` (17/40).
-- Design record and ground truth: `~/PersonalDevelopment/bb-plugin-rpi-reference/design-record/research/` (plan, spike results, HumanLayer research).
+- Design record and ground truth: `~/PersonalDevelopment/bb-plugin-rpi-reference/design-record/research/` (plan, spike results, reference workflow research).
 - Paper file "BB Plugins" with bb Dracula tokens and four artboards of the prior pass: `https://app.paper.design/file/01M1R7GACYGJMVT6KR7RMVR79D/1-0`.
 - No user research, testimonials, or usage analytics exist. Do not fabricate them.
 
