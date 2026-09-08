@@ -3780,6 +3780,8 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
   const [useDefault, setUseDefault] = useState(false);
   const [selectingOther, setSelectingOther] = useState(false);
   const [selectedOtherThreadIds, setSelectedOtherThreadIds] = useState<Set<string>>(new Set());
+  const [selectingDoneTaskId, setSelectingDoneTaskId] = useState<string | null>(null);
+  const [selectedDoneThreadIds, setSelectedDoneThreadIds] = useState<Set<string>>(new Set());
   const [sessionsByThread, setSessionsByThread] = useState<Map<string, SessionView>>(new Map());
   const [taskMeta, setTaskMeta] = useState<Map<string, { name: string; projectId: string; workflowType: WorkflowType; worktreeTiming: "now" | "later" | "never" }>>(new Map());
   const [projectNameById, setProjectNameById] = useState<Map<string, string>>(new Map());
@@ -4063,6 +4065,25 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
     for (const thread of selectedOtherThreads) threadActions.archive(thread.id);
     closeOtherSelection();
   };
+  const toggleDoneThread = (threadId: string, checked: boolean) => {
+    setSelectedDoneThreadIds((current) => {
+      const next = new Set(current);
+      if (checked) next.add(threadId);
+      else next.delete(threadId);
+      return next;
+    });
+  };
+  const closeDoneSelection = () => {
+    setSelectingDoneTaskId(null);
+    setSelectedDoneThreadIds(new Set());
+  };
+  const archiveSelectedDoneThreads = (threads: PluginSidebarThread[]) => {
+    if (!threads.length) return;
+    const noun = threads.length === 1 ? "thread" : "threads";
+    if (!window.confirm(`Archive ${threads.length} ${noun}? They will leave the sidebar.`)) return;
+    for (const thread of threads) threadActions.archive(thread.id);
+    closeDoneSelection();
+  };
 
   // Each group's rows split into live (not superseded) and done (superseded); live sessions decide
   // the group's needs-human flag, its default expand/collapse, and its sort position among groups.
@@ -4127,7 +4148,13 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
     );
   };
 
-  const sessionRow = (thread: PluginSidebarThread, session: SessionView, effective: string, taskId: string) => {
+  const sessionRow = (
+    thread: PluginSidebarThread,
+    session: SessionView,
+    effective: string,
+    taskId: string,
+    selection?: { selected: boolean; onChange: (checked: boolean) => void },
+  ) => {
     const meta = statusMeta(effective);
     const ordinal = ordinalsFor(taskId).get(session.threadId);
     const attemptSuffix = ordinal && ordinal.total > 1 ? `, attempt ${ordinal.ordinal}` : "";
@@ -4137,6 +4164,11 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
     return (
       <div key={thread.id} className="space-y-0.5">
         <div className="group flex items-center gap-0.5">
+          {selection ? (
+            <label className="flex size-6 shrink-0 cursor-pointer items-center justify-center" title={`Select ${title}`}>
+              <Checkbox checked={selection.selected} onCheckedChange={(checked) => selection.onChange(checked === true)} aria-label={`Select ${title}`} />
+            </label>
+          ) : null}
           <button
             type="button"
             onClick={() => go(thread.id)}
@@ -4241,20 +4273,60 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
         {collapsed ? null : (
           <div className="ml-3 space-y-0.5 border-l border-border pl-1.5">
             {entry.live.map((row) => sessionRow(row.thread, row.session, row.effective, entry.taskId))}
-            {entry.done.length > 0 ? (
-              <>
-                <button
-                  type="button"
-                  aria-expanded={!doneCollapsed}
-                  onClick={() => doneGroups.toggle(entry.taskId)}
-                  className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs text-muted-foreground hover:text-foreground"
-                >
-                  <Icon name={doneCollapsed ? "ChevronRight" : "ChevronDown"} className="size-3.5 shrink-0" />
-                  <span>{plural(entry.done.length, "done session", "done sessions")}</span>
-                </button>
-                {doneCollapsed ? null : entry.done.map((row) => sessionRow(row.thread, row.session, row.effective, entry.taskId))}
-              </>
-            ) : null}
+            {entry.done.length > 0 ? (() => {
+              const selectingDone = selectingDoneTaskId === entry.taskId;
+              const selectedDone = entry.done.filter((row) => selectedDoneThreadIds.has(row.thread.id));
+              const allDoneSelected = selectedDone.length === entry.done.length;
+              return (
+                <>
+                  <div className="flex items-center gap-0.5">
+                    <button
+                      type="button"
+                      aria-expanded={!doneCollapsed}
+                      onClick={() => doneGroups.toggle(entry.taskId)}
+                      className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs text-muted-foreground hover:text-foreground"
+                    >
+                      <Icon name={doneCollapsed ? "ChevronRight" : "ChevronDown"} className="size-3.5 shrink-0" />
+                      <span>{plural(entry.done.length, "done session", "done sessions")}</span>
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={selectingDone}
+                      onClick={() => {
+                        if (selectingDone) closeDoneSelection();
+                        else {
+                          setSelectingDoneTaskId(entry.taskId);
+                          setSelectedDoneThreadIds(new Set());
+                          if (doneCollapsed) doneGroups.toggle(entry.taskId);
+                        }
+                      }}
+                      className="min-h-6 px-1 text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      {selectingDone ? "Done" : "Select"}
+                    </button>
+                  </div>
+                  {selectingDone ? (
+                    <div role="toolbar" aria-label={`Selected completed sessions for ${entry.taskName}`} className="flex flex-wrap items-center gap-1 rounded-md border border-border bg-card px-1.5 py-1.5 text-xs">
+                      <button type="button" onClick={() => setSelectedDoneThreadIds(allDoneSelected ? new Set() : new Set(entry.done.map((row) => row.thread.id)))} className="min-h-6 px-1.5 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                        {allDoneSelected ? "Clear" : "All"}
+                      </button>
+                      <span aria-live="polite" className="text-muted-foreground">{selectedDone.length} selected</span>
+                      <button type="button" disabled={!selectedDone.length} onClick={() => archiveSelectedDoneThreads(selectedDone.map((row) => row.thread))} className="ml-auto inline-flex min-h-6 items-center gap-1 px-1.5 text-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                        <Icon name="Archive" className="size-3.5" />
+                        Archive
+                      </button>
+                    </div>
+                  ) : null}
+                  {doneCollapsed ? null : entry.done.map((row) => sessionRow(
+                    row.thread,
+                    row.session,
+                    row.effective,
+                    entry.taskId,
+                    selectingDone ? { selected: selectedDoneThreadIds.has(row.thread.id), onChange: (checked) => toggleDoneThread(row.thread.id, checked) } : undefined,
+                  ))}
+                </>
+              );
+            })() : null}
           </div>
         )}
       </div>
