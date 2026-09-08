@@ -3778,6 +3778,8 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
     confirmLabel: "Archive",
   });
   const [useDefault, setUseDefault] = useState(false);
+  const [selectingOther, setSelectingOther] = useState(false);
+  const [selectedOtherThreadIds, setSelectedOtherThreadIds] = useState<Set<string>>(new Set());
   const [sessionsByThread, setSessionsByThread] = useState<Map<string, SessionView>>(new Map());
   const [taskMeta, setTaskMeta] = useState<Map<string, { name: string; projectId: string; workflowType: WorkflowType; worktreeTiming: "now" | "later" | "never" }>>(new Map());
   const [projectNameById, setProjectNameById] = useState<Map<string, string>>(new Map());
@@ -4035,10 +4037,31 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
   const OTHER_GROUP_KEY = "__other__";
   const otherHasActive = sortedOther.some((thread) => thread.id === activeThreadId);
   const otherCollapsed = collapseOverrides.get(OTHER_GROUP_KEY) ?? !otherHasActive;
+  const selectedOtherThreads = sortedOther.filter((thread) => selectedOtherThreadIds.has(thread.id));
+  const allOtherSelected = sortedOther.length > 0 && selectedOtherThreads.length === sortedOther.length;
 
   const go = (threadId: string) => {
     navigate.toThread(threadId);
     onNavigate();
+  };
+  const toggleOtherThread = (threadId: string, checked: boolean) => {
+    setSelectedOtherThreadIds((current) => {
+      const next = new Set(current);
+      if (checked) next.add(threadId);
+      else next.delete(threadId);
+      return next;
+    });
+  };
+  const closeOtherSelection = () => {
+    setSelectingOther(false);
+    setSelectedOtherThreadIds(new Set());
+  };
+  const archiveSelectedOtherThreads = () => {
+    if (!selectedOtherThreads.length) return;
+    const noun = selectedOtherThreads.length === 1 ? "thread" : "threads";
+    if (!window.confirm(`Archive ${selectedOtherThreads.length} ${noun}? They will leave the sidebar.`)) return;
+    for (const thread of selectedOtherThreads) threadActions.archive(thread.id);
+    closeOtherSelection();
   };
 
   // Each group's rows split into live (not superseded) and done (superseded); live sessions decide
@@ -4244,23 +4267,57 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
         {groupEntries.map(taskGroupNode)}
         {sortedOther.length > 0 ? (
           <div className="space-y-0.5">
-            <button
-              type="button"
-              aria-expanded={!otherCollapsed}
-              onClick={() => collapseOverrides.set(OTHER_GROUP_KEY, !otherCollapsed)}
-              className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs font-medium text-foreground hover:bg-card/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <Icon name={otherCollapsed ? "ChevronRight" : "ChevronDown"} className="size-3.5 shrink-0" />
-              <span className="flex-1 truncate">Other threads</span>
-              <span className="text-xs text-muted-foreground">{sortedOther.length}</span>
-            </button>
+            <div className="flex items-center gap-0.5">
+              <button
+                type="button"
+                aria-expanded={!otherCollapsed}
+                onClick={() => collapseOverrides.set(OTHER_GROUP_KEY, !otherCollapsed)}
+                className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs font-medium text-foreground hover:bg-card/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Icon name={otherCollapsed ? "ChevronRight" : "ChevronDown"} className="size-3.5 shrink-0" />
+                <span className="flex-1 truncate">Other threads</span>
+                <span className="text-xs text-muted-foreground">{sortedOther.length}</span>
+              </button>
+              <button
+                type="button"
+                aria-pressed={selectingOther}
+                onClick={() => {
+                  if (selectingOther) closeOtherSelection();
+                  else {
+                    setSelectingOther(true);
+                    collapseOverrides.set(OTHER_GROUP_KEY, false);
+                  }
+                }}
+                className="min-h-6 px-1 text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {selectingOther ? "Done" : "Select"}
+              </button>
+            </div>
+            {selectingOther ? (
+              <div role="toolbar" aria-label="Selected other threads" className="flex flex-wrap items-center gap-1 rounded-md border border-border bg-card px-1.5 py-1.5 text-xs">
+                <button type="button" onClick={() => setSelectedOtherThreadIds(allOtherSelected ? new Set() : new Set(sortedOther.map((thread) => thread.id)))} className="min-h-6 px-1.5 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  {allOtherSelected ? "Clear" : "All"}
+                </button>
+                <span aria-live="polite" className="text-muted-foreground">{selectedOtherThreads.length} selected</span>
+                <button type="button" disabled={!selectedOtherThreads.length} onClick={archiveSelectedOtherThreads} className="ml-auto inline-flex min-h-6 items-center gap-1 px-1.5 text-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  <Icon name="Archive" className="size-3.5" />
+                  Archive
+                </button>
+              </div>
+            ) : null}
             {otherCollapsed ? null : sortedOther.map((thread) => {
+              const title = thread.title ?? thread.titleFallback ?? "Untitled";
               return (
                 <div
                   key={thread.id}
-                  className={cn("group flex cursor-grab items-center gap-0.5 active:cursor-grabbing", draggingThreadId === thread.id && "opacity-40")}
-                  {...dragSourceProps(thread.id, thread.title ?? thread.titleFallback ?? "Untitled")}
+                  className={cn("group flex items-center gap-0.5", !selectingOther && "cursor-grab active:cursor-grabbing", draggingThreadId === thread.id && "opacity-40")}
+                  {...(selectingOther ? {} : dragSourceProps(thread.id, title))}
                 >
+                  {selectingOther ? (
+                    <label className="flex size-6 shrink-0 cursor-pointer items-center justify-center" title={`Select ${title}`}>
+                      <Checkbox checked={selectedOtherThreadIds.has(thread.id)} onCheckedChange={(checked) => toggleOtherThread(thread.id, checked === true)} aria-label={`Select ${title}`} />
+                    </label>
+                  ) : null}
                   <button
                     type="button"
                     onClick={() => go(thread.id)}
@@ -4272,7 +4329,7 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
                   >
                     {otherThreadDot(thread, threadIsBusy(thread))}
                     <span className="sr-only">{otherThreadStatusText(thread, threadIsBusy(thread))}, </span>
-                    <span className="truncate">{thread.title ?? thread.titleFallback ?? "Untitled"}</span>
+                    <span className="truncate">{title}</span>
                     <span className="ml-auto shrink-0">{relativeTime(thread.updatedAt)}</span>
                   </button>
                   {rowActions(thread, true)}

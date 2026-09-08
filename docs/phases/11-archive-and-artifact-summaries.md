@@ -86,7 +86,7 @@ $ npm test
 ℹ pass 177
 ℹ fail 0
 
-$ RPI_LEGACY_TASK_ROOT_DIR=.humanlayer npm test -- tests/prose.test.ts
+$ RPI_LEGACY_TASK_ROOT_DIR=.legacy-task-root npm test -- tests/prose.test.ts
 ℹ pass 2
 ℹ fail 0
 
