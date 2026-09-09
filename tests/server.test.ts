@@ -2,6 +2,128 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import plugin from "../server";
+import { listTasks } from "../tasks";
+import { listSessions } from "../sessions";
+import { attentionQueue } from "../status";
+
+test("sessions can be marked done and reopened independently of the task and derived status", async (t) => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "rpi", sdk: { subscribe: () => () => undefined } });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const { taskId } = await harness.behavior.callRpc("createTask", {
+    request: { text: "Session completion", projectId: "proj_1", workflowType: "freeform", worktreeTiming: "never" }, draft: true,
+  }) as { taskId: string };
+  const db = bb.storage.database();
+  for (const id of ["one", "two"]) db.prepare(`INSERT INTO sessions (thread_id, task_id, label, launched_by, rpi_status, rpi_status_at, had_turn, created_at, updated_at)
+    VALUES (?, ?, ?, 'user', 'needs_approval', 1, 1, 1, 1)`).run(id, taskId, id);
+  assert.equal(listTasks(db)[0]?.attentionCount, 2);
+  await assert.rejects(harness.behavior.callRpc("setSessionCompleted", { threadId: "one", completed: "true" }));
+  await harness.behavior.callRpc("setSessionCompleted", { threadId: "one", completed: true });
+  const detail = await harness.behavior.callRpc("getTask", { taskId }) as { task: { completed: boolean }; sessions: Array<{ threadId: string; completed: boolean; rpiStatus: string }> };
+  assert.equal(detail.task.completed, false);
+  assert.deepEqual(detail.sessions.map((session) => [session.threadId, session.completed, session.rpiStatus]), [
+    ["one", true, "needs_approval"], ["two", false, "needs_approval"],
+  ]);
+  assert.equal(listTasks(db)[0]?.attentionCount, 1);
+  db.prepare("UPDATE sessions SET rpi_status = 'ready_for_input' WHERE thread_id = 'one'").run();
+  assert.equal(listSessions(db, taskId).find((session) => session.threadId === "one")?.completed, true);
+  await harness.behavior.callRpc("setSessionCompleted", { threadId: "one", completed: false });
+  assert.equal(listTasks(db)[0]?.attentionCount, 2);
+  assert.deepEqual(db.prepare("SELECT thread_archived_at FROM sessions").all(), [{ thread_archived_at: null }, { thread_archived_at: null }]);
+  assert.deepEqual(await harness.behavior.callRpc("setSessionCompleted", { threadId: "missing", completed: true }), { session: null });
+  db.prepare("UPDATE sessions SET thread_archived_at = 2 WHERE thread_id = 'one'").run();
+  assert.deepEqual(await harness.behavior.callRpc("setSessionCompleted", { threadId: "one", completed: true }), { session: null });
+});
+
+test("task deletion is atomic, preserves BB threads and other tasks, and reserves the old mirror slug", async (t) => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "rpi", sdk: { subscribe: () => () => undefined } });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const create = async (name: string) => await harness.behavior.callRpc("createTask", {
+    request: { text: "Keep on disk", projectId: "proj_1", workflowType: "freeform", worktreeTiming: "never" }, name, draft: true,
+  }) as { taskId: string };
+  const { taskId } = await create("Remove me");
+  const other = await create("Keep me");
+  const db = bb.storage.database();
+  db.prepare(`INSERT INTO sessions (thread_id, task_id, launched_by, rpi_status, rpi_status_at, created_at, updated_at)
+    VALUES ('delete_session', ?, 'user', 'running', 1, 1, 1)`).run(taskId);
+  await assert.rejects(harness.behavior.callRpc("deleteTask", { taskId }), /Stop running sessions/);
+  db.prepare("UPDATE sessions SET rpi_status = 'ready_for_input' WHERE task_id = ?").run(taskId);
+  db.prepare("INSERT INTO launch_attempts (id, task_id, status, created_at) VALUES ('pending_delete', ?, 'uncertain', 1)").run(taskId);
+  await assert.rejects(harness.behavior.callRpc("deleteTask", { taskId }), /Resolve pending task launches/);
+  db.prepare("UPDATE launch_attempts SET status = 'failed'").run();
+  const artifact = db.prepare("SELECT id FROM artifacts WHERE task_id = ?").get(taskId) as { id: string };
+  db.prepare("INSERT INTO comments (id, artifact_id, version_id, content_text, created_at, updated_at) VALUES ('delete_comment', ?, 'v1', 'Comment', 1, 1)").run(artifact.id);
+  db.prepare("INSERT INTO send_receipts (request_id, artifact_id, thread_id, comment_ids_json, mode, sent_ids_json, created_at) VALUES ('delete_receipt', ?, 'delete_session', '[]', 'send', '[]', 1)").run(artifact.id);
+  db.prepare("INSERT INTO child_threads (thread_id, task_id, parent_thread_id, role, created_at) VALUES ('delete_child', ?, 'delete_session', 'test', 1)").run(taskId);
+  db.prepare("INSERT INTO notifications (id, thread_id, kind, dedupe_key, reason, created_at) VALUES ('delete_notification', 'delete_child', 'ready_for_input', 'test', 'test', 1)").run();
+  db.prepare("INSERT INTO scratch_pads (task_id, text, updated_at) VALUES (?, 'notes', 1)").run(taskId);
+  db.prepare("INSERT INTO task_ui_state (task_id, json) VALUES (?, '{}')").run(taskId);
+  db.prepare("INSERT INTO mirror_state (task_id, file_name, updated_at) VALUES (?, 'task.md', 1)").run(taskId);
+  db.exec("CREATE TRIGGER reject_task_delete BEFORE DELETE ON tasks BEGIN SELECT RAISE(ABORT, 'test rollback'); END");
+  await assert.rejects(harness.behavior.callRpc("deleteTask", { taskId }), /test rollback/);
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM comments").get() as { n: number }).n, 1);
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number }).n, 1);
+  db.exec("DROP TRIGGER reject_task_delete");
+  assert.deepEqual(await harness.behavior.callRpc("deleteTask", { taskId }), { deleted: true });
+  for (const table of ["comments", "send_receipts", "sessions", "child_threads", "notifications", "launch_attempts", "scratch_pads", "task_ui_state", "mirror_state"]) {
+    assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n, 0, table);
+  }
+  assert.deepEqual(listTasks(db).map((task) => task.id), [other.taskId]);
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM artifacts").get() as { n: number }).n, 1);
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM artifact_versions").get() as { n: number }).n, 1);
+  assert.deepEqual(await harness.behavior.callRpc("deleteTask", { taskId }), { deleted: false });
+  const replacement = await create("Remove me");
+  assert.equal(listTasks(db).find((task) => task.id === replacement.taskId)?.slug, "remove-me-2");
+  // An unstubbed SDK delete/archive call would throw in this fake host.
+});
+
+test("manual task completion persists, hides only that task, and reopens without archiving sessions or artifacts", async (t) => {
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "rpi",
+    sdk: { subscribe: () => () => undefined },
+  });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const create = async (name: string, projectId = "proj_1") => await harness.behavior.callRpc("createTask", {
+    request: { text: "Keep these artifacts", projectId, workflowType: "freeform", worktreeTiming: "never", autoAdvance: false },
+    name,
+    draft: true,
+  }) as { taskId: string };
+  const { taskId } = await create("Finish me");
+  const other = await create("Still active");
+  await create("Other project", "proj_2");
+  const db = bb.storage.database();
+  db.prepare(`INSERT INTO sessions (thread_id, task_id, launched_by, rpi_status, rpi_status_at, had_turn, created_at, updated_at)
+    VALUES ('thr_done', ?, 'user', 'ready_for_input', 1, 1, 1, 1)`).run(taskId);
+  const sessionsBefore = listSessions(db, taskId);
+  const queueSessions = sessionsBefore.map((session) => ({ ...session, threadUpdatedAt: null }));
+  const artifactsBefore = db.prepare("SELECT * FROM artifacts WHERE task_id = ?").all(taskId);
+  assert.equal(listTasks(db).find((task) => task.id === taskId)?.attentionCount, 1);
+
+  await assert.rejects(harness.behavior.callRpc("updateTask", { taskId, patch: { completed: "true" } }));
+  await assert.rejects(harness.behavior.callRpc("listTasks", { completed: "all" }));
+  await harness.behavior.callRpc("updateTask", { taskId, patch: { completed: true } });
+  const active = await harness.behavior.callRpc("listTasks", { projectId: "proj_1" }) as { tasks: Array<{ id: string }> };
+  assert.deepEqual(active.tasks.map((task) => task.id), [other.taskId]);
+  const done = await harness.behavior.callRpc("listTasks", { projectId: "proj_1", completed: true }) as { tasks: Array<{ id: string; completed: boolean; archived: boolean; attentionCount: number }> };
+  assert.deepEqual(done.tasks.map((task) => [task.id, task.completed, task.archived, task.attentionCount]), [[taskId, true, false, 0]]);
+  const all = await harness.behavior.callRpc("listTasks", { projectId: "proj_1", completed: null }) as { tasks: Array<{ id: string }> };
+  assert.equal(all.tasks.length, 2);
+  assert.deepEqual(listSessions(db, taskId), sessionsBefore);
+  assert.deepEqual(db.prepare("SELECT * FROM artifacts WHERE task_id = ?").all(taskId), artifactsBefore);
+  assert.equal(attentionQueue(queueSessions, listTasks(db, { completed: null })).length, 0);
+  assert.ok(harness.inspection.realtimeSignals.some((signal) => signal.channel === "tasks"));
+
+  const persisted = await harness.behavior.callRpc("listTasks", { completed: true }) as { tasks: Array<{ id: string }> };
+  assert.deepEqual(persisted.tasks.map((task) => task.id), [taskId]);
+  await harness.behavior.callRpc("updateTask", { taskId, patch: { name: "Renamed while done" } });
+  assert.equal(listTasks(db, { completed: true })[0]?.completed, true);
+  await harness.behavior.callRpc("updateTask", { taskId, patch: { completed: false } });
+  assert.equal(listTasks(db).find((task) => task.id === taskId)?.attentionCount, 1);
+  assert.equal(attentionQueue(queueSessions, listTasks(db)).length, 1);
+  assert.deepEqual(listSessions(db, taskId), sessionsBefore);
+});
 
 test("sessions list CLI paginates and truncates summaries", async () => {
   const { bb, harness } = createFakePluginHost({

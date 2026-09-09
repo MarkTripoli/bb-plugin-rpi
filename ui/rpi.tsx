@@ -39,6 +39,7 @@ import { ARTIFACT_COMMENTS_WIDTH_RANGE, ARTIFACT_LIST_WIDTH_RANGE, ARTIFACT_PANE
 import {
   PHASE_DESCRIPTIONS,
   SUPERSEDED,
+  MANUALLY_COMPLETED,
   attentionQueue,
   attentionText,
   effectiveStatus,
@@ -63,6 +64,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { COARSE_POINTER_CHILD_ICON_BUTTON_CLASS, COARSE_POINTER_COMPACT_ICON_SIZE_CLASS } from "@/components/ui/coarse-pointer-sizing";
 import { cn } from "@/lib/utils";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 
 export const ARCHIVE_TASK_CONFIRM = "Archive this task? Its sessions are archived too and the task leaves the active list.";
 
@@ -829,6 +831,85 @@ function boardColumnsClass(width: number): string {
   return "grid-cols-1";
 }
 
+const MENU_ITEM_CLASS = "flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-foreground outline-none focus:bg-muted data-[disabled]:pointer-events-none data-[disabled]:opacity-50";
+
+function TaskActionsMenu({ task, fromThreadId, onNavigate }: { task: Pick<TaskRecord, "id" | "name" | "completed">; fromThreadId?: string | null; onNavigate?: () => void }) {
+  const rpc = useRpc<RpcContract>();
+  const navigate = useBbNavigate();
+  const [saving, setSaving] = useState(false);
+  const [confirm, setConfirm] = useState<"archive" | "delete" | null>(null);
+  const run = async (action: "chat" | "complete" | "archive" | "delete") => {
+    setSaving(true);
+    try {
+      if (action === "chat") {
+        const { sessions } = await rpc.call("listSessions", { taskId: task.id });
+        const latest = sessions.find((session) => session.threadId === fromThreadId) ?? sessions.sort((a, b) => b.createdAt - a.createdAt)[0];
+        const result = latest
+          ? await rpc.call("iterateInFreshSession", { threadId: latest.threadId })
+          : await rpc.call("launchDraft", { taskId: task.id });
+        navigate.toThread(result.threadId);
+        onNavigate?.();
+      } else if (action === "complete") {
+        const result = await rpc.call("updateTask", { taskId: task.id, patch: { completed: !task.completed } });
+        if (!result.task) throw new Error("Task no longer exists.");
+        toast.success(task.completed ? "Task reopened" : "Task marked done. Use Show done to find it.");
+      } else {
+        await rpc.call(action === "archive" ? "archiveTask" : "deleteTask", { taskId: task.id });
+        navigate.toPluginPanel("rpi", { subPath: "" });
+        onNavigate?.();
+        toast.success(action === "archive" ? "Task archived" : "Task deleted");
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not update task.");
+    } finally {
+      setSaving(false);
+    }
+  };
+  return <>
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <Button type="button" size="icon" variant="ghost" className="size-7 shrink-0" aria-label={`Task actions: ${task.name}`} disabled={saving} onClick={stopRowClick}>
+          <Icon name={saving ? "Spinner" : "MoreHorizontal"} className="size-4" />
+        </Button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content align="end" sideOffset={4} className="z-50 min-w-40 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md" onClick={stopRowClick}>
+          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => void run("chat")}><Icon name="Plus" className="size-4" />New chat</DropdownMenu.Item>
+          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => void run("complete")}><Icon name={task.completed ? "RotateCcw" : "Check"} className="size-4" />{task.completed ? "Reopen" : "Mark done"}</DropdownMenu.Item>
+          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => setConfirm("archive")}><Icon name="Archive" className="size-4" />Archive</DropdownMenu.Item>
+          <DropdownMenu.Separator className="my-1 h-px bg-border" />
+          <DropdownMenu.Item className={cn(MENU_ITEM_CLASS, "text-destructive")} onSelect={() => setConfirm("delete")}><Icon name="Trash2" className="size-4" />Delete</DropdownMenu.Item>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+    <ConfirmDialog open={confirm !== null} onOpenChange={(open) => { if (!open) setConfirm(null); }} title={`${confirm === "delete" ? "Delete" : "Archive"} ${task.name}?`}
+      description={confirm === "delete" ? "Permanently deletes this RPI task, its artifacts, comments, and session links. BB conversations and files in your worktrees are kept." : "Its sessions are archived too and the task leaves the active list."}
+      confirmLabel={confirm === "delete" ? "Delete task" : "Archive task"} onConfirm={() => { if (confirm) void run(confirm); }} />
+  </>;
+}
+
+function SessionCompletionButton({ session }: { session: Pick<SessionView, "threadId" | "completed"> }) {
+  const rpc = useRpc<RpcContract>();
+  const [saving, setSaving] = useState(false);
+  return (
+    <Button type="button" size="sm" variant="ghost" disabled={saving} onClick={async (event) => {
+      event.stopPropagation();
+      setSaving(true);
+      try {
+        const result = await rpc.call("setSessionCompleted", { threadId: session.threadId, completed: !session.completed });
+        if (!result.session) throw new Error("Session no longer exists.");
+        toast.success(session.completed ? "Session reopened" : "Session marked done");
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Could not update session.");
+      } finally {
+        setSaving(false);
+      }
+    }}>
+      {session.completed ? "Reopen" : "Mark done"}
+    </Button>
+  );
+}
+
 function TaskCompactRow({ task, onOpen }: { task: TaskRow; onOpen: () => void }) {
   return (
     <div onClick={onOpen} className={cn("flex flex-col gap-1.5 border-b border-border px-4 py-3 last:border-b-0", CLICKABLE_ROW_CLASS)}>
@@ -837,8 +918,9 @@ function TaskCompactRow({ task, onOpen }: { task: TaskRow; onOpen: () => void })
         <span className="shrink-0 text-xs text-muted-foreground">{plural(task.sessionCount, "session")} · {relativeTime(task.updatedAt)}</span>
       </div>
       <div className="flex items-center justify-between gap-2">
-        {task.isDraft ? <LabelPill label="Draft" /> : <PhaseStripMini task={task} />}
+        {task.completed ? <LabelPill label="Done" /> : task.isDraft ? <LabelPill label="Draft" /> : <PhaseStripMini task={task} />}
         {task.attentionCount > 0 ? <AttentionCountChip n={task.attentionCount} /> : null}
+        <TaskActionsMenu task={task} />
       </div>
     </div>
   );
@@ -866,6 +948,7 @@ function TaskTable({ tasks, compact }: { tasks: TaskRow[]; compact: boolean }) {
             <th className="px-4 py-3 font-medium">Needs you</th>
             <th className="px-4 py-3 font-medium">Sessions</th>
             <th className="px-4 py-3 font-medium">Updated</th>
+            <th className="px-4 py-3 font-medium"><span className="sr-only">Actions</span></th>
           </tr>
         </thead>
         <tbody>
@@ -878,13 +961,14 @@ function TaskTable({ tasks, compact }: { tasks: TaskRow[]; compact: boolean }) {
                 </div>
               </td>
               <td className="px-4 py-3">
-                {task.isDraft ? <LabelPill label="Draft" /> : <PhaseStripMini task={task} />}
+                {task.completed ? <LabelPill label="Done" /> : task.isDraft ? <LabelPill label="Draft" /> : <PhaseStripMini task={task} />}
               </td>
               <td className="px-4 py-3">
                 {task.attentionCount > 0 ? <AttentionCountChip n={task.attentionCount} /> : <span className="text-xs text-muted-foreground">0</span>}
               </td>
               <td className="px-4 py-3 text-muted-foreground">{task.sessionCount}</td>
               <td className="px-4 py-3 text-muted-foreground">{relativeTime(task.updatedAt)}</td>
+              <td className="px-2 py-3"><TaskActionsMenu task={task} /></td>
             </tr>
           ))}
         </tbody>
@@ -938,9 +1022,10 @@ function TaskBoard({ tasks, width }: { tasks: TaskRow[]; width: number }) {
                     </span>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    {task.isDraft ? <LabelPill label="Draft" /> : <TaskStepPill task={task} />}
+                    {task.completed ? <LabelPill label="Done" /> : task.isDraft ? <LabelPill label="Draft" /> : <TaskStepPill task={task} />}
                     <span className="text-xs text-muted-foreground">{plural(task.sessionCount, "session")}</span>
                     {task.attentionCount > 0 ? <AttentionCountChip n={task.attentionCount} /> : null}
+                    <TaskActionsMenu task={task} />
                   </div>
                 </div>
               </article>
@@ -1661,6 +1746,7 @@ function forkSubLine(session: SessionView, allSessions: SessionView[], ordinals:
 // statusMeta's hint.
 function sessionWhatItWants(session: SessionView, effective: string): string {
   if (needsHuman(effective)) return attentionText(session);
+  if (effective === MANUALLY_COMPLETED) return "Marked done";
   if (effective === SUPERSEDED) {
     const summary = nextStepSummary(session.nextStepJson);
     return summary ? `Handed off: ${summary}` : "Finished";
@@ -1696,19 +1782,26 @@ function SessionsTable({
   const navigate = useBbNavigate();
   const open = (threadId: string) => navigate.toThread(threadId);
   const archive = useArchiveThread(DISMISS_SESSION_COPY);
+  const [showDone, setShowDone] = useState(false);
   const ordinals = useMemo(() => attemptOrdinals(allSessions), [allSessions]);
   const rows = useMemo(
     () =>
       sessions
         .map((session) => ({ session, effective: effectiveStatus(session, allSessions, task) }))
+        .filter(({ session }) => showDone || !session.completed)
         .sort(sessionRowOrder),
-    [sessions, allSessions, task],
+    [sessions, allSessions, task, showDone],
   );
   const isDanger = (effective: string) => effective === "failed" || effective === "lost";
+  const doneToggle = <label className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
+    <Checkbox checked={showDone} onCheckedChange={(checked) => setShowDone(checked === true)} />
+    Show done sessions
+  </label>;
 
   if (compact) {
     return (
       <div className="space-y-2">
+        {doneToggle}
         {rows.map(({ session, effective }) => {
           const meta = statusMeta(effective);
           const ordinal = ordinals.get(session.threadId);
@@ -1723,6 +1816,7 @@ function SessionsTable({
               <div className="flex items-center justify-between gap-2">
                 <StatusPill tone={meta.tone} label={meta.text} icon={meta.icon} hint={meta.hint || undefined} />
                 <RowLink onOpen={() => open(session.threadId)} className="truncate text-sm">{capitalize(labelStep(session.label) ?? "Session")}{attemptSuffix}</RowLink>
+                <SessionCompletionButton session={session} />
               </div>
               <div className="text-xs text-muted-foreground">{subLine}</div>
               <div className="text-sm text-foreground">{sessionWhatItWants(session, effective)}</div>
@@ -1741,6 +1835,7 @@ function SessionsTable({
 
   return (
     <div className="overflow-hidden rounded-xl border border-border bg-card">
+      {doneToggle}
       <table className="min-w-full border-collapse text-sm">
         <thead className="border-b border-border text-left text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
           <tr>
@@ -1777,6 +1872,7 @@ function SessionsTable({
                 <td className="px-4 py-3"><ContextGauge usage={session.contextUsage} threshold={session.contextWarnThreshold} /></td>
                 <td className="px-4 py-3 text-muted-foreground">{relativeTime(session.threadUpdatedAt ?? session.updatedAt)}</td>
                 <td className="px-4 py-3">
+                  <SessionCompletionButton session={session} />
                   {isDanger(effective) ? (
                     <SessionRecoveryActions threadId={session.threadId} onDismiss={archive.request} className="justify-end" />
                   ) : (
@@ -2307,7 +2403,7 @@ function ConfirmDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent onClick={stopRowClick}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
@@ -3301,7 +3397,7 @@ function PhaseStrip({
 function currentSessionFor(sessions: SessionView[], task: TaskRecord): SessionView | null {
   const live = sessions
     .map((session) => ({ session, effective: effectiveStatus(session, sessions, task) }))
-    .filter(({ effective }) => effective !== SUPERSEDED);
+    .filter(({ session, effective }) => !session.completed && effective !== SUPERSEDED);
   if (live.length === 0) return null;
   const rank = (effective: string) => (needsHuman(effective) ? 0 : effective === "running" ? 1 : 2);
   live.sort((a, b) => {
@@ -3318,6 +3414,7 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
   const [task, setTask] = useState<TaskRecord | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [workspace, setWorkspace] = useState<TaskWorkspaceState | null>(null);
   const [sessions, setSessions] = useState<SessionView[]>([]);
   const [artifactCount, setArtifactCount] = useState<number | null>(null);
@@ -3339,6 +3436,10 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
       setTask(taskResult.task);
       setWorkspace(taskResult.workspace);
       setSessions(sessionResult.sessions);
+      setLoadError(null);
+    }).catch((error) => {
+      setTask(null);
+      setLoadError(error instanceof Error ? error.message : "Could not load task.");
     });
   };
   const refetchArtifactCount = () => {
@@ -3382,7 +3483,7 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
   }, [taskId, workspace, sessions]);
 
   if (!task || !workspace) {
-    return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
+    return <div className="p-4 text-sm text-muted-foreground">{loadError ?? "Loading..."}</div>;
   }
 
   // A failed attempt not yet retried stays visible (with Retry) so a failed-advance recovery
@@ -3432,6 +3533,7 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="space-y-2">
           <h2 className="text-2xl font-semibold tracking-tight text-foreground">{task.name}</h2>
+          {task.completed ? <LabelPill label="Done" /> : null}
           <p className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
             <span className="font-mono">{task.slug}</span>
             <span aria-hidden="true">·</span>
@@ -3458,6 +3560,7 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <TaskActionsMenu task={task} />
           <Popover>
             <PopoverTrigger asChild>
               <Button type="button" variant="outline">
@@ -3504,18 +3607,7 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
               <TooltipContent>No live session yet</TooltipContent>
             </Tooltip>
           )}
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={async () => {
-              if (!window.confirm(ARCHIVE_TASK_CONFIRM)) return;
-              await rpc.call("archiveTask", { taskId });
-              navigate.toPluginPanel("rpi", { subPath: "" });
-            }}
-          >
-            <Icon name="Archive" className="size-4" />
-            Archive
-          </Button>
+
         </div>
       </div>
       <div role="tablist" onKeyDown={rovingKeyDown} className={cn("flex w-fit max-w-full gap-1 rounded-md border border-border p-1", compact && "overflow-x-auto")}>
@@ -3855,14 +3947,14 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
     confirmLabel: "Archive",
   });
   const [useDefault, setUseDefault] = useState(false);
+  const [showCompleted, setShowCompleted] = useState(false);
   const [selectingOther, setSelectingOther] = useState(false);
   const [selectedOtherThreadIds, setSelectedOtherThreadIds] = useState<Set<string>>(new Set());
   const [selectingDoneTaskId, setSelectingDoneTaskId] = useState<string | null>(null);
   const [selectedDoneThreadIds, setSelectedDoneThreadIds] = useState<Set<string>>(new Set());
   const [sessionsByThread, setSessionsByThread] = useState<Map<string, SessionView>>(new Map());
-  const [taskMeta, setTaskMeta] = useState<Map<string, { name: string; projectId: string; workflowType: WorkflowType; worktreeTiming: "now" | "later" | "never" }>>(new Map());
+  const [taskMeta, setTaskMeta] = useState<Map<string, TaskRow>>(new Map());
   const [projectNameById, setProjectNameById] = useState<Map<string, string>>(new Map());
-  const [launchingFromTask, setLaunchingFromTask] = useState<string | null>(null);
   const [forkingThreadId, setForkingThreadId] = useState<string | null>(null);
   const collapseOverrides = useCollapseOverrides("rpi:sidebar:collapsed");
   const doneGroups = usePersistedSet("rpi:sidebar:done-expanded");
@@ -3870,11 +3962,11 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
   const refetch = () => {
     Promise.all([
       rpc.call("listSessions", { taskId: null }),
-      rpc.call("listTasks", { archived: false }),
+      rpc.call("listTasks", { archived: false, completed: null }),
       rpc.call("listProjects", { includePersonal: true }),
     ]).then(([sessionResult, taskResult, projects]) => {
       setSessionsByThread(new Map(sessionResult.sessions.map((session) => [session.threadId, session])));
-      setTaskMeta(new Map(taskResult.tasks.map((task) => [task.id, { name: task.name, projectId: task.projectId, workflowType: task.workflowType, worktreeTiming: task.worktreeTiming }])));
+      setTaskMeta(new Map(taskResult.tasks.map((task) => [task.id, task])));
       setProjectNameById(new Map(projects.map((project) => [project.id, project.name])));
     });
   };
@@ -3883,22 +3975,6 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
   }, []);
   useRealtime("tasks", refetch);
   useRealtime("rpi:sessions", refetch);
-
-  // Continue a task from the sidebar without opening it first: forks a fresh thread off its most
-  // recent session (same RPC the "Iterate" confirm dialogs use), so the new chat keeps the task's
-  // context instead of starting blank.
-  const startNewChat = async (taskId: string, fromThreadId: string) => {
-    if (launchingFromTask) return;
-    setLaunchingFromTask(taskId);
-    try {
-      const result = await rpc.call("iterateInFreshSession", { threadId: fromThreadId });
-      go(result.threadId);
-    } catch (error) {
-      reportLaunchError(error);
-    } finally {
-      setLaunchingFromTask(null);
-    }
-  };
 
   // Row-level actions (Fork/Archive/Delete). Archive and delete go through bb's own host API
   // (experimental_useSidebarThreadActions), same as the default sidebar, so they get bb's real
@@ -3994,6 +4070,7 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
         </button>
       </PopoverTrigger>
       <PopoverContent className="w-36 p-1" onClick={(event) => event.stopPropagation()}>
+        {sessionsByThread.has(thread.id) ? <SessionCompletionButton session={sessionsByThread.get(thread.id)!} /> : null}
         <button
           type="button"
           disabled={forkingThreadId === thread.id}
@@ -4175,15 +4252,15 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
     // Stable order only: newest session first by creation time. Status rank, last-update time,
     // and the selected thread are deliberately not sort keys; using them made rows jump on click.
     const byCreated = (a: { session: SessionView }, b: { session: SessionView }) => b.session.createdAt - a.session.createdAt;
-    const live = rows.filter((row) => row.effective !== SUPERSEDED).sort(byCreated);
-    const done = rows.filter((row) => row.effective === SUPERSEDED).sort(byCreated);
-    const needsHumanCount = live.filter((row) => needsHuman(row.effective)).length;
+    const live = rows.filter((row) => row.effective !== SUPERSEDED && !row.session.completed).sort(byCreated);
+    const done = rows.filter((row) => row.effective === SUPERSEDED || row.session.completed).sort(byCreated);
+    const needsHumanCount = task?.completed ? 0 : live.filter((row) => needsHuman(row.effective)).length;
     const hasActive =
       rows.some((row) => row.thread.id === activeThreadId) ||
       rows.some((row) => descendantsOf(row.thread.id).some((child) => child.id === activeThreadId || threadIsBusy(child)));
     const firstCreated = Math.min(...rows.map((row) => row.session.createdAt));
     const latestThreadId = (live[0] ?? done[0])?.thread.id ?? null;
-    return { taskId, taskName: group.taskName, projectId: task?.projectId ?? null, live, done, needsHumanCount, hasActive, firstCreated, latestThreadId };
+    return { taskId, taskName: group.taskName, projectId: task?.projectId ?? null, completed: task?.completed ?? false, live, done, needsHumanCount, hasActive, firstCreated, latestThreadId };
   });
   // One flat list of tasks, newest task first by its first session's creation time. Nothing that
   // changes on click or as work progresses (active project, needs-you, last update) is a sort
@@ -4306,6 +4383,7 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
           <Icon name={collapsed ? "ChevronRight" : "ChevronDown"} className="size-3.5 shrink-0" />
           <span className="flex min-w-0 flex-1 flex-col">
             <span className="truncate">{entry.taskName}</span>
+            {entry.completed ? <span className="text-[11px] font-normal text-muted-foreground">Done</span> : null}
             {showProjectNames ? <span className="truncate text-[11px] font-normal text-muted-foreground">{projectLabel(entry.projectId)}</span> : null}
           </span>
           {entry.needsHumanCount > 0 ? (
@@ -4320,22 +4398,7 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
             </Tooltip>
           ) : null}
         </button>
-        {entry.latestThreadId ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                aria-label={`New chat on ${entry.taskName}`}
-                disabled={launchingFromTask === entry.taskId}
-                onClick={() => void startNewChat(entry.taskId, entry.latestThreadId!)}
-                className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-card/70 hover:text-foreground disabled:opacity-50"
-              >
-                <Icon name={launchingFromTask === entry.taskId ? "Spinner" : "Plus"} className="size-3.5" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>New chat on this task</TooltipContent>
-          </Tooltip>
-        ) : null}
+        <TaskActionsMenu task={{ id: entry.taskId, name: entry.taskName, completed: entry.completed }} fromThreadId={entry.latestThreadId} onNavigate={onNavigate} />
       </div>
     );
   };
@@ -4412,8 +4475,12 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto p-2">
+      <label className="mb-2 flex cursor-pointer items-center gap-2 px-1.5 text-xs text-muted-foreground">
+        <Checkbox checked={showCompleted} onCheckedChange={(checked) => setShowCompleted(checked === true)} />
+        Show done
+      </label>
       <div className="space-y-2">
-        {groupEntries.map(taskGroupNode)}
+        {groupEntries.filter((entry) => showCompleted || !entry.completed).map(taskGroupNode)}
         {sortedOther.length > 0 ? (
           <div className="space-y-0.5">
             <div className="flex items-center gap-0.5">
@@ -5305,12 +5372,13 @@ export function RpiPanel({ subPath }: { subPath: string }) {
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [sessions, setSessions] = useState<SessionView[]>([]);
   const [showBoard, setShowBoard] = useState(false);
+  const [showCompleted, setShowCompleted] = useState(false);
   const [view, setView] = useState<"tasks" | "drafts" | "settings">("tasks");
   const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
   const { projectId } = useBbContext();
 
   const refetch = () => {
-    rpc.call("listTasks", { projectId: projectId ?? null, archived: false }).then(({ tasks: nextTasks }) => {
+    rpc.call("listTasks", { projectId: projectId ?? null, archived: false, completed: null }).then(({ tasks: nextTasks }) => {
       setTasks(nextTasks);
     });
   };
@@ -5359,14 +5427,16 @@ export function RpiPanel({ subPath }: { subPath: string }) {
   const showNewTaskPage = subPath === "new" && !detailTaskId;
 
   const visibleTasks = useMemo(() => {
-    if (view === "drafts") return tasks.filter((task) => task.isDraft);
-    return tasks;
-  }, [tasks, view]);
-  const draftCount = useMemo(() => tasks.filter((task) => task.isDraft).length, [tasks]);
+    return tasks.filter((task) => (showCompleted || !task.completed) && (view !== "drafts" || task.isDraft));
+  }, [tasks, view, showCompleted]);
+  const draftCount = useMemo(() => tasks.filter((task) => task.isDraft && (showCompleted || !task.completed)).length, [tasks, showCompleted]);
   const queue = useMemo(() => attentionQueue(sessions, tasks), [sessions, tasks]);
   const runningCount = useMemo(
-    () => sessions.filter((session) => session.rpiStatus === "running" || session.rpiStatus === "launching" || session.rpiStatus === "resuming").length,
-    [sessions],
+    () => {
+      const activeTaskIds = new Set(tasks.filter((task) => !task.completed).map((task) => task.id));
+      return sessions.filter((session) => activeTaskIds.has(session.taskId) && (session.rpiStatus === "running" || session.rpiStatus === "launching" || session.rpiStatus === "resuming")).length;
+    },
+    [sessions, tasks],
   );
 
   const onSwitch = (next: "tasks" | "drafts" | "settings") => {
@@ -5473,7 +5543,7 @@ export function RpiPanel({ subPath }: { subPath: string }) {
         {detailTaskId ? (
           <TaskDetailPage taskId={detailTaskId} artifactFileName={/^tasks\/[^/]+\/artifacts\/(.+)$/.exec(subPath)?.[1] ? decodeURIComponent(/^tasks\/[^/]+\/artifacts\/(.+)$/.exec(subPath)![1]!) : null} />
         ) : showNewTaskPage ? (
-          <NewTaskPage tasks={tasks} />
+          <NewTaskPage tasks={tasks.filter((task) => !task.completed)} />
         ) : view === "settings" ? (
           <RpiDefaultsSettings />
         ) : (
@@ -5488,6 +5558,10 @@ export function RpiPanel({ subPath }: { subPath: string }) {
               />
             ) : null}
             <div className="space-y-3">
+              <label className="flex cursor-pointer items-center gap-2 px-1 text-sm text-muted-foreground">
+                <Checkbox checked={showCompleted} onCheckedChange={(checked) => setShowCompleted(checked === true)} />
+                Show done
+              </label>
               <TasksSectionHeader
                 title={view === "drafts" ? "Drafts" : "Tasks"}
                 count={visibleTasks.length}

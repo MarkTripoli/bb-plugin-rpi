@@ -2,7 +2,7 @@
 
 All 33 RPI skills now load one [writing guide](../../skills/WRITING.md) before drafting, revising, or replying. Research and design-discussion templates also ask for shorter summaries and avoid repeating explanations.
 
-## What HumanLayer's reference skills do
+## What the reference skills do
 
 The reference prompts use several reinforcing techniques:
 
@@ -15,7 +15,7 @@ The reference prompts use several reinforcing techniques:
 | Use plain language and a structural change outline | `third-party/skills/describe-pr/SKILL.md`, steps 4 and guidance | Helps reviewers see changed behavior and implementation shape. |
 | Require an exact final-answer template | `third-party/skills/create-design-discussion/SKILL.md`, steps 6 and 7 | Bounds the handoff instead of inviting another document summary. |
 
-Paths above are relative to `~/PersonalDevelopment/bb-plugin-rpi-reference/`. These are the inspected local references, not a claim about the latest HumanLayer release. Their research guidance also requires enough technical depth for the document to explain the system on its own. Brevity does not mean dropping evidence.
+Paths above are relative to `~/PersonalDevelopment/bb-plugin-rpi-reference/`. These are the inspected local references, not a claim about the latest upstream release. Their research guidance also requires enough technical depth for the document to explain the system on its own. Brevity does not mean dropping evidence.
 
 ## What changed
 
@@ -25,7 +25,7 @@ Paths above are relative to `~/PersonalDevelopment/bb-plugin-rpi-reference/`. Th
 - Tightened the create/iterate design-discussion prompts and removed introductory filler from the patterns section.
 - Added coverage for every skill's guide reference and checked that the npm package contains the guide.
 
-The guide preserves required sections, two-to-four-sentence frontmatter summaries, citations, contracts, failure paths, decision records, review receipts, approval gates, and final command fences. No runtime or dependency changes were needed. HumanLayer text was studied and independently rewritten.
+The guide preserves required sections, two-to-four-sentence frontmatter summaries, citations, contracts, failure paths, decision records, review receipts, approval gates, and final command fences. No runtime or dependency changes were needed. Reference text was studied and independently rewritten.
 
 ## Verification
 

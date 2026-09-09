@@ -15,8 +15,7 @@ function makeDb() {
 
 test("slug generation adds -2 and -3 suffixes on collision", () => {
   const db = makeDb();
-  const createTable = MIGRATIONS[0];
-  db.exec(createTable);
+  for (const statement of MIGRATIONS) db.exec(statement);
   db.prepare("INSERT INTO tasks (id, project_id, name, slug, draft_prompt, workflow_type, worktree_timing, is_draft, archived, auto_advance, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
     .run("1", "proj_1", "Alpha", "alpha", "", "rpi", "later", 1, 0, 0, 1, 1);
   db.prepare("INSERT INTO tasks (id, project_id, name, slug, draft_prompt, workflow_type, worktree_timing, is_draft, archived, auto_advance, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")

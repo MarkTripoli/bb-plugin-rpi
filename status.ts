@@ -12,6 +12,7 @@ export type StatusTone = "attention" | "warning" | "active" | "danger" | "muted"
 // never persisted and never something deriveStatus produces: a session that finished its turn
 // (ready_for_input/failed/lost/interrupted) whose task has since moved on. See effectiveStatus.
 export const SUPERSEDED = "superseded" as const;
+export const MANUALLY_COMPLETED = "manually_completed" as const;
 
 // Most urgent first; used by phaseProgress to pick the worst tone among a step's sessions.
 export const TONE_ORDER: StatusTone[] = ["danger", "warning", "attention", "active", "success", "muted"];
@@ -72,6 +73,8 @@ export function statusMeta(status: string): StatusMeta {
       return { text: "Stopped", tone: "muted", icon: "CircleX", hint: "You stopped this session. Fork or iterate to continue." };
     case "interrupt_requested":
       return { text: "Stopping", tone: "muted", icon: "CircleX", hint: "Stop requested; waiting for the agent to yield." };
+    case MANUALLY_COMPLETED:
+      return { text: "Done", tone: "muted", icon: "CircleCheck", hint: "You marked this session done. Reopen it from the session menu." };
     case SUPERSEDED:
       return {
         text: "Done",
@@ -148,6 +151,7 @@ export type PhaseWorktreeTiming = "now" | "later" | "never";
 // attentionCountForTask, the UI's session table and thread list) extends these.
 type EffectiveStatusSession = {
   threadId: string;
+  completed?: boolean;
   label: string | null;
   rpiStatus: string;
   createdAt: number;
@@ -172,6 +176,7 @@ export function effectiveStatus<S extends EffectiveStatusSession>(
   taskSessions: S[],
   task: EffectiveStatusTask,
 ): string {
+  if (session.completed) return MANUALLY_COMPLETED;
   if (NEVER_SUPERSEDED.has(session.rpiStatus)) return session.rpiStatus;
   if (session.advancedAt !== null) return SUPERSEDED;
   const sessionStep = labelStep(session.label);
@@ -200,7 +205,7 @@ export function attentionCountForTask<S extends EffectiveStatusSession, T extend
 
 export function attentionQueue<
   S extends EffectiveStatusSession & { taskId: string; updatedAt: number; threadUpdatedAt: number | null },
-  T extends EffectiveStatusTask & { id: string; archived: boolean },
+  T extends EffectiveStatusTask & { id: string; archived: boolean; completed?: boolean },
 >(sessions: S[], tasks: T[]): Array<{ session: S; task: T; status: string }> {
   const taskById = new Map(tasks.map((task) => [task.id, task]));
   const sessionsByTask = new Map<string, S[]>();
@@ -212,7 +217,7 @@ export function attentionQueue<
   const entries: Array<{ session: S; task: T; status: string }> = [];
   for (const session of sessions) {
     const task = taskById.get(session.taskId);
-    if (!task || task.archived) continue;
+    if (!task || task.archived || task.completed) continue;
     const status = effectiveStatus(session, sessionsByTask.get(session.taskId) ?? [session], task);
     if (!needsHuman(status)) continue;
     entries.push({ session, task, status });
