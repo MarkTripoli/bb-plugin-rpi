@@ -6,7 +6,7 @@ import type { SessionRow, TaskRecord } from "./contract";
 import type { NextStepSuggestions } from "./extraction";
 import { activeLaunchAttempt, environmentRoleForAttempt, insertAttempt, LaunchRejectedError, launchPhase, withTaskLock } from "./launch";
 import { getTask } from "./tasks";
-import { AUTO_ADVANCE, ITERATE_SKILL_BY_LABEL, autoAdvanceTransition, normalizePhaseLabel, skillInfo, type PhaseLabel } from "./transitions";
+import { AUTO_ADVANCE, ITERATE_SKILL_BY_LABEL, autoAdvanceAccepts, autoAdvanceTransition, normalizePhaseLabel, skillInfo, type PhaseLabel } from "./transitions";
 import type { LaunchBindingMirror, SessionMirrorRow } from "./sessions";
 
 type Database = BetterSqlite3.Database;
@@ -164,7 +164,7 @@ function advanceSession(
     const nextStep = validation.nextStep;
     if (mode === "auto_advance") {
       if (!transition || transition.flag === null) return { threadId: existing };
-      if (transition.next !== nextStep.extraction.nextStepType) return { threadId: existing };
+      if (!autoAdvanceAccepts(normalizePhaseLabel(fresh.label) as PhaseLabel, task.workflowType, nextStep.extraction.nextStepType)) return { threadId: existing };
       if (!task.autoAdvance || !task[transition.flag as keyof TaskRecord]) return { threadId: existing };
     }
     const attempted = claimAdvanceAndAttempt(db, task, fresh, nextStep, mode);

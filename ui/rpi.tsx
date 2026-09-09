@@ -53,6 +53,7 @@ import {
 } from "../status";
 import { markdownBlocks, markdownGroups } from "../blocks";
 import { ScratchPadSync } from "../scratch-pad-sync";
+import { parseRpiThreadPanelParams, type RpiThreadPanelView } from "../thread-panel";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -1464,7 +1465,7 @@ function NewTaskPage({
                   <Checkbox checked={autoAdvance} onCheckedChange={(checked) => setAutoAdvance(checked === true)} aria-describedby={autoAdvanceHintId} />
                   Auto-advance
                 </label>
-                <span id={autoAdvanceHintId} className="block">Phases chain automatically; you approve before implementation and before the PR.</span>
+                <span id={autoAdvanceHintId} className="block">Phases chain automatically; you approve before implementation and before the optional review or PR.</span>
               </div>
               <ModelSelect
                 hostId={hostId || null}
@@ -1801,7 +1802,7 @@ const AUTO_ADVANCE_FLAGS = [
   { label: "research", field: "aa_research_to_design", title: "Research to design" },
   { label: "plan", field: "aa_plan_to_worktree", title: "Plan to worktree" },
   { label: "worktree-setup", field: "aa_worktree_to_implementation", title: "Worktree to implementation" },
-  { label: "implementation", field: "aa_implementation_to_pr", title: "Implementation to PR" },
+  { label: "implementation", field: "aa_implementation_to_pr", title: "Implementation and review to PR" },
 ] as const;
 
 // Task detail Settings tab's "Model" section: changing it here patches the task record (same
@@ -1878,7 +1879,7 @@ function AutoAdvancePanel({ task, onUpdated }: { task: TaskRecord; onUpdated: ()
   );
 }
 
-// `variant="panel"` (default) is the standalone thread-side-panel look (RpiTipsThreadPanel);
+// `variant="panel"` (default) is the standalone thread-side-panel look (RpiThreadPanel);
 // `variant="inline"` is the task detail page's compact dismissible row under the phase strip.
 // Only presentation differs; the tips-per-phase list, dismissed state, and showPhaseTips setting
 // are the same fetch and the same "Hide tips"/"Don't show again" action either way.
@@ -3595,90 +3596,155 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
   );
 }
 
-export function RpiArtifactThreadPanel({ threadId, params }: { threadId: string; params?: unknown }) {
+const RPI_THREAD_PANEL_LINKS: ReadonlyArray<{ id: Exclude<RpiThreadPanelView, "actions">; label: string; description: string; icon: IconName }> = [
+  { id: "artifacts", label: "Artifacts", description: "Review task documents and versions", icon: "Code" },
+  { id: "workspace", label: "Workspace", description: "Inspect the task environment", icon: "Folder" },
+  { id: "scratch", label: "Scratch", description: "Keep task-local notes", icon: "Edit" },
+  { id: "minimap", label: "Minimap", description: "Scan sessions and status", icon: "Workflow" },
+  { id: "tips", label: "Tips", description: "Read guidance for this phase", icon: "Info" },
+  { id: "settings", label: "Settings", description: "Choose the next model and auto-advance", icon: "Settings" },
+];
+
+const RPI_WORKFLOW_ACTIONS = [
+  { skillId: "review-code", label: "Start code review loop", description: "Review the complete task diff and cycle through fixes until clean." },
+  { skillId: "describe-pr", label: "Create pull request", description: "Skip or leave the review loop and create or update the pull request." },
+  { skillId: "resolve-pr-reviews", label: "Resolve pull request reviews", description: "Re-check current review threads, fix feedback, and repeat until approved." },
+] as const;
+
+export function RpiThreadPanel({ threadId, params }: { threadId: string; params?: unknown }) {
   const rpc = useRpc<RpcContract>();
+  const navigate = useBbNavigate();
+  const initial = useMemo(() => parseRpiThreadPanelParams(params), [params]);
+  const [view, setView] = useState<RpiThreadPanelView>(initial.view);
   const [session, setSession] = useState<SessionView | null | undefined>(undefined);
-  const initialFileName = typeof params === "object" && params !== null && "fileName" in params ? String((params as { fileName?: unknown }).fileName ?? "") : null;
+  const [task, setTask] = useState<TaskRecord | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [launching, setLaunching] = useState<(typeof RPI_WORKFLOW_ACTIONS)[number]["skillId"] | null>(null);
+
+  const refetchTask = () => {
+    if (!session) return;
+    rpc.call("getTask", { taskId: session.taskId }).then(({ task: next }) => setTask(next)).catch((error: unknown) => {
+      setLoadError(error instanceof Error ? error.message : "Failed to load the RPI task");
+    });
+  };
 
   useEffect(() => {
-    rpc.call("getSession", { threadId }).then(({ session: next }) => setSession(next));
+    let cancelled = false;
+    setSession(undefined);
+    setTask(null);
+    setLoadError(null);
+    rpc.call("getSession", { threadId }).then(async ({ session: next }) => {
+      if (cancelled) return;
+      setSession(next);
+      if (!next) return;
+      const { task: nextTask } = await rpc.call("getTask", { taskId: next.taskId });
+      if (!cancelled) setTask(nextTask);
+    }).catch((error: unknown) => {
+      if (!cancelled) setLoadError(error instanceof Error ? error.message : "Failed to load the RPI session");
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [rpc, threadId]);
-
-  if (session === undefined) return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
-  if (!session) return <div className="p-4 text-sm text-muted-foreground">Not an RPI task session</div>;
-  return (
-    // Scroll owner for the stacked layout: below the breakpoint ArtifactsPanel sizes to its content
-    // (the nav panel's MAIN scrolls it there); in a thread panel this wrapper is that scroller.
-    <div className="h-full min-h-0 overflow-auto p-3">
-      <ArtifactsPanel taskId={session.taskId} initialFileName={initialFileName} />
-    </div>
-  );
-}
-
-export function RpiWorkspaceThreadPanel({ threadId }: { threadId: string }) {
-  const rpc = useRpc<RpcContract>();
-  const [session, setSession] = useState<SessionView | null | undefined>(undefined);
 
   useEffect(() => {
-    rpc.call("getSession", { threadId }).then(({ session: next }) => setSession(next));
-  }, [rpc, threadId]);
+    setView(initial.view);
+  }, [initial.view]);
 
+  const launchStep = async (skillId: (typeof RPI_WORKFLOW_ACTIONS)[number]["skillId"]) => {
+    if (!session || launching) return;
+    setLaunching(skillId);
+    try {
+      const result = await rpc.call("launchSkill", { taskId: session.taskId, skillId });
+      navigate.toThread(result.threadId);
+    } catch (error) {
+      reportLaunchError(error);
+    } finally {
+      setLaunching(null);
+    }
+  };
+
+  if (loadError) return <div className="p-4 text-sm text-destructive">{loadError}</div>;
   if (session === undefined) return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
   if (!session) return <div className="p-4 text-sm text-muted-foreground">Not an RPI task session</div>;
+  if (!task) return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
+
+  if (view !== "actions") {
+    const label = RPI_THREAD_PANEL_LINKS.find((entry) => entry.id === view)?.label ?? "RPI";
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">
+          <Button type="button" variant="ghost" className="h-8 px-2" onClick={() => setView("actions")}>
+            <Icon name="ChevronLeft" className="size-4" />
+            RPI
+          </Button>
+          <span className="min-w-0 truncate text-sm font-medium text-foreground">{label}</span>
+        </div>
+        {view === "artifacts" ? (
+          <div className="h-full min-h-0 overflow-auto p-3"><ArtifactsPanel taskId={session.taskId} initialFileName={initial.fileName} /></div>
+        ) : view === "workspace" ? (
+          <div className="h-full min-h-0 overflow-auto p-3"><WorkspacePanel taskId={session.taskId} /></div>
+        ) : view === "scratch" ? (
+          <div className="h-full min-h-0 overflow-auto p-3"><ScratchPadPanel taskId={session.taskId} /></div>
+        ) : view === "minimap" ? (
+          <div className="h-full min-h-0 overflow-auto p-3"><MinimapPanel taskId={session.taskId} /></div>
+        ) : view === "tips" ? (
+          <div className="h-full min-h-0 overflow-auto p-3"><TipsPanel taskId={session.taskId} label={session.label} /></div>
+        ) : (
+          <div className="h-full min-h-0 space-y-6 overflow-auto p-3">
+            <section className="space-y-3">
+              <h3 className="text-sm font-semibold text-foreground">Model for next session</h3>
+              <TaskModelPanel task={task} onUpdated={refetchTask} />
+            </section>
+            <section className="space-y-3">
+              <h3 className="text-sm font-semibold text-foreground">Auto-advance</h3>
+              <AutoAdvancePanel task={task} onUpdated={refetchTask} />
+            </section>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="h-full min-h-0 overflow-auto p-3">
-      <WorkspacePanel taskId={session.taskId} />
-    </div>
-  );
-}
-
-export function RpiTipsThreadPanel({ threadId }: { threadId: string }) {
-  const rpc = useRpc<RpcContract>();
-  const [session, setSession] = useState<SessionView | null | undefined>(undefined);
-
-  useEffect(() => {
-    rpc.call("getSession", { threadId }).then(({ session: next }) => setSession(next));
-  }, [rpc, threadId]);
-
-  if (session === undefined) return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
-  if (!session) return <div className="p-4 text-sm text-muted-foreground">Not an RPI task session</div>;
-  return (
-    <div className="h-full min-h-0 overflow-auto p-3">
-      <TipsPanel taskId={session.taskId} label={session.label} />
-    </div>
-  );
-}
-
-export function RpiScratchThreadPanel({ threadId }: { threadId: string }) {
-  const rpc = useRpc<RpcContract>();
-  const [session, setSession] = useState<SessionView | null | undefined>(undefined);
-
-  useEffect(() => {
-    rpc.call("getSession", { threadId }).then(({ session: next }) => setSession(next));
-  }, [rpc, threadId]);
-
-  if (session === undefined) return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
-  if (!session) return <div className="p-4 text-sm text-muted-foreground">Not an RPI task session</div>;
-  return (
-    <div className="h-full min-h-0 overflow-auto p-3">
-      <ScratchPadPanel taskId={session.taskId} />
-    </div>
-  );
-}
-
-export function RpiMinimapThreadPanel({ threadId }: { threadId: string }) {
-  const rpc = useRpc<RpcContract>();
-  const [session, setSession] = useState<SessionView | null | undefined>(undefined);
-
-  useEffect(() => {
-    rpc.call("getSession", { threadId }).then(({ session: next }) => setSession(next));
-  }, [rpc, threadId]);
-
-  if (session === undefined) return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
-  if (!session) return <div className="p-4 text-sm text-muted-foreground">Not an RPI task session</div>;
-  return (
-    <div className="h-full min-h-0 overflow-auto p-3">
-      <MinimapPanel taskId={session.taskId} />
+      <div className="space-y-5">
+        <div className="space-y-1">
+          <h2 className="text-sm font-semibold text-foreground">Workflow actions</h2>
+          <p className="text-xs text-muted-foreground">Start a fresh session from any point in {task.name}. The task's selected model is used.</p>
+        </div>
+        <div className="space-y-2">
+          {RPI_WORKFLOW_ACTIONS.map((action) => (
+            <button
+              key={action.skillId}
+              type="button"
+              disabled={launching !== null}
+              onClick={() => void launchStep(action.skillId)}
+              className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-left hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <span className="block text-sm font-medium text-foreground">{launching === action.skillId ? "Starting..." : action.label}</span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">{action.description}</span>
+            </button>
+          ))}
+        </div>
+        <div className="space-y-2">
+          <h2 className="text-sm font-semibold text-foreground">Task tools</h2>
+          <div className="grid gap-2">
+            {RPI_THREAD_PANEL_LINKS.map((entry) => (
+              <button key={entry.id} type="button" onClick={() => setView(entry.id)} className="flex w-full items-center gap-3 rounded-lg border border-border px-3 py-2 text-left hover:bg-muted">
+                <Icon name={entry.icon} className="size-4 shrink-0 text-muted-foreground" />
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium text-foreground">{entry.label}</span>
+                  <span className="block truncate text-xs text-muted-foreground">{entry.description}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <Button type="button" variant="outline" className="w-full" onClick={() => navigate.toPluginPanel("rpi", { subPath: `tasks/${session.taskId}` })}>
+          Open task details
+        </Button>
+      </div>
     </div>
   );
 }
@@ -3690,9 +3756,9 @@ export function RpiArtifactDirective({ attributes, source }: { attributes: Reado
   if (!taskId || !fileName || fileName.includes("..") || fileName.includes("/") || fileName.includes("\\")) return <code>{source}</code>;
   const open = () => {
     const accepted = navigate.openThreadPanel({
-      actionId: "artifacts",
-      title: fileName,
-      params: { taskId, fileName },
+      actionId: "rpi",
+      title: "RPI",
+      params: { view: "artifacts", fileName },
     });
     if (!accepted) navigate.toPluginPanel("rpi", { subPath: `tasks/${taskId}/artifacts/${encodeURIComponent(fileName)}` });
   };
@@ -4727,8 +4793,8 @@ export function RpiDefaultsSettings() {
 // Thread-header contract (frontend-registration.md "A control in the thread header"): the row is
 // 48px chrome with 28px controls, and it wants ONE inline control with taller content in a
 // portalled popover. This renders exactly that: phase pill + status + context gauge + a single
-// `h-7` "⋯" button opening a portalled Popover (components/ui/popover.tsx) for Iterate/Fork/
-// Interrupt. Proceed, Suggested next, and the context-high notice moved to RpiComposerBanner
+// `h-7` "⋯" button opening a portalled Popover (components/ui/popover.tsx) for optional review
+// phases plus Iterate/Fork/Interrupt. Proceed, Suggested next, and the context-high notice moved to RpiComposerBanner
 // (registered via app.composer.customize in app.tsx) since those need more room than a 28px
 // control has, per the same contract's "put taller content in a portalled popover" (a composer
 // banner, not the header, is where a wide button belongs).
@@ -4756,6 +4822,15 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
     void runIterate();
   };
   const { session } = useRpiSessionState(threadId);
+  const launchStep = async (skillId: "review-code" | "describe-pr" | "resolve-pr-reviews") => {
+    if (!session) return;
+    try {
+      const result = await rpc.call("launchSkill", { taskId: session.taskId, skillId });
+      navigate.toThread(result.threadId);
+    } catch (error) {
+      reportLaunchError(error);
+    }
+  };
   const runArchive = () => {
     if (!session) return;
     void rpc.call("archiveTask", { taskId: session.taskId }).then(() => navigate.toPluginPanel("rpi", { subPath: "" }));
@@ -4788,6 +4863,9 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
   }, [session, jumpHotkeyForArchive]);
 
   if (!session) return null;
+  const phase = session.label?.replace(/^rpi:/, "") ?? null;
+  const canReviewCode = phase === "freeform" || phase === "implementation" || phase === "code-review" || phase === "review-fixes";
+  const canResolvePrReviews = phase === "describe-pr" || phase === "pr-review";
 
   return (
     <TooltipProvider delayDuration={300}>
@@ -4809,6 +4887,21 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
           </button>
         </PopoverTrigger>
         <PopoverContent>
+          {canReviewCode ? (
+            <>
+              <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted" onClick={() => void launchStep("review-code")}>
+                Review code
+              </button>
+              <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted" onClick={() => void launchStep("describe-pr")}>
+                Create pull request
+              </button>
+            </>
+          ) : null}
+          {canResolvePrReviews ? (
+            <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted" onClick={() => void launchStep("resolve-pr-reviews")}>
+              Resolve pull request reviews
+            </button>
+          ) : null}
           <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted" onClick={iterate}>
             Iterate
           </button>

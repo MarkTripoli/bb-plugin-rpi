@@ -6,6 +6,7 @@ import {
   HELPERS,
   SKILLS,
   WORKFLOW_GRAPHS,
+  autoAdvanceAccepts,
   autoAdvanceTransition,
   computeSuggestedNext,
   deriveBoardColumn,
@@ -16,17 +17,17 @@ import {
 } from "../transitions";
 
 test("skills table keeps labels and button text", () => {
-  assert.equal(SKILLS.length, 22);
+  assert.equal(SKILLS.length, 25);
   assert.ok(SKILLS.every((entry) => entry[2].length > 0));
   assert.ok(HELPERS.some((entry) => entry[1] === "show-me"));
 });
 
 test("workflow graphs match the phase plan", () => {
-  assert.deepEqual(WORKFLOW_GRAPHS.rpi, ["questions", "research", "design", "plan", "worktree", "implementation", "PR"]);
-  assert.deepEqual(WORKFLOW_GRAPHS.outline_only, ["questions", "research", "structure", "implementation", "PR"]);
-  assert.deepEqual(WORKFLOW_GRAPHS.prd_tdd, ["research", "PRD", "TDD", "plan", "worktree", "implementation", "PR"]);
-  assert.deepEqual(WORKFLOW_GRAPHS.oneshot, ["single session"]);
-  assert.deepEqual(WORKFLOW_GRAPHS.freeform, ["single session"]);
+  assert.deepEqual(WORKFLOW_GRAPHS.rpi, ["questions", "research", "design", "plan", "worktree", "implementation", "review", "PR", "PR review"]);
+  assert.deepEqual(WORKFLOW_GRAPHS.outline_only, ["questions", "research", "structure", "implementation", "review", "PR", "PR review"]);
+  assert.deepEqual(WORKFLOW_GRAPHS.prd_tdd, ["research", "PRD", "TDD", "plan", "worktree", "implementation", "review", "PR", "PR review"]);
+  assert.deepEqual(WORKFLOW_GRAPHS.oneshot, ["single session", "review", "PR", "PR review"]);
+  assert.deepEqual(WORKFLOW_GRAPHS.freeform, ["single session", "review", "PR", "PR review"]);
   assert.equal(ALIASES["create-worktree"], "setup-worktree");
 });
 
@@ -41,6 +42,10 @@ test("auto advance table is literal", () => {
     plan: { flag: "aa_plan_to_worktree", next: "setup-worktree", to: "worktree-setup" },
     "worktree-setup": { flag: "aa_worktree_to_implementation", next: "implement-plan", to: "implementation" },
     implementation: { flag: "aa_implementation_to_pr", next: "describe-pr", to: "describe-pr" },
+    "code-review": { flag: "aa_implementation_to_pr", next: "fix-code-review", to: "review-fixes" },
+    "review-fixes": { flag: "aa_implementation_to_pr", next: "review-code", to: "code-review" },
+    "describe-pr": { flag: null, next: "resolve-pr-reviews", to: "pr-review" },
+    "pr-review": { flag: null, next: "resolve-pr-reviews", to: "pr-review" },
   });
 });
 
@@ -49,6 +54,9 @@ test("auto advance resolves workflow-specific targets", () => {
   assert.equal(autoAdvanceTransition("research", "outline_only")?.next, "create-structure-outline");
   assert.equal(autoAdvanceTransition("research", "prd_tdd")?.next, "create-prd");
   assert.equal(autoAdvanceTransition("worktree-setup", "outline_only")?.next, "implement-outline");
+  assert.equal(autoAdvanceAccepts("code-review", "rpi", "fix-code-review"), true);
+  assert.equal(autoAdvanceAccepts("code-review", "rpi", "describe-pr"), true);
+  assert.equal(autoAdvanceAccepts("code-review", "rpi", "create-research"), false);
 });
 
 test("board column derives from the current label", () => {
@@ -91,10 +99,18 @@ test("computeSuggestedNext visibility matrix: found+match, found+mismatch, none,
   assert.equal(gateNone.visible, true);
   assert.equal(gateNone.skillId, "create-plan");
 
-  // A label with no defined transition (terminal phases like "describe-pr", or no label at all)
-  // never shows the affordance.
+  // A missing label never shows the affordance. PR creation now exposes the manual review loop.
   assert.equal(computeSuggestedNext(null, "rpi", { type: "no_next_step" }).visible, false);
-  assert.equal(computeSuggestedNext("describe-pr", "rpi", { type: "no_next_step" }).visible, false);
+  assert.equal(computeSuggestedNext("describe-pr", "rpi", { type: "no_next_step" }).skillId, "resolve-pr-reviews");
+
+  // A review can branch to fixes or directly to PR creation. Missing extraction must not guess.
+  assert.equal(computeSuggestedNext("code-review", "rpi", { type: "no_next_step" }).visible, false);
+  assert.equal(computeSuggestedNext("code-review", "rpi", { type: "next_step_found", nextStepType: "fix-code-review" }).visible, false);
+  assert.equal(computeSuggestedNext("code-review", "rpi", { type: "next_step_found", nextStepType: "describe-pr" }).visible, false);
+
+  // An approved PR review ends through the show-me helper, which extracts as no next step.
+  assert.equal(computeSuggestedNext("pr-review", "rpi", { type: "no_next_step" }).visible, false);
+  assert.equal(computeSuggestedNext("pr-review", "rpi", { type: "next_step_found", nextStepType: "resolve-pr-reviews" }).visible, false);
 });
 
 test("parseNextStepExtraction reads the persisted nextStepJson shape, tolerating null and garbage", () => {

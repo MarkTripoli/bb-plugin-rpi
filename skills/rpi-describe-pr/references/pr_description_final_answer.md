@@ -4,8 +4,8 @@ Artifact saved:
 Summary:
 {summary}
 
-No automatic next phase follows this PR gate. Use this manual command only when another visual pass is needed:
+Check the pull request's current review state and address feedback when present:
 
 ```text
-/rpi-show-me
+/rpi-resolve-pr-reviews
 ```

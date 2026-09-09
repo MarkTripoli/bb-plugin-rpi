@@ -2,17 +2,13 @@ import { definePluginApp } from "@get-bb/plugin-sdk/app";
 import {
   ARCHIVE_TASK_CONFIRM,
   RpiArtifactDirective,
-  RpiArtifactThreadPanel,
   RpiComposerBanner,
   RpiDefaultsSettings,
-  RpiMinimapThreadPanel,
   RpiPanel,
   RpiNotificationSettings,
-  RpiScratchThreadPanel,
+  RpiThreadPanel,
   RpiThreadList,
-  RpiTipsThreadPanel,
   RpiThreadHeaderAction,
-  RpiWorkspaceThreadPanel,
 } from "./ui/rpi";
 
 // Palette actions run outside React (no useRpc/useBbNavigate available to them), so they call the
@@ -48,39 +44,11 @@ export default definePluginApp((app) => {
     banners: [{ id: "next-step", chrome: "bare", component: RpiComposerBanner }],
   });
   app.slots.threadPanelAction({
-    id: "artifacts",
-    title: "Artifacts",
-    icon: "Code",
+    id: "rpi",
+    title: "RPI",
+    icon: "Layers",
     layout: "flush",
-    component: RpiArtifactThreadPanel,
-  });
-  app.slots.threadPanelAction({
-    id: "workspace",
-    title: "Workspace",
-    icon: "Folder",
-    layout: "flush",
-    component: RpiWorkspaceThreadPanel,
-  });
-  app.slots.threadPanelAction({
-    id: "scratch",
-    title: "Scratch",
-    icon: "EditFile",
-    layout: "flush",
-    component: RpiScratchThreadPanel,
-  });
-  app.slots.threadPanelAction({
-    id: "minimap",
-    title: "Minimap",
-    icon: "GridView",
-    layout: "flush",
-    component: RpiMinimapThreadPanel,
-  });
-  app.slots.threadPanelAction({
-    id: "tips",
-    title: "Tips",
-    icon: "Lightbulb",
-    layout: "flush",
-    component: RpiTipsThreadPanel,
+    component: RpiThreadPanel,
   });
   app.slots.messageDirective({
     id: "rpi-artifact",
@@ -110,7 +78,7 @@ export default definePluginApp((app) => {
     title: "RPI: Open Artifacts",
     isAvailable: (context) => context.threadId !== null,
     run: (context) => {
-      context.openPanel({ actionId: "artifacts", title: "Artifacts" });
+      context.openPanel({ actionId: "rpi", title: "RPI", params: { view: "artifacts" } });
     },
   });
   app.slots.commandPaletteAction({
@@ -118,7 +86,7 @@ export default definePluginApp((app) => {
     title: "RPI: Open Scratch pad",
     isAvailable: (context) => context.threadId !== null,
     run: (context) => {
-      context.openPanel({ actionId: "scratch", title: "Scratch" });
+      context.openPanel({ actionId: "rpi", title: "RPI", params: { view: "scratch" } });
     },
   });
   app.slots.commandPaletteAction({

@@ -23,9 +23,12 @@ Each skill starts by calling rpi_task_context, writes task artifacts under .rpi/
 | rpi-implement-plan | implementation | /rpi-describe-pr | no |
 | rpi-implement-outline | implementation | /rpi-describe-pr | no |
 | rpi-iterate-implementation | implementation | /rpi-describe-pr | no |
-| rpi-describe-pr | describe-pr | human gate or no automatic command | no |
+| rpi-review-code | code-review | /rpi-fix-code-review when findings remain, otherwise /rpi-describe-pr | no |
+| rpi-fix-code-review | review-fixes | /rpi-review-code | no |
+| rpi-describe-pr | describe-pr | /rpi-resolve-pr-reviews | yes |
+| rpi-resolve-pr-reviews | pr-review | /rpi-resolve-pr-reviews until approved | yes |
 | rpi-ci-commit | implementation | /rpi-describe-pr | no |
 | rpi-review-artifact-comments | review | /rpi-iterate-implementation | no |
 | rpi-show-me | helper | no Proceed target | no |
 
-Human gates: design, design-prd, design-tdd, and structure. Auto-advance flags are `aa_questions_to_research`, `aa_research_to_design`, `aa_plan_to_worktree`, `aa_worktree_to_implementation`, and `aa_implementation_to_pr`; only transitions with one of those flags can launch automatically.
+Human gates: design, design-prd, design-tdd, structure, describe-pr, and pr-review. Auto-advance flags are `aa_questions_to_research`, `aa_research_to_design`, `aa_plan_to_worktree`, `aa_worktree_to_implementation`, and `aa_implementation_to_pr`; only transitions with one of those flags can launch automatically. The code-review loop reuses `aa_implementation_to_pr`. Pull request review remains manual because approval and new comments are external events.

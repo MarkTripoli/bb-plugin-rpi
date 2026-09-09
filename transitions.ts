@@ -18,7 +18,10 @@ export const SKILLS = [
   ["/rpi-implement-plan", "implement-plan", "implementation", "implement"],
   ["/rpi-implement-outline", "implement-outline", "implementation", "implement from outline"],
   ["/rpi-iterate-implementation", "iterate-implementation", "implementation", "iterate implementation"],
+  ["/rpi-review-code", "review-code", "code-review", "review code"],
+  ["/rpi-fix-code-review", "fix-code-review", "review-fixes", "fix review findings"],
   ["/rpi-describe-pr", "describe-pr", "describe-pr", "create pull request"],
+  ["/rpi-resolve-pr-reviews", "resolve-pr-reviews", "pr-review", "resolve pull request reviews"],
   ["/rpi-ci-commit", "ci-commit", "implementation", "commit changes"],
   ["/rpi-review-artifact-comments", "review-artifact-comments", "review", "review comments"],
 ] as const;
@@ -55,6 +58,10 @@ export const AUTO_ADVANCE = {
   plan: { flag: "aa_plan_to_worktree", next: "setup-worktree", to: "worktree-setup" },
   "worktree-setup": { flag: "aa_worktree_to_implementation", next: "implement-plan", to: "implementation" },
   implementation: { flag: "aa_implementation_to_pr", next: "describe-pr", to: "describe-pr" },
+  "code-review": { flag: "aa_implementation_to_pr", next: "fix-code-review", to: "review-fixes" },
+  "review-fixes": { flag: "aa_implementation_to_pr", next: "review-code", to: "code-review" },
+  "describe-pr": { flag: null, next: "resolve-pr-reviews", to: "pr-review" },
+  "pr-review": { flag: null, next: "resolve-pr-reviews", to: "pr-review" },
 } as const;
 
 type AutoAdvanceLabel = keyof typeof AUTO_ADVANCE;
@@ -82,12 +89,22 @@ export function autoAdvanceTransition(label: PhaseLabel, workflowType: string): 
   return WORKFLOW_AUTO_ADVANCE[workflowType]?.[key] ?? AUTO_ADVANCE[key];
 }
 
+const AUTO_ADVANCE_ALTERNATIVES: Partial<Record<PhaseLabel, readonly string[]>> = {
+  "code-review": ["describe-pr"],
+  "pr-review": ["show-me"],
+};
+
+export function autoAdvanceAccepts(label: PhaseLabel, workflowType: string, skillId: string) {
+  const transition = autoAdvanceTransition(label, workflowType);
+  return transition?.next === skillId || AUTO_ADVANCE_ALTERNATIVES[label]?.includes(skillId) === true;
+}
+
 export const WORKFLOW_GRAPHS = {
-  rpi: ["questions", "research", "design", "plan", "worktree", "implementation", "PR"],
-  outline_only: ["questions", "research", "structure", "implementation", "PR"],
-  prd_tdd: ["research", "PRD", "TDD", "plan", "worktree", "implementation", "PR"],
-  oneshot: ["single session"],
-  freeform: ["single session"],
+  rpi: ["questions", "research", "design", "plan", "worktree", "implementation", "review", "PR", "PR review"],
+  outline_only: ["questions", "research", "structure", "implementation", "review", "PR", "PR review"],
+  prd_tdd: ["research", "PRD", "TDD", "plan", "worktree", "implementation", "review", "PR", "PR review"],
+  oneshot: ["single session", "review", "PR", "PR review"],
+  freeform: ["single session", "review", "PR", "PR review"],
 } as const;
 
 export const WORKFLOW_GRAPH_LABELS = {
@@ -122,6 +139,9 @@ export const ITERATE_SKILL_BY_LABEL: Partial<Record<PhaseLabel, SkillId>> = {
   structure: "iterate-structure-outline",
   plan: "iterate-plan",
   implementation: "iterate-implementation",
+  "code-review": "review-code",
+  "review-fixes": "fix-code-review",
+  "pr-review": "resolve-pr-reviews",
 };
 
 export const FIRST_SKILL_BY_WORKFLOW = {
@@ -163,7 +183,7 @@ const RESEARCH_AND_DESIGN = new Set([
 
 const PLANNING = new Set(["structure", "plan", "worktree-setup"]);
 // Ground truth does not specify rpi:review, so keep it in Implementation for now.
-const IMPLEMENTATION = new Set(["implementation", "implement-plan", "implement-outline", "describe-pr", "review"]);
+const IMPLEMENTATION = new Set(["implementation", "implement-plan", "implement-outline", "code-review", "review-fixes", "describe-pr", "pr-review", "review"]);
 
 export function deriveBoardColumn(currentLabel: string | null | undefined, isDraft: boolean): BoardColumn {
   if (isDraft || !currentLabel) return "todo_draft";
@@ -197,12 +217,10 @@ export type SuggestedNext = {
 };
 
 // Suggested-next affordance (plan §2.9 / phase 8 review): visible whenever the agent's own
-// extraction did not find a next step, or found one that disagrees with what this workflow type
-// defines as the canonical next skill for this label, uniformly, whether or not the label is a
-// human gate (a human-gated label never auto-advances, but still gets the same one-click launch
-// when its own extraction is missing or wrong). Comparison against `transition.next` is a raw
-// string equality on the same two fields advanceSession's auto-advance gate already compares, so
-// this never disagrees with what auto-advance itself would have matched.
+// extraction did not find a next step, or found one outside the targets allowed for this label.
+// Branching labels stay hidden when extraction is missing because the workflow cannot safely
+// choose a branch. autoAdvanceAccepts is shared with advanceSession so both paths accept the same
+// extracted targets.
 export function computeSuggestedNext(label: PhaseLabel | null, workflowType: string, extraction: SuggestedNextExtraction): SuggestedNext {
   const empty: SuggestedNext = { visible: false, skillId: null, buttonText: null, mismatch: false, extractedSkillId: null };
   if (!label) return empty;
@@ -211,9 +229,10 @@ export function computeSuggestedNext(label: PhaseLabel | null, workflowType: str
   const info = SKILL_BY_ID[transition.next];
   const buttonText = info?.buttonText ?? transition.next;
   if (!extraction || extraction.type === "no_next_step") {
+    if (AUTO_ADVANCE_ALTERNATIVES[label]?.length) return empty;
     return { visible: true, skillId: transition.next, buttonText, mismatch: false, extractedSkillId: null };
   }
-  const mismatch = extraction.nextStepType !== transition.next;
+  const mismatch = !autoAdvanceAccepts(label, workflowType, extraction.nextStepType);
   return { visible: mismatch, skillId: transition.next, buttonText, mismatch, extractedSkillId: extraction.nextStepType };
 }
 

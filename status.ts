@@ -232,12 +232,12 @@ export function attentionQueue<
 export function workflowSteps(workflowType: PhaseWorkflowType, worktreeTiming: PhaseWorktreeTiming): string[] {
   const baseSteps =
     workflowType === "rpi"
-      ? ["questions", "research", "design", "plan", "implementation", "PR"]
+      ? ["questions", "research", "design", "plan", "implementation", "review", "PR", "PR review"]
       : workflowType === "outline_only"
-        ? ["questions", "research", "structure", "implementation", "PR"]
+        ? ["questions", "research", "structure", "implementation", "review", "PR", "PR review"]
         : workflowType === "prd_tdd"
-          ? ["research", "PRD", "TDD", "plan", "implementation", "PR"]
-          : ["single session"];
+          ? ["research", "PRD", "TDD", "plan", "implementation", "review", "PR", "PR review"]
+          : ["single session", "review", "PR", "PR review"];
   return worktreeTiming === "never" || baseSteps[0] === "single session"
     ? baseSteps
     : worktreeTiming === "now"
@@ -257,10 +257,13 @@ export function stepIndex(label: string | null | undefined, workflowType: PhaseW
 export function labelStep(label: string | null | undefined): string | null {
   const normalized = label?.startsWith("rpi:") ? label.slice(4) : label;
   if (normalized === "research-questions") return "questions";
+  if (normalized === "freeform") return "single session";
   if (normalized === "worktree-setup") return "worktree";
   if (normalized === "structure") return "structure";
   if (normalized === "implementation") return "implementation";
+  if (normalized === "code-review" || normalized === "review-fixes") return "review";
   if (normalized === "describe-pr") return "PR";
+  if (normalized === "pr-review") return "PR review";
   if (normalized === "design-prd") return "PRD";
   if (normalized === "design-tdd") return "TDD";
   return normalized ?? null;
@@ -316,7 +319,9 @@ export const PHASE_DESCRIPTIONS: Record<string, string> = {
   plan: "Writes the step-by-step implementation plan with verification.",
   worktree: "Creates the branch and directory implementation will use.",
   implementation: "Executes the plan in the task's worktree, committing as it goes.",
+  review: "Optionally reviews the complete change and fixes findings until the diff is clean.",
   PR: "Writes the pull request description for review.",
+  "PR review": "Addresses pull request feedback and records the review outcome.",
   structure: "Outlines the code structure before implementation.",
   PRD: "Writes the product requirements document.",
   TDD: "Writes the technical design document.",

@@ -82,6 +82,10 @@ const MATRIX = [
   { label: "plan", next: "setup-worktree", flag: "aa_plan_to_worktree", humanGate: false },
   { label: "worktree-setup", next: "implement-plan", flag: "aa_worktree_to_implementation", humanGate: false },
   { label: "implementation", next: "describe-pr", flag: "aa_implementation_to_pr", humanGate: false },
+  { label: "code-review", next: "fix-code-review", flag: "aa_implementation_to_pr", humanGate: false },
+  { label: "review-fixes", next: "review-code", flag: "aa_implementation_to_pr", humanGate: false },
+  { label: "describe-pr", next: "resolve-pr-reviews", flag: null, humanGate: true },
+  { label: "pr-review", next: "resolve-pr-reviews", flag: null, humanGate: true },
 ] as const;
 
 test("auto-advance matrix covers rows, flags, master switch, blockers, and missing next step", async () => {
@@ -146,6 +150,15 @@ test("auto-advance refuses mismatched extracted target", async () => {
   const { session } = seed(db, "research-questions", "create-design-discussion");
   await onCompletedTurn(bb as never, db, new Map(), createLaunchBindingMirror(), session);
   assert.equal(spawns.length, 0);
+  db.close();
+});
+
+test("clean code review can auto-advance directly to pull request creation", async () => {
+  const db = makeDb();
+  const { bb, spawns } = fakeBb();
+  const { session } = seed(db, "code-review", "describe-pr");
+  await onCompletedTurn(bb as never, db, new Map(), createLaunchBindingMirror(), session);
+  assert.equal(spawns.length, 1);
   db.close();
 });
 
@@ -270,6 +283,9 @@ test("reload with pending attempt and stamped advance keeps launch blocked witho
 test("iterateSkillForLabel resolves a label's iterate skill or null when it has none", () => {
   assert.equal(iterateSkillForLabel("research"), "iterate-research");
   assert.equal(iterateSkillForLabel("plan"), "iterate-plan");
+  assert.equal(iterateSkillForLabel("code-review"), "review-code");
+  assert.equal(iterateSkillForLabel("review-fixes"), "fix-code-review");
+  assert.equal(iterateSkillForLabel("pr-review"), "resolve-pr-reviews");
   assert.equal(iterateSkillForLabel(null), null);
   assert.equal(iterateSkillForLabel("describe-pr"), null);
 });

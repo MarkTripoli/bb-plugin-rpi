@@ -332,21 +332,25 @@ test("PHASE_DESCRIPTIONS covers every step of every WORKFLOW_GRAPHS entry", () =
 });
 
 test("workflowSteps: rpi with worktree now/later/never", () => {
-  assert.deepEqual(workflowSteps("rpi", "now"), ["worktree", "questions", "research", "design", "plan", "implementation", "PR"]);
-  assert.deepEqual(workflowSteps("rpi", "later"), ["questions", "research", "design", "plan", "worktree", "implementation", "PR"]);
-  assert.deepEqual(workflowSteps("rpi", "never"), ["questions", "research", "design", "plan", "implementation", "PR"]);
+  assert.deepEqual(workflowSteps("rpi", "now"), ["worktree", "questions", "research", "design", "plan", "implementation", "review", "PR", "PR review"]);
+  assert.deepEqual(workflowSteps("rpi", "later"), ["questions", "research", "design", "plan", "worktree", "implementation", "review", "PR", "PR review"]);
+  assert.deepEqual(workflowSteps("rpi", "never"), ["questions", "research", "design", "plan", "implementation", "review", "PR", "PR review"]);
 });
 
-test("workflowSteps: oneshot ignores worktree timing", () => {
-  assert.deepEqual(workflowSteps("oneshot", "now"), ["single session"]);
-  assert.deepEqual(workflowSteps("oneshot", "later"), ["single session"]);
+test("workflowSteps: oneshot ignores worktree timing but keeps optional review phases", () => {
+  assert.deepEqual(workflowSteps("oneshot", "now"), ["single session", "review", "PR", "PR review"]);
+  assert.deepEqual(workflowSteps("oneshot", "later"), ["single session", "review", "PR", "PR review"]);
 });
 
 test("labelStep: normalizes rpi: prefix and known labels", () => {
   assert.equal(labelStep("rpi:research"), "research");
+  assert.equal(labelStep("freeform"), "single session");
   assert.equal(labelStep("research-questions"), "questions");
   assert.equal(labelStep("worktree-setup"), "worktree");
+  assert.equal(labelStep("code-review"), "review");
+  assert.equal(labelStep("review-fixes"), "review");
   assert.equal(labelStep("describe-pr"), "PR");
+  assert.equal(labelStep("pr-review"), "PR review");
   assert.equal(labelStep(null), null);
   assert.equal(labelStep(undefined), null);
 });
@@ -364,7 +368,7 @@ test("phaseProgress: counts, worst tone, and done/current/future split", () => {
     ],
   });
   const steps = entries.map((entry) => entry.step);
-  assert.deepEqual(steps, ["questions", "research", "design", "plan", "worktree", "implementation", "PR"]);
+  assert.deepEqual(steps, ["questions", "research", "design", "plan", "worktree", "implementation", "review", "PR", "PR review"]);
 
   const questions = entries.find((entry) => entry.step === "questions")!;
   assert.equal(questions.state, "done");

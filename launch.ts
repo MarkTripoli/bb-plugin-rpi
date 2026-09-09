@@ -19,7 +19,7 @@ import {
   type LaunchBindingMirror,
   type SessionMirrorRow,
 } from "./sessions";
-import { TASK_CONTEXT_FIRST_ACTION } from "./instructions";
+import { START_LINKED_TICKET_ACTION, TASK_CONTEXT_FIRST_ACTION } from "./instructions";
 import { supersedeReadyRecoverNotification } from "./notify";
 
 type Database = BetterSqlite3.Database;
@@ -506,9 +506,13 @@ export async function launchPhase(
 export async function launchDraft(bb: BbPluginApi, db: Database, mirror: Map<string, SessionMirrorRow>, bindings: LaunchBindingMirror, taskId: string) {
   const task = readTaskOrThrow(db, taskId);
   const firstSkill = FIRST_SKILL_BY_WORKFLOW[task.workflowType] as SkillId | null;
+  const firstPrompt = firstSkill
+    ? `${skillInfo(firstSkill)!.command}\n\n${START_LINKED_TICKET_ACTION}`
+    : `${task.draftPrompt}\n\n${START_LINKED_TICKET_ACTION}`;
   const result = await launchPhase(bb, db, mirror, bindings, task, {
     skillId: firstSkill,
-    prompt: firstSkill ? undefined : task.draftPrompt,
+    commandLine: firstSkill ? firstPrompt : null,
+    prompt: firstSkill ? undefined : firstPrompt,
     launchedBy: "user",
     fromThreadId: null,
   });

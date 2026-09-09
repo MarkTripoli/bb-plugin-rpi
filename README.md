@@ -22,7 +22,8 @@ or `bb plugin install git:https://github.com/<org>/bb-plugin-rpi.git@<tag>`.
 ## The RPI loop
 
 A task moves through **questions → research → design → plan → worktree setup
-→ implementation → describe-pr**, one bb thread ("session") per phase. Each
+→ implementation → optional code review/fix loop → describe-pr → optional pull
+request review loop**, one bb thread ("session") per phase. Each
 phase is a `rpi-<skill>` skill invoked as `/rpi-create-research` etc.; the
 task's artifacts (`task.md`, numbered research/design/plan docs,
 `pr-description.md`, ...) live in the plugin's SQLite database and mirror out
@@ -37,7 +38,21 @@ the work, pick a workflow type (`rpi`, `outline_only`, `prd_tdd`, `oneshot`,
 **Create** to launch immediately or **Save draft** to launch later. The task
 detail page has tabs for Sessions, Artifacts, Workspace, Auto-advance, Scratch,
 Minimap, and Tips. Each phase session's header shows its phase pill, status,
-context-window gauge, and Proceed / Iterate / Fork / Interrupt controls.
+context-window gauge, and Proceed / Iterate / Fork / Interrupt controls. After
+implementation, the header action menu can start a code review or jump directly
+to pull request creation. Review findings flow to a fix session and back to a
+fresh review until clean. After pull request creation, the same menu can run
+another review-comment resolution round until the current head is approved.
+Oneshot and freeform tasks expose the same optional actions after their single
+work session. The thread side panel has one **RPI** action that keeps Artifacts,
+Workspace, Scratch, Minimap, Tips, model settings, code review, pull request
+creation, and pull request review resolution available from any task session.
+
+When the first task session starts, it receives a best-effort instruction to
+move exactly one unambiguous linked ticket to the repository's existing active
+or in-progress state. It skips safely when no supported ticketing system or
+unique ticket is declared. This uses the agent's configured ticketing tools;
+the plugin does not persist a second ticket status.
 
 ### From the CLI
 
@@ -96,7 +111,7 @@ turn with no machine-readable next step.
 
 | Phase | Recommended | Notes |
 |---|---|---|
-| Design, plan, implementation orchestration (the phases that decide what to build and drive the multi-step implementation) | Sonnet-class or gpt-5.4 (non-mini) | These phases carry the most judgment and the most template discipline; a mini-class model dropping the template here costs the most rework. |
+| Design, plan, implementation orchestration, code review, and pull request review resolution | Sonnet-class or gpt-5.4 (non-mini) | These phases carry the most judgment and the most template discipline; a mini-class model dropping the template here costs the most rework. |
 | Research questions, bounded research children (the 7 `rpi-agent-*` skills), `describe-pr` | mini-class acceptable | Narrower, more mechanical tasks; a dropped template here is cheap to recover from. |
 
 A mini-class model frequently drops the final-answer template even when asked
@@ -108,7 +123,10 @@ workflow's own canonical next skill for that phase, one click away through
 is the same affordance that appears when the model's extraction disagrees
 with what the workflow expects, and for a human-gated phase, which is manual
 regardless. Auto-advance itself is unaffected: it only ever fires on an exact
-extraction match, never on a Suggested-next fallback.
+allowed extraction target, never on a Suggested-next fallback. Code review is
+the one branching phase: findings lead to fixes, while a clean review leads to
+pull request creation. If that extraction is missing, the plugin does not guess;
+use the header action menu to review again or create the pull request.
 
 This plugin does not pre-seed model ids anywhere (`prefs.defaults`,
 `prefs.workflowDefaults`, or the bb settings default-model keys all start

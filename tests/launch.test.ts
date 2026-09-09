@@ -4,8 +4,8 @@ import Database from "better-sqlite3";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { MIGRATIONS } from "../db";
 import { createDraftTask } from "../tasks";
-import { launchPhase, LaunchRejectedError, listLaunchAdoptionCandidates, promoteStalePendingLaunchAttempts, resolveLaunchAttempt } from "../launch";
-import { TASK_CONTEXT_FIRST_ACTION } from "../instructions";
+import { launchDraft, launchPhase, LaunchRejectedError, listLaunchAdoptionCandidates, promoteStalePendingLaunchAttempts, resolveLaunchAttempt } from "../launch";
+import { START_LINKED_TICKET_ACTION, TASK_CONTEXT_FIRST_ACTION } from "../instructions";
 import { bindPendingLaunch, createLaunchBindingMirror, registerPendingLaunch, type SessionMirrorRow } from "../sessions";
 
 function makeDb() {
@@ -15,12 +15,12 @@ function makeDb() {
   return db;
 }
 
-function seedTask(db: Database.Database) {
+function seedTask(db: Database.Database, workflowType: "freeform" | "rpi" = "freeform") {
   return createDraftTask(db, {
     projectId: "proj_1",
     prompt: "prompt",
     name: "Task",
-    workflowType: "freeform",
+    workflowType,
     worktreeTiming: "never",
     permissionMode: "default",
     autoAdvance: false,
@@ -119,6 +119,33 @@ test("launchPhase prompts start with marker then task context first-action line"
   const lines = prompt.split("\n");
   assert.equal(lines[0], TASK_CONTEXT_FIRST_ACTION);
   assert.match(lines[lines.length - 1]!, /^<!-- rpi:launch:/);
+  db.close();
+});
+
+test("launchDraft asks the first session of structured and freeform tasks to start one unambiguous linked ticket", async () => {
+  const db = makeDb();
+  const prompts: string[] = [];
+  const bb = {
+    realtime: { publish: () => undefined },
+    sdk: {
+      projects: stubDefaultSource(),
+      threads: {
+        spawn: async (input: { prompt: string }) => {
+          prompts.push(input.prompt);
+          return makeThreadResponse({ id: `thr_${prompts.length}`, environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
+        },
+        get: async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" }),
+      },
+    },
+    log: { warn: () => undefined },
+  };
+  await launchDraft(bb as never, db, new Map(), createLaunchBindingMirror(), seedTask(db, "rpi"));
+  await launchDraft(bb as never, db, new Map(), createLaunchBindingMirror(), seedTask(db, "freeform"));
+  assert.equal(prompts.length, 2);
+  assert.ok(prompts.every((prompt) => prompt.startsWith(TASK_CONTEXT_FIRST_ACTION)));
+  assert.ok(prompts.every((prompt) => prompt.includes(START_LINKED_TICKET_ACTION)));
+  assert.match(prompts[0]!, /\/rpi-create-research-questions[\s\S]+Before phase work/);
+  assert.match(prompts[1]!, /prompt[\s\S]+Before phase work/);
   db.close();
 });
 

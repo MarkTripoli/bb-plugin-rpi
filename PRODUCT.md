@@ -14,7 +14,7 @@ Planned audience: engineers in a larger organization who have not learned the RP
 
 ## Product Purpose
 
-RPI (research, plan, implement) runs a software task through phases, one fresh bb agent session ("thread") per phase: research questions, research, design, plan, worktree setup, implementation, describe-pr. Each phase reads the previous phases' markdown artifacts and writes new ones. The plugin owns tasks, artifacts and their versions, line-anchored comments that flow back to the authoring agent, auto-advance between phases with human gates, notifications, and the `rpi-*` skills that drive the loop. bb owns threads, environments and worktrees, providers, permissions, and diffs.
+RPI (research, plan, implement) runs a software task through phases, one fresh bb agent session ("thread") per phase: research questions, research, design, plan, worktree setup, implementation, an optional code review and fix loop, describe-pr, and an optional pull request review loop. Each phase reads the previous phases' markdown artifacts and writes new ones. The plugin owns tasks, artifacts and their versions, line-anchored comments that flow back to the authoring agent, auto-advance between phases with human gates, notifications, and the `rpi-*` skills that drive the loop. bb owns threads, environments and worktrees, providers, permissions, and diffs.
 
 Success for the user of the panel: knowing within seconds which sessions are waiting on them and why, acting on one in a single step, and reviewing a phase's artifact with comments the next phase will honor. Success for the product: a task reaches a PR with the human touching it only at the gates they chose.
 
@@ -24,7 +24,7 @@ A phase-per-session workflow with durable, versioned, commentable artifacts and 
 
 ## Operating Context
 
-- Runs as a bb plugin panel (sidebar entry "RPI"), a thread header action, a composer banner, and thread-side panels. Same React/Tailwind/shadcn stack as bb; host token classes only, no hardcoded colors; the user's active bb theme applies (currently Dracula dark).
+- Runs as a bb plugin panel (sidebar entry "RPI"), a thread header action, a composer banner, and one RPI thread-side hub. Same React/Tailwind/shadcn stack as bb; host token classes only, no hardcoded colors; the user's active bb theme applies (currently Dracula dark).
 - Sessions are bb threads; the primary action on a waiting session is to open its thread and use the composer banner (Proceed, Iterate) or reply.
 - Artifacts mirror to `.rpi/tasks/<slug>/` in the workspace so agents can read them; the panel reads them from the plugin database.
 - Used on a wide desktop window, in bb's split view where the panel can be narrower than 560px, and on a phone through the remote shell.
@@ -34,11 +34,13 @@ A phase-per-session workflow with durable, versioned, commentable artifacts and 
 
 - Session status is derived from bb state (ready_for_input, needs_approval, running, launching, resuming, failed, interrupted, lost, and settled states); the plugin never sets it. Internal names are parity-bound; UI labels are not.
 - Workflow types: rpi, outline_only, prd_tdd, oneshot, freeform. Worktree timing: now, later, never. Permission mode per task. Auto-advance per transition with fixed human gates.
+- From any task session, the user can review the complete diff, cycle through finding repairs until a fresh review is clean, or jump directly to pull request creation. After the pull request, review-comment resolution is a repeatable human gate until the current head is approved.
+- The first session receives a best-effort instruction to move one unambiguous linked ticket to the repository's existing active state. Ticket import and provider-neutral status verification remain outside the plugin.
 - Artifacts: markdown and binary, versioned, soft-deletable, restorable, hydrated from the workspace on demand. Comments anchor per line (since 2026-09-06), re-anchor across versions, and can be sent to a chosen session, optionally resolving on send.
 - Context-window pressure per session with a configurable warning threshold (global default, per-model rules).
 - Hotkeys exist (T for new task, g then t for tasks, configurable jump key). Split widths persist per browser.
 - Constraints: `bb.agents` callbacks are synchronous; every workspace write is CAS-guarded; migrations are append-only after the first tagged release; pure logic lives in pure modules with node:test coverage; `server.ts` is wiring only; no em dashes in copy.
-- Undecided: whether task-detail surfaces beyond Sessions and Artifacts (Workspace, Auto-advance, Scratch, Tips) belong in the panel or in thread-side panels.
+- The RPI thread-side hub keeps workflow actions beside Artifacts, Workspace, Scratch, Minimap, Tips, model selection, and auto-advance settings. Task detail remains the full-page inspection surface.
 
 ## Brand Commitments
 

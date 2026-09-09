@@ -1,7 +1,7 @@
 # FEATURES.md - what the plugin does
 
 This is a feature ledger for the plugin as shipped, verified against the code in this
-repository as of phase 8, not aspirational. `status` is one of:
+repository as of phase 15, not aspirational. `status` is one of:
 
 - **full** - shipped, works as described, no named gap.
 - **partial** - shipped, with a named gap or a deliberate deviation.
@@ -10,22 +10,23 @@ repository as of phase 8, not aspirational. `status` is one of:
 
 `npm run check:features` (`scripts/features-count.ts`, covered by `tests/features.test.ts`)
 mechanically counts every `status`-column cell in this file's one table and asserts the total
-matches what's printed here, so this paragraph cannot silently drift from the table: **90
-status-bearing rows, 1 of them mixed (the palette row counts toward both N/A and full): 60
-full, 12 partial, 7 omitted, 12 N/A**.
+matches what's printed here, so this paragraph cannot silently drift from the table: **93
+status-bearing rows, 1 of them mixed (the palette row counts toward both N/A and full): 62
+full, 13 partial, 7 omitted, 12 N/A**.
 
 ## Features
 
 | Category | Feature | Status | Where | Note |
 |---|---|---|---|---|
 | Tasks | Task with name, slug, draft prompt, workflow type, worktree timing, permission mode, host/directory; one SQLite row per task, `.rpi/tasks/<slug>/` mirror dir | full | `tasks.ts`, `db.ts` migration 0 | Slug collisions get `-2`, `-3`, ... suffixes (`generateTaskSlug`). |
+| Tasks | First task session asks the agent to move exactly one unambiguous linked ticket to the repository's existing active state | partial | `launch.ts`, `instructions.ts` | Best effort through the agent's configured ticketing tools. It skips without a unique ticket or declared system; the plugin has no provider-neutral ticket mutation API. |
 | Tasks | Board columns (TODO/DRAFT, RESEARCH & DESIGN, PLANNING, IMPLEMENTATION) derived from `isDraft` and the current phase label | full | `transitions.ts` `deriveBoardColumn` | `review` (comment-review phase) buckets into Implementation; a deliberate simplification, not a spec requirement. |
 | Tasks | List and Board views | partial | `ui/rpi.tsx` `TaskListView`/`TaskBoard` | Single-user plugin: no MINE/FILTER USERS/GROUPED-by-owner view (nothing to filter by). |
 | Tasks | Archive task: `archiveTask` RPC, `⌘E` hotkey with confirm, palette action, "Archive current task" | full | `tasks.ts`, `ui/rpi.tsx` `RpiThreadHeaderAction`, `app.tsx` | |
-| Workflow types | `rpi`: questions → research → design → plan → worktree → implementation → PR | full | `transitions.ts` `WORKFLOW_GRAPHS.rpi` | |
-| Workflow types | `outline_only`: questions → research → structure → implementation → PR | full | `transitions.ts` | |
-| Workflow types | `prd_tdd`: research → PRD → TDD → plan → worktree → implementation → PR | full | `transitions.ts` | |
-| Workflow types | `oneshot` / `freeform` single-session workflows, no phase graph | full | `transitions.ts` | |
+| Workflow types | `rpi`: questions → research → design → plan → worktree → implementation → optional review → PR → optional PR review | full | `transitions.ts` `WORKFLOW_GRAPHS.rpi` | |
+| Workflow types | `outline_only`: questions → research → structure → implementation → optional review → PR → optional PR review | full | `transitions.ts` | |
+| Workflow types | `prd_tdd`: research → PRD → TDD → plan → worktree → implementation → optional review → PR → optional PR review | full | `transitions.ts` | |
+| Workflow types | `oneshot` / `freeform`: single session → optional review → PR → optional PR review | full | `transitions.ts` | Review and PR phases are entered manually. |
 | Workflow types | Workflow strip showing live position in the graph | full | `ui/rpi.tsx` `WorkflowStrip` | |
 | Sessions / status vocabulary | 12 session statuses (draft, ready_for_launch, launching, resuming, running, needs_approval, ready_for_input, interrupt_requested, failed, interrupted, lost, waiting_for_workspace), derived from bb thread/environment/interaction state, never set directly | full | `sessions.ts` `deriveStatus` | `lost` is derived only from `runtime.displayStatus` (`waiting-for-host`/`host-reconnecting`), never an inactivity timer. |
 | Sessions / status vocabulary | `user_question` interaction blocks the session, mapped to `ready_for_input` with `blockedReason: "question"` | partial | `sessions.ts` | Deliberate design decision for this case, not a gap. |
@@ -40,6 +41,8 @@ full, 12 partial, 7 omitted, 12 N/A**.
 | Auto-advance table (all flags) | plan → `aa_plan_to_worktree` → setup-worktree → worktree-setup | full | `transitions.ts` | |
 | Auto-advance table (all flags) | worktree-setup → `aa_worktree_to_implementation` → implement-plan → implementation | full | `transitions.ts` | |
 | Auto-advance table (all flags) | implementation → `aa_implementation_to_pr` → describe-pr → describe-pr | full | `transitions.ts` | Default **off** (a PR is typically a manual step). |
+| Auto-advance table (all flags) | code-review → `aa_implementation_to_pr` → fix-code-review when findings remain or describe-pr when clean; review-fixes → review-code | full | `transitions.ts`, `advance.ts` | Review is entered manually. Once entered, the existing flag can drive review and fix rounds until clean. Missing extraction never guesses the branch. |
+| Auto-advance table (all flags) | describe-pr → resolve-pr-reviews and pr-review → resolve-pr-reviews are human gates | full | `transitions.ts` | External approval and new comments are re-fetched only when the user starts a round; the plugin does not poll or auto-reply. |
 | Executor & recovery notes | Executor idempotency via CAS (`advanced_at`) plus a minimal `launch_attempts` row | full (by design, decision §2.4) | `advance.ts`, `launch.ts` | Executor runs only after a completed turn (never a `user_question` idle). |
 | Executor & recovery notes | Recover-launch for `uncertain` spawns: Adopt / Retry / Dismiss row on the Sessions tab | full | `launch.ts`, `ui/rpi.tsx` `RecoverLaunchRow` | No time-based auto-release of a stuck attempt (bb has no spawn idempotency key). |
 | Artifacts | Numbered task artifacts, frontmatter type, grouped viewer (Preview/Raw/versions/soft-delete/restore); SQLite is the source of truth, mirrored to `.rpi/tasks/<slug>/` | full | `artifacts.ts`, `mirror.ts`, `ui/rpi.tsx` `ArtifactsPanel` | |
@@ -58,10 +61,10 @@ full, 12 partial, 7 omitted, 12 N/A**.
 | Context management | Context shards (cross-session extracted facts, evidence, per-user enable/disable/dismiss) | omitted | - | Would need an LLM extraction pass and a durable-facts store; bb's Memory plugin already covers the user-preference half. |
 | Context management | Handoff artifacts by convention (`handoff.md`), no special-casing needed (plain artifact) | full | `skills/rpi-*` | |
 | Context management | Subagent delegation for research/implementation: 7 agent skills spawned as `--parent-self` child threads | full | `sessions.ts` `registerSessionRuntime`, `child_threads` table | Delegation itself (spawn, classify, instructions) is deterministic and fully wired; whether a given model actually *invokes* an agent skill instead of doing the work inline is model-dependent (mini-class models in particular; see README's model guidance table). |
-| Skills (23 RPI skills + 7 agent skills) | 22 phase skills + `show-me` = 23, one directory per skill, `rpi-` prefix to avoid the global `show-me` collision | full | `skills/`, `transitions.ts` `SKILLS`/`HELPERS` | `tests/skills.test.ts` enforces that shipped skills and references contain no third-party reference shingles. |
-| Skills (23 RPI skills + 7 agent skills) | 7 agents (codebase-locator, codebase-analyzer, codebase-pattern-finder, web-search-researcher, implementer, outline-implementer, implementation-reviewer) as `rpi-agent-*` skills, invoked in child threads (`bb thread spawn --parent-self`) | full | `skills/rpi-agent-*`, `transitions.ts` `RPI_AGENT_SKILL_IDS` | |
-| Skills (23 RPI skills + 7 agent skills) | Every final-answer template's command block parses to the expected next skill | full | `tests/skills.test.ts`, `tests/extraction.test.ts` | |
-| Skills (23 RPI skills + 7 agent skills) | "Faster research subagents" (Haiku-class) preference: `researchModel` in prefs, threaded into `taskInstructions()` | full | `contract.ts`, `sessions.ts` `taskInstructions` | |
+| Skills (26 RPI skills + 7 agent skills) | 25 phase skills + `show-me` = 26, one directory per skill, `rpi-` prefix to avoid the global `show-me` collision | full | `skills/`, `transitions.ts` `SKILLS`/`HELPERS` | `tests/skills.test.ts` enforces that shipped skills and references contain no third-party reference shingles. |
+| Skills (26 RPI skills + 7 agent skills) | 7 agents (codebase-locator, codebase-analyzer, codebase-pattern-finder, web-search-researcher, implementer, outline-implementer, implementation-reviewer) as `rpi-agent-*` skills, invoked in child threads (`bb thread spawn --parent-self`) | full | `skills/rpi-agent-*`, `transitions.ts` `RPI_AGENT_SKILL_IDS` | |
+| Skills (26 RPI skills + 7 agent skills) | Every final-answer template's command block parses to the expected next skill | full | `tests/skills.test.ts`, `tests/extraction.test.ts` | |
+| Skills (26 RPI skills + 7 agent skills) | "Faster research subagents" (Haiku-class) preference: `researchModel` in prefs, threaded into `taskInstructions()` | full | `contract.ts`, `sessions.ts` `taskInstructions` | |
 | Agents (per-thread configuration) | Task session gets the phase skill set + comment/artifact tools via `bb.agents.configure` returning `{tools, skills}` for task-session and child-agent threads, `{}` otherwise | full | `server.ts` | Callback is synchronous per the phase-0 spike hard rule; `tests/sessions.test.ts` asserts non-Promise return. |
 | Agents (per-thread configuration) | Task context injected at session start via `bb.agents.contributeInstructions`, ≤4096 chars, sync, backed by an in-memory mirror | full | `server.ts`, `sessions.ts` `taskInstructions` | |
 | Notifications | Triggers: → `ready_for_input`, new pending approval, inbound artifact comment | full | `notify.ts` | |
@@ -100,9 +103,9 @@ full, 12 partial, 7 omitted, 12 N/A**.
 | UI surfaces | Task list/board, drafts | full | `app.tsx`, `ui/rpi.tsx` `RpiPanel` | `navPanel` titled "RPI". |
 | UI surfaces | New task composer (permissions, auto-advance, host, project/dir, worktree timing, workflow type, workflow strip) | full | `ui/rpi.tsx` `NewTaskPage` | |
 | UI surfaces | Task detail tabs: Artifacts, Sessions, Workspace, Scratch, Auto-advance, Tips, plus **Minimap** (one chip per session, not per message) | full (superset) | `ui/rpi.tsx` `TaskDetailPage` | |
-| UI surfaces | Thread panel tabs: Artifacts, Workspace, Scratch pad, Tips, Minimap | full | `app.tsx` `threadPanelAction` registrations | Minimap renders one chip per **session** (`MinimapPanel`), not per message inside a session; this plugin has no per-message timeline to chip. |
+| UI surfaces | One RPI thread panel hub: phase-independent code review, PR creation, PR review resolution, plus Artifacts, Workspace, Scratch pad, Tips, Minimap, model, and auto-advance | full (superset) | `app.tsx` `threadPanelAction`, `ui/rpi.tsx` `RpiThreadPanel` | Minimap renders one chip per **session** (`MinimapPanel`), not per message inside a session; this plugin has no per-message timeline to chip. |
 | UI surfaces | Diff/changes view | omitted | - | bb's environment diff panel is reused as-is (link out); no plugin comment/annotation slot exists to replicate a collaborative diff-comment surface. |
-| UI surfaces | Thread header: phase pill, status, context gauge, context-warning banner, Proceed/Iterate/Fork/Interrupt controls | full (superset) | `ui/rpi.tsx` `RpiThreadHeaderAction`, `RpiComposerBanner`, `app.tsx` `composer.customize` | Split across two host surfaces per the SDK's thread-header contract (48px row, 28px controls, taller content in a portalled popover; see `docs/phases/10-header-composer.md`). Header keeps phase pill, `SessionStatus`, `ContextGauge`, and one `size-7` "⋯" button ("RPI session actions") opening a portalled Popover with Iterate/Fork/Interrupt. The context-warning banner, Proceed, and Suggested next moved to `RpiComposerBanner`, a composer banner registered for thread scope only. |
+| UI surfaces | Thread header: phase pill, status, context gauge, context-warning banner, Proceed/Iterate/Fork/Interrupt and optional review controls | full (superset) | `ui/rpi.tsx` `RpiThreadHeaderAction`, `RpiComposerBanner`, `app.tsx` `composer.customize` | Split across two host surfaces per the SDK's thread-header contract (48px row, 28px controls, taller content in a portalled popover; see `docs/phases/10-header-composer.md`). The action popover exposes Review code and Create pull request after implementation, plus Resolve pull request reviews after PR creation. |
 | UI surfaces | `::rpi-artifact{...}` permalinks | full | `app.tsx`, `ui/rpi.tsx` | |
 | UI surfaces | Settings section: Notifications + Defaults | full | `app.tsx` | |
 | UI surfaces | Palette actions: 3 rows, Open Artifacts, Open Scratch pad, Archive current task | full | `app.tsx` `commandPaletteAction` | SDK exposes `commandPaletteAction`; not N/A. `run()` has no hook access, so these 3 call the plugin's own documented RPC HTTP route directly instead of `useRpc`. |
@@ -120,12 +123,13 @@ full, 12 partial, 7 omitted, 12 N/A**.
 7. **Sidebar replacement is exclusive.** Shipped behind the user's own Settings → Appearance → Sidebar choice, plus the component's own "Use default list" toggle; the nav panel remains the primary, always-available surface.
 8. **Frontmatter parser is flat only.** Nested frontmatter values are not supported (`artifacts.ts`).
 9. **Multi-repo layout.** One bb environment per repo, sequential; v1 UI shows only the primary repo (`workspace.ts`, `ui/rpi.tsx` `WorkspacePanel`).
+10. **Ticket state kickoff is agent-driven.** The first session receives a bounded instruction, but the plugin cannot prove or retry the external mutation without a provider-neutral ticket API.
 
 ## Explicit v1 omissions
 
 - **Context shards** (cross-session fact extraction with evidence and per-user enable/disable/dismiss): needs an LLM extraction pass and a durable-facts store; bb's Memory plugin already covers the user-preference half. Revisit after v1.
 - **Patch-anchored diff comments** and **Changes ALL / TO REVIEW** review-state tracking: bb's environment diff panel is reused as-is and has no plugin comment/annotation slot; requires an upstream SDK extension.
-- **Ticket-provider import** (Linear/Jira/GitHub issue → `ticket.md`): bb's GitHub and GitLab plugins own integrations; a later phase can add an `@issue` mention → `task.md` prefill. Manual paste works in v1.
+- **Ticket-provider import** (Linear/Jira/GitHub issue → `ticket.md`): bb's GitHub and GitLab plugins own integrations; a later phase can add an `@issue` mention → `task.md` prefill. Manual paste works in v1. This omission does not prevent the first-session kickoff instruction from using one ticket already identified in task context.
 - **Public artifact sharing** (`share_key`, permalinks outside bb): local-first plugin; bb connect tunnels already expose the app if needed.
 - **Queued-message `deliver_on_interrupt`**: bb queue rows have no interrupt-delivery flag; queued messages dispatch on idle via bb's own drain.
 - **Multiplayer prompting, org/team ACLs, chat-integration mute, billing, cost display**: no local or single-user equivalent.
