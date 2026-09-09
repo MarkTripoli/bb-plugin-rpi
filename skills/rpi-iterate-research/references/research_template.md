@@ -37,7 +37,7 @@ This document records current behavior only. It does not recommend implementatio
 
 ## Summary
 
-[Two to four concise paragraphs that synthesize the updated answer.]
+[Lead with the updated answer in a short paragraph. Add detail only for distinct findings the reader needs before the evidence below.]
 
 ## Detailed Findings
 
@@ -55,7 +55,7 @@ This document records current behavior only. It does not recommend implementatio
 
 ## Architecture Documentation
 
-[Narrative explanation of ownership boundaries, conventions, dependencies, state flow, data contracts, and composition.]
+[Explain how the findings fit together. Link to details already covered above; add only relationships or constraints not yet explained.]
 
 ## Open Questions
 

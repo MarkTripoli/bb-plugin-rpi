@@ -3,6 +3,8 @@ name: rpi-iterate-structure-outline
 description: Run for /rpi-iterate-structure-outline requests. Revise a phased implementation outline.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Iterate Structure Outline
 
 You are revising a structure outline from user feedback, comments, or new evidence. Keep the outline phased, vertical, and independently verifiable.

@@ -3,6 +3,8 @@ name: rpi-review-code
 description: Run for /rpi-review-code requests. Review the complete task diff and record only concrete findings.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Code Review
 
 Review the task's complete code change without editing product code. The output is a durable review artifact that either sends concrete findings to a fix session or records a clean review and permits pull request creation.

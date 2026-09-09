@@ -3,6 +3,8 @@ name: rpi-iterate-implementation
 description: Run for /rpi-iterate-implementation requests. Apply follow-up implementation feedback on the same branch.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Iterate Implementation
 
 Use this when implementation already happened and the user has follow-up feedback. The feedback may be a bug report, an adjustment, a missing phase, or a small extension on the same branch.

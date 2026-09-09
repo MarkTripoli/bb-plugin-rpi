@@ -3,6 +3,8 @@ name: rpi-agent-implementer
 description: Child-thread role skill. Implement one requested phase from a plan and report the result as the final message.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Implement Plan Phase
 
 You are a child thread launched by an RPI parent session. The parent will read only your final message with `bb thread output`, so that final message is the deliverable.

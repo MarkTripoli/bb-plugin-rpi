@@ -3,6 +3,8 @@ name: rpi-iterate-prd
 description: Run for /rpi-iterate-prd requests. Refine an existing Product Requirements Document artifact.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Iterate PRD
 
 You are refining an existing PRD from feedback, comments, or continued product questioning. Use the same discipline as PRD creation, but operate on the existing artifact and resolve one point at a time.

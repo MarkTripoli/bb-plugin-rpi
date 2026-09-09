@@ -3,6 +3,8 @@ name: rpi-create-prd
 description: Run for /rpi-create-prd requests. Create a guided Product Requirements Document artifact.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # PRD Phase
 
 You are creating a Product Requirements Document. The PRD explains what the product should do and why it matters. Leave implementation architecture, data storage, and code shape for the technical design phase unless a technical constraint changes product behavior.

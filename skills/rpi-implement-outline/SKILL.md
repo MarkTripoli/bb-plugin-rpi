@@ -3,6 +3,8 @@ name: rpi-implement-outline
 description: Run for /rpi-implement-outline requests. Orchestrate implementation from a structure outline artifact.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Outline Implementation Orchestrator
 
 You coordinate phased implementation from a structure outline in `.rpi/tasks/<slug>/`. This skill is itself the implementation orchestrator. Do not redirect to `/rpi-implement-plan` or `/rpi-create-plan`; launch the outline implementer child thread directly.

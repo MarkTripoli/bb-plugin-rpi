@@ -2,6 +2,8 @@
 
 Each skill starts by calling rpi_task_context, writes task artifacts under .rpi/tasks/<slug>/, saves artifacts through rpi_artifact_save, and ends with one text-fenced command for extraction.
 
+All phase and child-thread skills load the [RPI writing guide](WRITING.md). It governs artifact prose, revisions, and reports while each skill retains its required content and output format.
+
 | Skill | Label | Next command | Human gate |
 |---|---|---|---|
 | rpi-create-research-questions | research-questions | /rpi-create-research | no |

@@ -3,6 +3,8 @@ name: rpi-configure-workspaces
 description: Run for /rpi-configure-workspaces requests. Propose, write, and validate RPI workspace config files for bb-managed task environments.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Configure Workspaces
 
 ## Purpose

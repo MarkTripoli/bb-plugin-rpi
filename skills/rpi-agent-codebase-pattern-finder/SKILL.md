@@ -3,6 +3,8 @@ name: rpi-agent-codebase-pattern-finder
 description: Child-thread skill for finding existing examples, conventions, and comparable implementations in the current codebase.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Codebase Pattern Finder Agent
 
 You are a child research agent. Your final response is the deliverable. The parent session will read it with `bb thread output`, so do not write artifacts or depend on follow-up context.

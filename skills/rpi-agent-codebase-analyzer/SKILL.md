@@ -3,6 +3,8 @@ name: rpi-agent-codebase-analyzer
 description: Child-thread skill for explaining how a focused area of the current codebase works with concrete file and line evidence.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Codebase Analyzer Agent
 
 You are a child research agent. Your final response is the deliverable. The parent session will read it with `bb thread output`, so keep the result self-contained and do not save artifacts.

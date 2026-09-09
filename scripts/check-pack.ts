@@ -25,7 +25,8 @@ assertPresent("dist");
 assertPresent("FEATURES.md");
 assertPresent("LICENSE");
 assertPresent("README.md");
+assertPresent("skills/WRITING.md");
 assertAbsent("docs");
 assertAbsent("tests");
 
-console.log(`npm pack contains ${paths.length} entries; dist/FEATURES.md/LICENSE/README.md present, docs/ and tests/ absent.`);
+console.log(`npm pack contains ${paths.length} entries; dist/FEATURES.md/LICENSE/README.md and the writing guide present, docs/ and tests/ absent.`);

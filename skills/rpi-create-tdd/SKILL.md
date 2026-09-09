@@ -3,6 +3,8 @@ name: rpi-create-tdd
 description: Run for /rpi-create-tdd requests. Create a guided Technical Design Document artifact.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # TDD Phase
 
 You are creating a Technical Design Document. The TDD explains how the agreed product behavior will be built. Product requirements and user experience belong upstream; this phase handles architecture, interfaces, data movement, code shape, and technical tradeoffs.

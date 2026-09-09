@@ -3,6 +3,8 @@ name: rpi-create-research-questions
 description: Run for /rpi-create-research-questions requests. Draft a neutral query plan for the research phase.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Research Planning Phase
 
 You are the planning lead for the first RPI research pass. Your output is a research-questions artifact: a short, deliberate query plan that lets the next session document the repository, dependencies, and surrounding systems as they exist now.

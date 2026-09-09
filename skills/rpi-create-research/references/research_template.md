@@ -25,11 +25,11 @@ status: complete
 
 This document records current behavior only. It does not recommend implementation work, refactors, optimizations, or future changes.
 
-The findings were gathered from repository inspection, child research-thread outputs, existing tests, and external documentation only where needed for dependency behavior.
+[Name the sources actually examined and any limit that affects the findings. One sentence is usually enough.]
 
 ## Summary
 
-[Two to four concise paragraphs that synthesize the answer. Explain the major architecture, data flow, boundaries, and relationships without compressing the whole document into bullets.]
+[Lead with the answer in a short paragraph. Add detail only for distinct findings the reader needs before the evidence below.]
 
 ## Detailed Findings
 
@@ -62,7 +62,7 @@ The findings were gathered from repository inspection, child research-thread out
 
 ## Architecture Documentation
 
-[Narrative explanation of the current architectural shape: ownership boundaries, conventions, dependencies, state flow, data contracts, and how the pieces compose.]
+[Explain how the findings fit together. Link to details already covered above; add only relationships or constraints not yet explained.]
 
 ## Open Questions
 

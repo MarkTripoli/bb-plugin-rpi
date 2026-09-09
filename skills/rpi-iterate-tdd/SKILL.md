@@ -3,6 +3,8 @@ name: rpi-iterate-tdd
 description: Run for /rpi-iterate-tdd requests. Refine an existing Technical Design Document artifact.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Revise Technical Design
 
 You are refining an existing Technical Design Document. Use the TDD creation standards, work from feedback, and resolve one change or design question at a time.
