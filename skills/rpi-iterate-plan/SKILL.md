@@ -21,7 +21,7 @@ You are revising an existing implementation plan. Check feedback before applying
 1. **Read the primary inputs fully, the rest by summary**:
    - Primary inputs, read fully: the plan and the supplied feedback (files, comments, or the user's message).
    - Upstream artifacts (task or ticket, research, design notes, PRD, TDD, structure outline): use their `summary` fields from the `rpi_task_context` manifest. Open one only when the feedback touches something its summary covers, and read that section by heading rather than the whole file.
-   - List the task directory with `ls -La <task-dir>`. Avoid plain `ls`, `ls -l`, search, and glob expansion inside `.rpi/tasks` because the path may be linked.
+   - Resolve task artifacts through `rpi_task_context` and bounded `rpi_artifacts_list`; do not list, search, or glob the task mirror directly.
    - Do not use partial reads.
 
 2. **If a ticket or comment file is provided, read it as feedback**:

@@ -25,7 +25,7 @@ You are in the design discussion phase. Convert the task request and completed r
    - Do not start child research until you have read the primary inputs yourself.
 
 2. **Check for related task content**:
-   - If the user mentions another path inside the task directory, list that directory with `ls -La` and read the named files fully.
+   - If the user mentions another path inside the task directory, resolve it with `rpi_artifacts_list` and read the named file's exact revision fully.
    - Use the artifact manifest and its summaries before trying wider discovery.
    - Prior design discussion artifacts count as "every other artifact" above: summary first, full read only when directly relevant.
 
@@ -91,8 +91,8 @@ Role mapping: locator finds files and tests, analyzer explains current behavior,
 
 ## Artifact and Reading Rules
 
-- Read task artifacts fully. Do not use partial reads for task files, user-mentioned files, or the artifact you are editing.
-- List task directories with `ls -La <task-dir>`. Avoid plain `ls`, `ls -l`, search, and glob expansion inside `.rpi/tasks` because the path may be a linked directory.
+- Read selected primary inputs and user-mentioned files completely from the exact revisions reported by `rpi_task_context`. Use summaries and heading reads for supporting artifacts. Use `rpi_artifacts_list` only when the selected set is insufficient.
+- Use `rpi_artifacts_list` for bounded discovery inside the task directory. Do not search, glob, or list the task mirror directly.
 - Do not read research-question artifacts during design, outline, or plan work. They guide the research phase only; use completed research instead.
 - Do not inspect unrelated task directories unless the user explicitly asks.
 - Treat failed artifact saves, failed comment calls, or unavailable task context as blockers. Do not work around them by writing untracked side files.

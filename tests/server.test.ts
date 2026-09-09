@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
+import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin from "../server";
 import { listTasks } from "../tasks";
 import { listSessions } from "../sessions";
@@ -124,6 +124,10 @@ test("manual task completion persists, hides only that task, and reopens without
   assert.equal(attentionQueue(queueSessions, listTasks(db)).length, 1);
   assert.deepEqual(listSessions(db, taskId), sessionsBefore);
 });
+
+function toolText(result: string | { content: Array<{ type: string; text?: string }> }) {
+  return typeof result === "string" ? result : result.content.find((part) => part.type === "text")?.text ?? "";
+}
 
 test("sessions list CLI paginates and truncates summaries", async () => {
   const { bb, harness } = createFakePluginHost({
@@ -300,6 +304,92 @@ test("RPI launch RPC and CLI paths are enabled", async () => {
   assert.equal(launched.exitCode, 0);
   assert.equal(launched.stdout.trim(), "thr_internal_3");
   assert.equal(spawns, 3);
+  await harness.lifecycle.dispose();
+});
+
+test("artifact context tools select a bounded manifest and page exact revisions", async () => {
+  const thread = makeThreadResponse({ id: "thr_context", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "rpi",
+    sdk: {
+      subscribe: () => () => undefined,
+      projects: {
+        get: async ({ projectId }: { projectId: string }) => ({
+          id: projectId,
+          name: "Proj",
+          kind: "standard" as const,
+          gitRemoteUrl: null,
+          createdAt: 1,
+          updatedAt: 1,
+          sources: [{ id: "src_1", projectId, hostId: "host_seed", path: "/repo", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 }],
+        }),
+      },
+      threads: {
+        spawn: async () => thread,
+        get: async () => ({ ...thread, environment: { id: "env_1", path: "/repo", branchName: "feature/context", status: "ready" } }),
+        interactions: { list: async () => [] },
+      },
+    },
+  });
+  await plugin(bb);
+  const created = await harness.behavior.callRpc("createTask", {
+    request: { text: "prompt", projectId: "proj_1", workflowType: "rpi", worktreeTiming: "never", permissionMode: "default", autoAdvance: false },
+    name: "Task",
+    draft: true,
+  }) as { taskId: string };
+  for (let index = 1; index <= 30; index += 1) {
+    await harness.behavior.callRpc("saveArtifact", {
+      taskId: created.taskId,
+      fileName: `${String(index).padStart(2, "0")}-research-topic-${index}.md`,
+      content: `---\ntype: research\nsummary: Topic ${index}.\n---\n# Topic ${index}\nbody`,
+    });
+  }
+  await harness.behavior.callRpc("saveArtifact", {
+    taskId: created.taskId,
+    fileName: "99-plan-current.md",
+    content: "---\ntype: plan\nsummary: Current plan.\n---\n# Plan\nintro\n## Phase 1\nwork\n## Phase 2\nlater",
+  });
+  await harness.behavior.callRpc("launchSkill", {
+    taskId: created.taskId,
+    skillId: "implement-plan",
+    commandLine: "/rpi-implement-plan @99-plan-current.md",
+  });
+  bb.storage.database().prepare("UPDATE sessions SET hydrated_at = 1 WHERE thread_id = 'thr_context'").run();
+  await harness.behavior.emitThreadEvent("thread.active", { thread: { ...thread, status: "active" } });
+
+  const context = JSON.parse(toolText(await harness.behavior.callAgentTool("rpi_task_context", {}, { threadId: "thr_context", projectId: "proj_1" }))) as {
+    artifacts: Array<{ name: string; version: number; sha256: string; reason: string }>;
+    discovery: { total: number; selected: number; remaining: number };
+    metrics: { emittedBytes: number };
+    taskMd?: unknown;
+  };
+  assert.ok(context.artifacts.length <= 12);
+  assert.deepEqual(context.artifacts[0]?.name, "99-plan-current.md");
+  assert.equal(context.artifacts[0]?.reason, "command");
+  assert.equal(context.artifacts[0]?.version, 1);
+  assert.ok(context.artifacts[0]?.sha256);
+  assert.equal(context.discovery.total, 32);
+  assert.ok(context.discovery.remaining > 0);
+  assert.ok(context.metrics.emittedBytes > 0);
+  assert.equal("taskMd" in context, false);
+
+  const page = JSON.parse(toolText(await harness.behavior.callAgentTool("rpi_artifacts_list", { offset: 25, limit: 5 }, { threadId: "thr_context" }))) as {
+    artifacts: unknown[];
+    nextOffset: number | null;
+  };
+  assert.equal(page.artifacts.length, 5);
+  assert.equal(page.nextOffset, 30);
+
+  const read = JSON.parse(toolText(await harness.behavior.callAgentTool("rpi_artifact_read", {
+    file_name: "99-plan-current.md",
+    version: 1,
+    heading: "Phase 1",
+    max_chars: 100,
+  }, { threadId: "thr_context" }))) as { content: string; complete: boolean; currentVersion: number; sha256: string };
+  assert.equal(read.content, "## Phase 1\nwork");
+  assert.equal(read.complete, true);
+  assert.equal(read.currentVersion, 1);
+  assert.ok(read.sha256);
   await harness.lifecycle.dispose();
 });
 

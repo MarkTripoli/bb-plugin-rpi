@@ -230,6 +230,42 @@ test("phase successor spawn is a sibling with plugin metadata only", async () =>
   db.close();
 });
 
+test("phase successor prompt carries selected predecessor artifacts and checkpoint state", async () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  const task = db.prepare("SELECT id, project_id AS projectId, name, slug, draft_prompt AS draftPrompt, workflow_type AS workflowType, worktree_timing AS worktreeTiming, is_draft AS isDraft, archived, host_id AS hostId, base_environment_id AS baseEnvironmentId, worktree_environment_id AS worktreeEnvironmentId, default_directory AS defaultDirectory, provider_id AS providerId, model, reasoning_level AS reasoningLevel, service_tier AS serviceTier, permission_mode AS permissionMode, auto_advance AS autoAdvance, aa_questions_to_research, aa_research_to_design, aa_plan_to_worktree, aa_worktree_to_implementation, aa_implementation_to_pr, created_at AS createdAt, updated_at AS updatedAt FROM tasks WHERE id = ?").get(taskId) as never;
+  db.prepare(`
+    INSERT INTO sessions (
+      thread_id, task_id, label, skill_id, launched_by, rpi_status, rpi_status_at,
+      had_turn, interrupted, summary_json, created_at, updated_at
+    ) VALUES ('thr_source', ?, 'plan', 'create-plan', 'user', 'ready_for_input', 1, 1, 0, ?, 1, 1)
+  `).run(taskId, JSON.stringify({ relevantRPIDocuments: [{ localpath: ".rpi/tasks/task/09-plan-current.md" }] }));
+  db.prepare("INSERT INTO artifacts (id, task_id, file_name, current_version, created_at, updated_at) VALUES ('handoff', ?, 'handoff.md', 3, 1, 1)").run(taskId);
+  let prompt = "";
+  const bb = {
+    realtime: { publish: () => undefined },
+    sdk: {
+      projects: stubDefaultSource(),
+      threads: {
+        spawn: async (input: { prompt: string }) => {
+          prompt = input.prompt;
+          return makeThreadResponse({ id: "thr_next", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
+        },
+        get: async () => makeThreadResponse({ id: "thr_next", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" }),
+      },
+    },
+    log: { warn: () => undefined },
+  };
+  await launchPhase(bb as never, db, new Map(), createLaunchBindingMirror(), task, {
+    skillId: "implement-plan",
+    launchedBy: "proceed",
+    fromThreadId: "thr_source",
+  });
+  assert.match(prompt, /Previous session artifacts: @09-plan-current\.md/);
+  assert.match(prompt, /Checkpoint: rpi_task_context selects handoff\.md v3; read that exact revision with rpi_artifact_read/);
+  db.close();
+});
+
 test("adopt rejects a thread already bound to a session without resolving the attempt", async () => {
   const db = makeDb();
   const taskId = seedTask(db);

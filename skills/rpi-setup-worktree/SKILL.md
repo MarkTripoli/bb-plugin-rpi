@@ -38,7 +38,7 @@ Use the task slug from `rpi_task_context`. Read `task.md` or `ticket.md`, then r
 - plan artifact for `/rpi-implement-plan`
 - structure outline for `/rpi-implement-outline`
 
-List the task directory with `ls -La .rpi/tasks/<task-slug>` if the source artifact is not already known. Do not use glob-only discovery for task mirrors because they may be symlinks.
+Use `rpi_artifacts_list` if the source artifact is not already selected. Do not list, search, or glob the task mirror directly.
 
 ### Step 2: Create default config only when none exists
 

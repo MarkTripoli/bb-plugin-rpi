@@ -32,11 +32,7 @@ If no plan or outline is available, say that deviation analysis is limited and r
 
 If the assignment provides a file, read it directly and fully.
 
-If only a task directory is provided, list it with:
-
-```bash
-ls -La .rpi/tasks/<task-slug>
-```
+If only a task directory is provided and the selected set is insufficient, call `rpi_artifacts_list`. Do not list, search, or glob the task mirror directly.
 
 Choose the most recent plan-like artifact in this order:
 

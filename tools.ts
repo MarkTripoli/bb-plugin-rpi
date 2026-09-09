@@ -7,8 +7,12 @@ import {
   artifactSummary,
   getArtifact,
   getArtifactVersion,
+  isTextArtifact,
   listArtifacts,
+  markdownHeadings,
+  markdownSection,
   nextArtifactNumber,
+  selectContextArtifacts,
 } from "./artifacts";
 import {
   boundedAgentXml,
@@ -20,6 +24,7 @@ import {
   softDeleteComments,
 } from "./comments";
 import { TASK_ROOT_DIR } from "./constants";
+import { parseJson, readRow } from "./db";
 import { ingest, hydrate } from "./mirror";
 import { mirrorSession, resolveResearchModel, type ChildThreadMirrorRow, type SessionMirrorRow } from "./sessions";
 
@@ -27,6 +32,8 @@ type Database = BetterSqlite3.Database;
 
 export const ARTIFACT_TOOL_NAMES = [
   "rpi_task_context",
+  "rpi_artifacts_list",
+  "rpi_artifact_read",
   "rpi_artifact_save",
   "rpi_next_artifact_number",
   "rpi_get_artifact_comments",
@@ -48,9 +55,60 @@ function taskSession(
   throw new Error("not an RPI task session");
 }
 
-function trimToolContent(value: string) {
-  return value.length > 20_000 ? `${value.slice(0, 20_000)}\n[truncated]` : value;
+function measuredJson<T extends { metrics: { emittedBytes: number } }>(value: T) {
+  let output = JSON.stringify(value, null, 2);
+  for (let index = 0; index < 3; index += 1) {
+    value.metrics.emittedBytes = Buffer.byteLength(output, "utf8");
+    const next = JSON.stringify(value, null, 2);
+    if (next === output) break;
+    output = next;
+  }
+  return output;
 }
+
+type SessionSummary = {
+  summaryHistory?: string[];
+  relevantRPIDocuments?: Array<{ localpath?: string }>;
+};
+
+function artifactNamesFromSummary(summaryJson: string | null | undefined) {
+  const summary = parseJson<SessionSummary>(summaryJson, {});
+  return (summary.relevantRPIDocuments ?? [])
+    .map((document) => document.localpath?.split("/").pop())
+    .filter((fileName): fileName is string => Boolean(fileName));
+}
+
+function assignmentContext(db: Database, sessionThreadId: string) {
+  const attempt = readRow<{ commandLine: string | null; fromThreadId: string | null }>(
+    db,
+    "SELECT command_line AS commandLine, from_thread_id AS fromThreadId FROM launch_attempts WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1",
+    sessionThreadId,
+  );
+  const previous = attempt?.fromThreadId
+    ? readRow<{ summaryJson: string | null }>(db, "SELECT summary_json AS summaryJson FROM sessions WHERE thread_id = ?", attempt.fromThreadId)
+    : undefined;
+  const previousAttempt = attempt?.fromThreadId
+    ? readRow<{ commandLine: string | null }>(db, "SELECT command_line AS commandLine FROM launch_attempts WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1", attempt.fromThreadId)
+    : undefined;
+  const previousSummary = parseJson<SessionSummary>(previous?.summaryJson, {});
+  return {
+    commandLine: attempt?.commandLine ?? null,
+    previousCommandLine: previousAttempt?.commandLine ?? null,
+    fromThreadId: attempt?.fromThreadId ?? null,
+    previousArtifactNames: artifactNamesFromSummary(previous?.summaryJson),
+    fallbackSummary: previousSummary.summaryHistory?.at(-1)?.slice(0, 600) ?? null,
+  };
+}
+
+const artifactContextSchema = z.object({
+  name: z.string(),
+  type: z.string(),
+  version: z.number().int().positive(),
+  sha256: z.string(),
+  sizeBytes: z.number().int().nonnegative(),
+  summary: z.string().nullable(),
+  reason: z.enum(["command", "previous-session", "checkpoint", "phase-input"]),
+}).strict();
 
 function artifactForTool(db: Database, taskId: string, fileName: string) {
   const artifact = getArtifact(db, taskId, fileName);
@@ -92,13 +150,28 @@ export const hlTaskContextOutputSchema = z.object({
     providerId: z.string().nullable(),
     model: z.string().nullable(),
   }).strict(),
-  artifacts: z.array(z.object({
-    name: z.string(),
-    type: z.string(),
-    version: z.number().int(),
-    summary: z.string().nullable(),
-  }).strict()),
-  taskMd: z.string().nullable(),
+  assignment: z.object({
+    skillId: z.string().nullable(),
+    phase: z.string().nullable(),
+    commandLine: z.string().nullable(),
+    fromThreadId: z.string().nullable(),
+  }).strict(),
+  checkpoint: z.object({
+    status: z.enum(["available", "missing", "withheld"]),
+    fileName: z.string().nullable(),
+    version: z.number().int().positive().nullable(),
+    sha256: z.string().nullable(),
+    previousThreadId: z.string().nullable(),
+    fallbackSummary: z.string().nullable(),
+  }).strict(),
+  artifacts: z.array(artifactContextSchema).max(12),
+  discovery: z.object({
+    total: z.number().int().nonnegative(),
+    selected: z.number().int().nonnegative(),
+    remaining: z.number().int().nonnegative(),
+    tool: z.literal("rpi_artifacts_list"),
+  }).strict(),
+  metrics: z.object({ emittedBytes: z.number().int().nonnegative() }).strict(),
 }).strict();
 
 export function registerArtifactTools(
@@ -112,7 +185,7 @@ export function registerArtifactTools(
 
   bb.agents.registerTool({
     name: "rpi_task_context",
-    description: "Return the current RPI task context and artifact manifest.",
+    description: "Return the current RPI assignment and its small, phase-aware artifact manifest.",
     presentation: {
       label: { pending: "Loading task context", completed: "Loaded task context" },
       icon: { glyph: "Folder" },
@@ -136,16 +209,24 @@ export function registerArtifactTools(
         mirrorSession(db, mirror, sessionThreadId);
       }
       const allArtifacts = listArtifacts(db, row.taskId);
-      const artifacts = allArtifacts.slice(0, 200).map((artifact) => ({
+      const assignment = assignmentContext(db, sessionThreadId);
+      const selected = selectContextArtifacts(allArtifacts, {
+        phase: row.label?.replace(/^rpi:/, "") ?? null,
+        commandLine: assignment.commandLine,
+        previousCommandLine: assignment.previousCommandLine,
+        previousArtifactNames: assignment.previousArtifactNames,
+      });
+      const artifacts = selected.map((artifact) => ({
         name: artifact.fileName,
         type: artifact.type,
         version: artifact.currentVersion,
+        sha256: artifact.currentSha256 ?? "",
+        sizeBytes: artifact.sizeBytes,
         summary: artifactSummary(artifact.frontmatter),
+        reason: artifact.reason,
       }));
-      if (allArtifacts.length > artifacts.length) {
-        artifacts.push({ name: "[truncated]", type: "other", version: 0, summary: null });
-      }
-      const task = getArtifactVersion(db, row.taskId, "task.md");
+      const handoff = selected.find((artifact) => artifact.fileName === "handoff.md");
+      const researchContext = row.label?.replace(/^rpi:/, "") === "research";
       const taskWorkspace = db.prepare(`
         SELECT default_directory AS defaultDirectory, base_environment_id AS baseEnvironmentId,
           worktree_environment_id AS worktreeEnvironmentId, worktree_timing AS worktreeTiming
@@ -179,10 +260,110 @@ export function registerArtifactTools(
           providerId: row.providerId,
           model: row.model,
         },
+        assignment: {
+          skillId: row.skillId,
+          phase: row.label,
+          commandLine: assignment.commandLine,
+          fromThreadId: assignment.fromThreadId,
+        },
+        checkpoint: {
+          status: researchContext ? "withheld" : handoff ? "available" : "missing",
+          fileName: handoff?.fileName ?? null,
+          version: handoff?.currentVersion ?? null,
+          sha256: handoff?.currentSha256 ?? null,
+          previousThreadId: assignment.fromThreadId,
+          fallbackSummary: researchContext || handoff ? null : assignment.fallbackSummary,
+        },
         artifacts,
-        taskMd: task ? trimToolContent(task.version.content.toString("utf8")) : null,
+        discovery: {
+          total: allArtifacts.length,
+          selected: artifacts.length,
+          remaining: Math.max(0, allArtifacts.length - artifacts.length),
+          tool: "rpi_artifacts_list",
+        },
+        metrics: { emittedBytes: 0 },
       });
-      return JSON.stringify(output, null, 2);
+      return measuredJson(output);
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "rpi_artifacts_list",
+    description: "List a bounded page of current artifact metadata when the selected task context is insufficient.",
+    presentation: {
+      label: { pending: "Listing task artifacts", completed: "Listed task artifacts" },
+      icon: { glyph: "List" },
+    },
+    parameters: z.object({
+      offset: z.number().int().nonnegative().optional().default(0),
+      limit: z.number().int().positive().max(25).optional().default(20),
+    }).strict(),
+    async execute({ offset, limit }, { threadId }) {
+      try {
+        const { row } = taskSession(mirror, childThreads, threadId);
+        const all = listArtifacts(db, row.taskId);
+        const artifacts = all.slice(offset, offset + limit).map((artifact) => ({
+          name: artifact.fileName,
+          type: artifact.type,
+          version: artifact.currentVersion,
+          sha256: artifact.currentSha256,
+          sizeBytes: artifact.sizeBytes,
+          summary: artifactSummary(artifact.frontmatter),
+        }));
+        return toolJson({ artifacts, offset, limit, total: all.length, nextOffset: offset + artifacts.length < all.length ? offset + artifacts.length : null });
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "rpi_artifact_read",
+    description: "Read a bounded chunk of one exact text artifact revision. Continue with nextOffset until complete.",
+    presentation: {
+      label: { pending: "Reading task artifact", completed: "Read task artifact" },
+      icon: { glyph: "FileText" },
+    },
+    parameters: z.object({
+      file_name: z.string().min(1),
+      version: z.number().int().positive().optional(),
+      heading: z.string().trim().min(1).max(200).optional(),
+      offset: z.number().int().nonnegative().optional().default(0),
+      max_chars: z.number().int().positive().max(20_000).optional().default(12_000),
+    }).strict(),
+    async execute({ file_name, version, heading, offset, max_chars }, { threadId }) {
+      try {
+        const { row } = taskSession(mirror, childThreads, threadId);
+        const artifact = artifactForTool(db, row.taskId, file_name);
+        if (!isTextArtifact(artifact.fileName, artifact.contentType)) throw new Error("artifact is not text");
+        const result = getArtifactVersion(db, row.taskId, file_name, version);
+        if (!result) throw new Error(`artifact version not found: ${file_name} v${version ?? artifact.currentVersion}`);
+        const fullContent = result.version.content.toString("utf8");
+        const section = heading ? markdownSection(fullContent, heading) : null;
+        if (heading && !section) throw new Error(`heading not found: ${heading}`);
+        const content = section?.content ?? fullContent;
+        if (offset > content.length) throw new Error("offset exceeds artifact length");
+        const chunk = content.slice(offset, offset + max_chars);
+        const nextOffset = offset + chunk.length < content.length ? offset + chunk.length : null;
+        return toolJson({
+          name: artifact.fileName,
+          version: result.version.version,
+          currentVersion: artifact.currentVersion,
+          sha256: result.version.sha256,
+          heading: heading ?? null,
+          startLine: section?.startLine ?? 1,
+          endLine: section?.endLine ?? fullContent.split(/\r?\n/).length,
+          headings: offset === 0 ? markdownHeadings(fullContent).slice(0, 50) : [],
+          offset,
+          nextOffset,
+          complete: nextOffset === null,
+          returnedChars: chunk.length,
+          returnedBytes: Buffer.byteLength(chunk, "utf8"),
+          content: chunk,
+        });
+      } catch (error) {
+        return toolError(error);
+      }
     },
   });
 

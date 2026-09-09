@@ -11,21 +11,13 @@ You are revising an existing research document. Keep the document as current-sta
 
 ## Step 0: Load bb task context
 
-Call `rpi_task_context` before reading files. Use the returned task directory, artifact list, task slug, and research model preference.
+Call `rpi_task_context` before reading files. Use the returned assignment, selected artifact revisions, task slug, and research model preference. Do not read `task.md`, `ticket.md`, or a withheld checkpoint.
 
 When the user passes `@artifact`, resolve it against the artifact list. If a path is supplied, confirm it is inside the task artifact directory unless the user clearly named an external source file for evidence.
 
 ## Initial Setup
 
-When invoked without a specific artifact, inspect the task directory returned by `rpi_task_context` for research documents. Look for research artifacts but exclude research-questions artifacts.
-
-Use:
-
-```text
-ls -La .rpi/tasks/<task slug>
-```
-
-Use this form because the task directory may be linked. Do not use bare `ls`, `ls -l`, grep, or shell globs for this selection step.
+When invoked without a specific artifact, use the selected manifest for research documents while excluding research-questions artifacts. If it is insufficient, page `rpi_artifacts_list`. Do not list, search, or glob the task mirror directly.
 
 If exactly one matching research artifact exists, read it fully and proceed.
 
@@ -45,7 +37,7 @@ Important: do not read `task.md`, `ticket.md`, research-questions files, design 
 
 1. **Read the existing document fully**
 
-   Read the selected research artifact with no limit or offset. Understand its frontmatter, research question, summary, detailed findings, code references, architecture notes, and open questions.
+   Read the selected research artifact completely by following `rpi_artifact_read.nextOffset`. Understand its frontmatter, research question, summary, detailed findings, code references, architecture notes, and open questions.
 
    Do not browse other files in the task artifact directory as background. The existing artifact and feedback define scope.
 

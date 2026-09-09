@@ -12,11 +12,15 @@ import {
   getArtifact,
   getArtifactVersion,
   groupByType,
+  listArtifacts,
   listArtifactVersions,
+  markdownHeadings,
+  markdownSection,
   middleEllipsis,
   nextArtifactNumber,
   parseFrontmatter,
   restoreArtifact,
+  selectContextArtifacts,
   upsertArtifact,
 } from "../artifacts";
 
@@ -152,4 +156,63 @@ test("artifactSummary bounds frontmatter summary and drops template placeholders
   const long = artifactSummary({ summary: "x".repeat(1000) });
   assert.equal(long?.length, 400);
   assert.ok(long?.endsWith("\u2026"));
+});
+
+test("context selection is phase-aware, bounded, and preserves explicit continuation inputs", () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  upsertArtifact(db, taskId, "task.md", "task", { createdBy: "t", operation: "test" });
+  upsertArtifact(db, taskId, "handoff.md", "handoff", { createdBy: "t", operation: "test" });
+  for (let index = 1; index <= 20; index += 1) {
+    upsertArtifact(db, taskId, `${String(index).padStart(2, "0")}-research-topic-${index}.md`, `---\ntype: research\n---\n${index}`, { createdBy: "t", operation: "test" });
+  }
+  upsertArtifact(db, taskId, "99-plan-primary.md", "---\ntype: plan\n---\nplan", { createdBy: "t", operation: "test" });
+  const artifacts = listArtifacts(db, taskId);
+
+  const research = selectContextArtifacts(artifacts, {
+    phase: "research",
+    previousCommandLine: "/rpi-iterate-research @task.md @handoff.md",
+    previousArtifactNames: ["ticket.md", "handoff.md"],
+  });
+  assert.equal(research.some((artifact) => artifact.fileName === "task.md"), false, "research bootstrap must not leak task intent");
+  assert.equal(research.some((artifact) => artifact.fileName === "handoff.md"), false, "research bootstrap must not leak continuation intent");
+
+  const implementation = selectContextArtifacts(artifacts, {
+    phase: "implementation",
+    commandLine: "/rpi-iterate-implementation @99-plan-primary.md",
+    previousArtifactNames: ["20-research-topic-20.md"],
+  });
+  assert.ok(implementation.length <= 12);
+  assert.deepEqual(implementation.slice(0, 3).map(({ fileName, reason }) => ({ fileName, reason })), [
+    { fileName: "99-plan-primary.md", reason: "command" },
+    { fileName: "20-research-topic-20.md", reason: "previous-session" },
+    { fileName: "handoff.md", reason: "checkpoint" },
+  ]);
+  const explicit = artifacts.filter((artifact) => artifact.fileName.includes("research-topic")).slice(0, 13);
+  assert.throws(
+    () => selectContextArtifacts(explicit, { phase: "implementation", commandLine: explicit.map((artifact) => `@${artifact.fileName}`).join(" ") }),
+    /split it into smaller work/,
+  );
+  assert.throws(
+    () => selectContextArtifacts(artifacts, { phase: "implementation", commandLine: "/rpi-implement-plan @missing.md" }),
+    /assigned artifact not found: missing\.md/,
+  );
+  db.close();
+});
+
+test("markdown section reads one heading without loading later sibling phases", () => {
+  const content = "# Plan\nintro\n```md\n## Phase 0: Example only\n```\n## Shared constraints\nkeep this\n## Phase 1: First\none\n### Checks\ncheck\n## Phase 2: Second\ntwo";
+  assert.deepEqual(markdownHeadings(content).map(({ text, line }) => ({ text, line })), [
+    { text: "Plan", line: 1 },
+    { text: "Shared constraints", line: 6 },
+    { text: "Phase 1: First", line: 8 },
+    { text: "Checks", line: 10 },
+    { text: "Phase 2: Second", line: 12 },
+  ]);
+  assert.deepEqual(markdownSection(content, "Phase 1"), {
+    content: "## Phase 1: First\none\n### Checks\ncheck",
+    startLine: 8,
+    endLine: 11,
+  });
+  assert.equal(markdownSection(content, "missing"), null);
 });

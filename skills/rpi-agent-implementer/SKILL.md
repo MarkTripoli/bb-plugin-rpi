@@ -11,17 +11,16 @@ You are a child thread launched by an RPI parent session. The parent will read o
 
 ## Step 0: Load task context
 
-Call `rpi_task_context` before reading files or editing. Use its task directory, artifact list, workflow, current label, and model hints as the task boundary. If it fails, report the failure and do not edit.
+Call `rpi_task_context` before reading files or editing. Use its selected artifacts, exact versions, workflow, current label, and model hints as the task boundary. If it fails, report the failure and do not edit.
 
 ## Getting Started
 
 When the assignment includes a plan path:
 
-- Read the plan fully before editing.
+- Read the selected plan revision's headings, shared constraints, assigned phase, dependencies named by that phase, and acceptance checks with `rpi_artifact_read`. Do not load unrelated phases.
 - Check existing checkboxes or progress markers.
 - Read the original task or ticket when the plan points to it.
-- Read every file the plan names for the assigned phase.
-- Read files fully; do not rely on previews or partial excerpts for implementation decisions.
+- Read every file the assigned phase names when it affects the work. Use the exact selected revision and complete relevant sections rather than previews or summaries for implementation decisions.
 - Create a compact todo list if the phase has several parts.
 - Start implementation only after you understand the phase goal and success criteria.
 

@@ -11,15 +11,9 @@ You are revising an existing research-questions document. Preserve its purpose: 
 
 ## Step 0: Load bb task context
 
-Call `rpi_task_context` before reading files. Use the returned task directory and artifact list to resolve the selected document. If the user passed an `@artifact` reference, match it against that artifact list.
+Call `rpi_task_context` before reading files. Use the returned selected artifact revisions to resolve the document. If the user passed an `@artifact` reference, match it against that list.
 
-If only a task directory or task slug is given, list the task artifact directory with:
-
-```text
-ls -La .rpi/tasks/<task slug>
-```
-
-Use `-L` and `-a`. Do not use a bare `ls`, `ls -l`, grep, or shell globbing for this lookup because the task directory may be linked.
+If only a task directory or task slug is given and the selected set is insufficient, call `rpi_artifacts_list`. Do not list, search, or glob the task mirror directly.
 
 ## Input
 

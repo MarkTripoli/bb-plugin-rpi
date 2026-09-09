@@ -33,21 +33,13 @@ The artifact is a technical map of the current system.
 
 ## Step 0: Load bb task context
 
-Call `rpi_task_context` before reading files. Use its returned task directory, artifact list, task slug, artifact-save guidance, and research model preferences.
+Call `rpi_task_context` before reading files. Use its returned assignment, selected artifact revisions, task slug, artifact-save guidance, and research model preferences. Do not read `task.md`, `ticket.md`, or a withheld checkpoint.
 
-If the context identifies a research-questions artifact, use it as the default input. If the context does not identify one, inspect the task directory as described below.
+If the context identifies a research-questions artifact, use it as the default input. If the context does not identify one, use bounded artifact discovery as described below.
 
 ## Initial Setup
 
-When invoked, look in the task artifact directory returned by `rpi_task_context` for files whose names include `research-questions`.
-
-Use:
-
-```text
-ls -La .rpi/tasks/<task slug>
-```
-
-The task directory may be a link, so use this command shape rather than bare `ls`, shell globs, or grep-driven filtering.
+When invoked, use the selected manifest from `rpi_task_context` for files whose names or types identify research questions. If none is selected, page `rpi_artifacts_list` until the candidates are known. Do not list, search, or glob the task mirror directly.
 
 If exactly one research-questions artifact exists, read it fully and use it as the research query.
 
@@ -69,7 +61,7 @@ Important: do not read `task.md`, `ticket.md`, design artifacts, plans, PR descr
 
    Required reading rules:
 
-   - read mentioned files with no limit or offset
+   - read mentioned files completely by following `rpi_artifact_read.nextOffset`
    - keep `task.md` and `ticket.md` out of scope unless explicitly named
    - do not browse unrelated task artifacts
    - build enough context to decompose the research intelligently
