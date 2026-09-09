@@ -38,7 +38,7 @@ I can revise the structure outline now. Send the phase, scope, validation, or op
    - Do not read research-question artifacts unless asked.
 
 2. **Check related task content**:
-   - List mentioned task paths with `ls -La`.
+   - Resolve mentioned task paths with `rpi_artifacts_list`.
    - Read the named artifacts and the source files the change depends on fully.
 
 3. **Verify user input**:
@@ -86,8 +86,8 @@ Each phase should remain a vertical slice where possible. Avoid grouping by all 
 
 ## Artifact and Reading Rules
 
-- Read task artifacts fully. Do not use partial reads for task files, user-mentioned files, or the artifact you are editing.
-- List task directories with `ls -La <task-dir>`. Avoid plain `ls`, `ls -l`, search, and glob expansion inside `.rpi/tasks` because the path may be a linked directory.
+- Read the target artifact, feedback, and user-mentioned files completely from the exact revisions reported by `rpi_task_context`. Use summaries and heading reads for supporting artifacts.
+- Use `rpi_artifacts_list` for bounded discovery inside the task directory. Do not search, glob, or list the task mirror directly.
 - Do not read research-question artifacts during design, outline, or plan work. They guide the research phase only; use completed research instead.
 - Do not inspect unrelated task directories unless the user explicitly asks.
 - Treat failed artifact saves, failed comment calls, or unavailable task context as blockers. Do not work around them by writing untracked side files.

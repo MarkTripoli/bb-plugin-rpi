@@ -19,12 +19,7 @@ Resolve any `@file` argument against the artifact list. Read referenced artifact
 
 ### 1. Read all required inputs fully
 
-Read the plan or outline artifact and any user-provided paths without truncation. If the user mentions a ticket or task key, locate the task directory with a symlink-safe directory listing:
-
-```bash
-ls -La .rpi/tasks/
-ls -La .rpi/tasks/<task-slug>
-```
+Read the plan or outline artifact and any user-provided paths completely from their exact revisions. If the selected set is insufficient, call `rpi_artifacts_list`. Do not list, search, or glob the task mirror directly.
 
 Read the plan file when it exists. If no plan exists, read the ticket or task file plus the structure outline, design discussion, PRD/TDD, and research artifacts that are needed to understand the implemented work.
 

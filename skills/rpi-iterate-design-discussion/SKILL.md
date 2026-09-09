@@ -29,7 +29,7 @@ Do not edit until the user gives a change, names comments, or asks you to contin
 ## Steps
 
 1. **Find and read the task directory**:
-   - List the task directory with `ls -La <task-dir>`. Avoid search, glob, plain `ls`, and `ls -l` inside `.rpi/tasks` because task paths may be linked.
+   - Resolve task artifacts through `rpi_task_context` and bounded `rpi_artifacts_list`; do not search, glob, or list the task mirror directly.
    - Primary inputs, read fully: the current design discussion, the feedback, and any explicit user-mentioned file.
    - `task.md` or `ticket.md`, completed research, and earlier design artifacts: use their `summary` fields from the `rpi_task_context` manifest. Open one only when the feedback touches something its summary covers, and read that section by heading rather than the whole file.
    - Do not read research-question artifacts unless asked to review research setup.
@@ -83,7 +83,7 @@ bb thread output <thread-id>
 
 ## Artifact and Reading Rules
 
-- Read task artifacts fully. Do not use partial reads for task files, user-mentioned files, or the artifact you are editing.
+- Read the target artifact, feedback, and user-mentioned files completely from the exact revisions reported by `rpi_task_context`. Use summaries and heading reads for supporting artifacts.
 - Do not inspect unrelated task directories unless the user explicitly asks.
 - Treat failed artifact saves, failed comment calls, or unavailable task context as blockers.
 - Use `rpi_next_artifact_number` only when creating a new numbered artifact. Normal iteration edits the existing file.

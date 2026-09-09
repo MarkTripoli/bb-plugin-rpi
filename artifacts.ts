@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import type * as BetterSqlite3 from "better-sqlite3";
+import { markdownBlocks } from "./blocks";
 import { nowMs, parseJson, readRow, readRows, stringifyJson, transaction, writeRow } from "./db";
 
 type Database = BetterSqlite3.Database;
@@ -47,6 +48,97 @@ export type ArtifactVersionRow = {
   operation: string | null;
   createdAt: number;
 };
+
+export type ContextArtifactReason = "command" | "previous-session" | "checkpoint" | "phase-input";
+export type ContextArtifactSelection = ArtifactRow & { reason: ContextArtifactReason };
+
+const CONTEXT_TYPES_BY_PHASE: Record<string, readonly string[]> = {
+  "research-questions": [],
+  research: ["research-questions"],
+  design: ["research", "design-discussion"],
+  "design-prd": ["research", "prd"],
+  "design-tdd": ["prd", "design-discussion", "research", "tdd"],
+  structure: ["tdd", "prd", "design-discussion", "research", "structure-outline"],
+  plan: ["structure-outline", "tdd", "prd", "design-discussion", "plan"],
+  "worktree-setup": ["plan", "structure-outline"],
+  implementation: ["plan", "structure-outline"],
+  "code-review": ["plan", "structure-outline"],
+  "review-fixes": ["plan", "structure-outline"],
+  "describe-pr": ["plan", "structure-outline", "pr-description"],
+  "pr-review": ["pr-description", "plan", "structure-outline"],
+  review: [],
+};
+
+export const CONTEXT_ARTIFACT_LIMIT = 12;
+
+export function markdownHeadings(content: string) {
+  return markdownBlocks(content).flatMap((block) => {
+    const match = block.code ? null : /^(#{1,6})\s+(.+?)\s*$/.exec(block.text);
+    return match ? [{ level: match[1]!.length, text: match[2]!, line: content.slice(0, block.start).split("\n").length }] : [];
+  });
+}
+
+export function markdownSection(content: string, heading: string) {
+  const lines = content.split(/\r?\n/);
+  const needle = heading.trim().toLowerCase();
+  if (!needle) return null;
+  const headings = markdownHeadings(content);
+  const selected = headings.find((candidate) => candidate.text.toLowerCase() === needle)
+    ?? headings.find((candidate) => new RegExp(`^${needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\s|:|-|$)`, "i").test(candidate.text));
+  if (!selected) return null;
+  const next = headings.find((candidate) => candidate.line > selected.line && candidate.level <= selected.level);
+  const endLine = next ? next.line - 1 : lines.length;
+  return { content: lines.slice(selected.line - 1, endLine).join("\n"), startLine: selected.line, endLine };
+}
+
+/**
+ * Selects the small artifact manifest a phase needs to start. Explicit references win, followed
+ * by the predecessor's output, the stable handoff, and recent phase inputs. The hard cap keeps
+ * unrelated files from growing bootstrap context without hiding explicitly selected inputs.
+ */
+export function selectContextArtifacts(
+  artifacts: readonly ArtifactRow[],
+  input: { phase: string | null; commandLine?: string | null; previousCommandLine?: string | null; previousArtifactNames?: readonly string[] },
+) {
+  const live = artifacts.filter((artifact) => !artifact.isDeleted);
+  const byName = new Map(live.map((artifact) => [artifact.fileName, artifact]));
+  const selected = new Map<string, ContextArtifactSelection>();
+  const add = (artifact: ArtifactRow | undefined, reason: ContextArtifactReason) => {
+    if (artifact && !selected.has(artifact.fileName)) selected.set(artifact.fileName, { ...artifact, reason });
+  };
+
+  const references = (commandLine: string | null | undefined) => [...(commandLine ?? "").matchAll(/@([^\s]+)/g)]
+    .map((match) => match[1]!.replace(/[),.;:]+$/, "").split("/").pop()!);
+  const assigned = [...new Set(references(input.commandLine))];
+  const missing = assigned.filter((fileName) => !byName.has(fileName));
+  if (missing.length > 0) throw new Error(`assigned artifact not found: ${missing.join(", ")}`);
+  if (assigned.length > CONTEXT_ARTIFACT_LIMIT) {
+    throw new Error(`assignment selects more than ${CONTEXT_ARTIFACT_LIMIT} artifacts; split it into smaller work`);
+  }
+  for (const fileName of assigned) add(byName.get(fileName), "command");
+  const research = input.phase === "research";
+  const checkpoint = research ? undefined : byName.get("handoff.md");
+  const taskInput = research ? undefined : byName.get("task.md") ?? byName.get("ticket.md");
+  const reserved = [checkpoint, taskInput].filter((artifact) => artifact && !selected.has(artifact.fileName));
+  const previous = [...references(input.previousCommandLine), ...(input.previousArtifactNames ?? [])];
+  for (const fileName of previous) {
+    if (research && (fileName === "task.md" || fileName === "ticket.md" || fileName === "handoff.md")) continue;
+    if (selected.size >= CONTEXT_ARTIFACT_LIMIT - reserved.length) break;
+    add(byName.get(fileName), "previous-session");
+  }
+  add(checkpoint, "checkpoint");
+  add(taskInput, "phase-input");
+
+  const phaseTypes = CONTEXT_TYPES_BY_PHASE[input.phase ?? ""] ?? [];
+  const candidates = live
+    .filter((artifact) => phaseTypes.includes(artifact.type))
+    .sort((left, right) => right.updatedAt - left.updatedAt || left.fileName.localeCompare(right.fileName));
+  for (const artifact of candidates) {
+    if (selected.size >= CONTEXT_ARTIFACT_LIMIT) break;
+    add(artifact, "phase-input");
+  }
+  return [...selected.values()].slice(0, CONTEXT_ARTIFACT_LIMIT);
+}
 
 const TEXT_EXTENSIONS = new Set([".md", ".markdown", ".txt", ".json", ".yml", ".yaml", ".html", ".htm", ".css", ".js", ".ts", ".tsx", ".jsx", ".xml", ".csv"]);
 const CONTENT_TYPES: Record<string, string> = {

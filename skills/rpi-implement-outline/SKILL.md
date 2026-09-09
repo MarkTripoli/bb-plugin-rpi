@@ -13,15 +13,9 @@ You coordinate phased implementation from a structure outline in `.rpi/tasks/<sl
 
 ### 0. Load task context and discover documents
 
-Call `rpi_task_context` before reading files. Use the returned task directory, task slug, artifact manifest, bb environment, provider, and model preferences.
+Call `rpi_task_context` before reading files. Use the returned task directory, assignment, selected artifact revisions, checkpoint, bb environment, provider, and model preferences. Use `rpi_artifacts_list` only when the selected set is insufficient.
 
-List the task directory with:
-
-```bash
-ls -La .rpi/tasks/<task-slug>
-```
-
-Use `ls -La` because task directories can be symlinks. Do not rely on glob-only discovery or a recursive repository search.
+Use the selected outline in `rpi_task_context`. If no outline is selected, page `rpi_artifacts_list` and resolve ambiguity before reading one. Do not search, glob, or list the task mirror directly.
 
 Identify these artifacts when present:
 
@@ -31,7 +25,7 @@ Identify these artifacts when present:
 - PRD and TDD files if the task used that workflow.
 - `task.md` or `ticket.md`.
 
-Read the structure outline fully before launching work. Read companion documents only after locating them, and read them fully when they influence implementation.
+Use `rpi_artifact_read` on the selected outline version. Read its headings, implementation overview, shared constraints, first incomplete phase, and that phase's validation. Read only the complete companion sections that influence the current phase.
 
 Document precedence is:
 
@@ -108,7 +102,7 @@ Repeat the same discovery, child implementation, verification, human gate, and c
 
 When resuming a partially implemented outline:
 
-- Read the outline and identify phase markers, checked validation items, and incomplete sections.
+- Read the outline overview and headings to identify phase markers, checked validation items, and the first incomplete section.
 - Trust completed phases unless current evidence contradicts them.
 - Continue at the first phase that is not complete.
 - Ask the child to resume the remaining phase work, not to redo completed phases.
@@ -147,8 +141,8 @@ Call `rpi_next_artifact_number` before creating a new `NN-implementation-*.md` r
 ## Workflow Checklist
 
 - [ ] Call `rpi_task_context`.
-- [ ] List the task directory with `ls -La`.
-- [ ] Read the structure outline fully.
+- [ ] Resolve the outline from selected context or bounded artifact discovery.
+- [ ] Read the outline overview, shared constraints, current phase, and validation from the exact selected revision.
 - [ ] Read companion documents needed for implementation.
 - [ ] Spawn `/rpi-agent-outline-implementer` for the current phase.
 - [ ] Wait for and read the child output.

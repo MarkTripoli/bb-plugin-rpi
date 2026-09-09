@@ -3,7 +3,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type * as BetterSqlite3 from "better-sqlite3";
 import { TASK_ROOT_DIR } from "./constants";
 import type { TaskRecord } from "./contract";
-import { nowMs, readRow, readRows, writeRow } from "./db";
+import { nowMs, parseJson, readRow, readRows, writeRow } from "./db";
 import { getTask } from "./tasks";
 import { FIRST_SKILL_BY_WORKFLOW, skillInfo, type SkillId } from "./transitions";
 import { workspaceBaseBranch, workspaceDisabled } from "./workspace";
@@ -347,11 +347,37 @@ async function hostIdFromBaseEnvironment(bb: BbPluginApi, task: TaskRecord) {
   }
 }
 
-function promptFor(task: TaskRecord, input: { skillId: string | null; prompt?: string; commandLine?: string | null }) {
+function continuationNote(db: Database, task: TaskRecord, fromThreadId: string | null, skillId: string | null) {
+  if (!fromThreadId) return null;
+  const row = readRow<{ summaryJson: string | null }>(db, "SELECT summary_json AS summaryJson FROM sessions WHERE thread_id = ? AND task_id = ?", fromThreadId, task.id);
+  const summary = parseJson<{ relevantRPIDocuments?: Array<{ localpath?: string }> }>(row?.summaryJson, {});
+  const names = (summary.relevantRPIDocuments ?? [])
+    .map((document) => document.localpath?.split("/").pop())
+    .filter((fileName): fileName is string => Boolean(fileName))
+    .slice(0, 8);
+  const handoff = readRow<{ version: number }>(
+    db,
+    "SELECT current_version AS version FROM artifacts WHERE task_id = ? AND file_name = 'handoff.md' AND is_deleted = 0",
+    task.id,
+  );
+  const researchContext = skillInfo(skillId ?? "")?.label === "research";
+  return [
+    `Continuation from RPI session ${fromThreadId}.`,
+    names.length > 0 ? `Previous session artifacts: ${names.map((name) => `@${name}`).join(", ")}.` : "No predecessor artifact selection was recorded.",
+    researchContext
+      ? "Checkpoint: handoff state is withheld to preserve research intent isolation."
+      : handoff
+        ? `Checkpoint: rpi_task_context selects handoff.md v${handoff.version}; read that exact revision with rpi_artifact_read.`
+        : "Checkpoint: no handoff.md exists; rpi_task_context will mark the fallback summary as non-authoritative.",
+  ].join("\n");
+}
+
+function promptFor(db: Database, task: TaskRecord, input: { skillId: string | null; prompt?: string; commandLine?: string | null; fromThreadId: string | null }) {
   const command = commandFor(input.skillId, input.commandLine);
   const body = command ?? input.prompt ?? task.draftPrompt;
   const suffix = `Task artifact directory: ${TASK_ROOT_DIR}/tasks/${task.slug}`;
-  return `${body}\n\n${suffix}`;
+  const continuation = continuationNote(db, task, input.fromThreadId, input.skillId);
+  return `${body}\n\n${suffix}${continuation ? `\n\n${continuation}` : ""}`;
 }
 
 export function listLaunchAttempts(db: Database, taskId: string) {
@@ -465,7 +491,7 @@ export async function launchPhase(
     const thread = await bb.sdk.threads.spawn({
       projectId: task.projectId,
       environment: selected.environment,
-      prompt: `${TASK_CONTEXT_FIRST_ACTION}\n${promptFor(task, input)}\n\n${launchMarker(attemptId)}`,
+      prompt: `${TASK_CONTEXT_FIRST_ACTION}\n${promptFor(db, task, input)}\n\n${launchMarker(attemptId)}`,
       title: `${labelTitle(input.skillId)}: ${task.name}`,
       visibility: "visible",
       executionInputSources: {

@@ -132,7 +132,7 @@ export async function iterateInFreshSession(
 }
 
 export const UNLABELED_ITERATE_PROMPT =
-  "Continue this task in a fresh session. Read the task artifacts first, then pick up where the previous session left off.";
+  "Continue this task in a fresh session. Start from the selected revisions and checkpoint returned by rpi_task_context, then verify the current repository state before resuming.";
 
 // Resolves a session's label to its iterate skill, or null when the label has no dedicated
 // iterate skill (freeform, oneshot, describe-pr, review, worktree-setup) or is unrecognized. Pure;

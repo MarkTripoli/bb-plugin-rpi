@@ -13,17 +13,11 @@ You coordinate an approved plan artifact in `.rpi/tasks/<slug>/`. Do not do bulk
 
 ### 0. Load task context and locate the plan
 
-Call `rpi_task_context` before any file read. Use its task directory, slug, artifact list, bb environment, provider, model preferences, and artifact links as the source of truth.
+Call `rpi_task_context` before any file read. Use its task directory, assignment, selected artifact revisions, checkpoint, bb environment, provider, and model preferences as the source of truth. Use `rpi_artifacts_list` only when the selected set is insufficient.
 
-If the user supplied a specific plan path or `@file`, use that file. If they supplied only a task directory, list it with:
+If the user supplied a specific plan path or `@file`, use that file. Otherwise use the selected plan in `rpi_task_context`; if no plan is selected, page `rpi_artifacts_list` and resolve ambiguity before reading one.
 
-```bash
-ls -La .rpi/tasks/<task-slug>
-```
-
-Use `ls -La` because the task path may be a symlink. Do not use lowercase `-l`, glob-only discovery, or broad repository search. Select the current `*-plan-*.md` unless the user named another file.
-
-Read the selected plan fully. Read `task.md` or `ticket.md` only when needed for ticket identity, manual checks, or acceptance language. Do not read unrelated task artifacts unless the plan or user points at them.
+Use `rpi_artifact_read` on the selected plan version. Start with its headings, then read the implementation overview, shared constraints, first incomplete phase, and that phase's acceptance checks. Do not load completed or later phase bodies unless the current phase depends on them. Read `task.md` or `ticket.md` only when needed for ticket identity, manual checks, or acceptance language.
 
 If no plan is found, ask for the plan path and stop.
 
@@ -132,7 +126,7 @@ Read references relative to this skill directory. Locate the directory through t
 ## Workflow Checklist
 
 - [ ] Call `rpi_task_context`.
-- [ ] Read the plan artifact.
+- [ ] Read the plan overview, shared constraints, current phase, and acceptance checks from the exact selected revision.
 - [ ] Launch `/rpi-agent-implementer`.
 - [ ] Read `bb thread output`.
 - [ ] Verify against the plan.

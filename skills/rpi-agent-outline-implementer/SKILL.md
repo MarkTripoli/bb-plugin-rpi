@@ -11,16 +11,16 @@ You are a child thread launched by an RPI parent session. The parent reads your 
 
 ## Step 0: Load task context
 
-Call `rpi_task_context` before reading files or editing. Use its task directory, artifact list, workflow, current label, and model hints as the task boundary. If it fails, report the failure and do not edit.
+Call `rpi_task_context` before reading files or editing. Use its selected artifacts, exact versions, workflow, current label, and model hints as the task boundary. If it fails, report the failure and do not edit.
 
 ## Getting Started
 
 When given a task slug or outline path:
 
-1. List the task directory with `ls -La .rpi/tasks/<task-slug>` when a directory is supplied.
-2. Read the structure outline fully.
-3. Read every companion document named in the assignment.
-4. Read relevant task documents fully: ticket or task, research, design discussion, PRD, and TDD when present and relevant.
+1. Resolve the outline from `rpi_task_context`; use bounded `rpi_artifacts_list` when the selected set is insufficient.
+2. Use `rpi_artifact_read` to read the selected outline revision's headings, shared constraints, assigned phase, dependencies, and validation. Do not load unrelated phases.
+3. Read only companion sections named by or required for the assigned phase.
+4. Use selected summaries to locate supporting task documents, then read the complete relevant sections from their exact revisions.
 5. Implement only the phase requested by the parent.
 
 Document precedence is:
