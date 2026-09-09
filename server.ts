@@ -50,11 +50,13 @@ import {
 import { hydrate, ingest, latestTaskThread, mirrorDeletedArtifact, mirrorRestoredArtifact, type MirrorFileOutcome } from "./mirror";
 import {
   archiveTaskThreads,
+  setSessionCompleted,
   bindPendingThread,
   createLaunchBindingMirror,
   loadChildThreadMirror,
   listSessions,
   loadSessionMirror,
+  mirrorSession,
   readSession,
   registerSessionRuntime,
   taskInstructions,
@@ -93,6 +95,7 @@ const notificationsTestArgsSchema = z.object({
 });
 import {
   archiveTask,
+  deleteTask,
   createDraftTask,
   defaultTaskPrefs,
   getTask,
@@ -520,6 +523,7 @@ export default async function plugin(bb: BbPluginApi) {
       tasks: listTasks(db, {
         projectId: input.projectId ?? null,
         archived: input.archived ?? false,
+        completed: input.completed,
       }),
     }),
 	    getTask: async ({ taskId }) => {
@@ -596,6 +600,23 @@ export default async function plugin(bb: BbPluginApi) {
       return { task };
     },
     archiveTask: async ({ taskId }) => ({ task: await archiveTaskEverywhere(taskId) }),
+    deleteTask: async ({ taskId }) => {
+      const deleted = deleteTask(db, taskId);
+      if (deleted) {
+        for (const [threadId, session] of sessionMirror) {
+          if (session.taskId !== taskId) continue;
+          sessionMirror.delete(threadId);
+          threadInfoCache.delete(threadId);
+          viewingSessions.delete(threadId);
+        }
+        for (const [threadId, child] of childThreadMirror) {
+          if (child.taskId === taskId) childThreadMirror.delete(threadId);
+        }
+        bb.realtime.publish("tasks", { taskId });
+        bb.realtime.publish("rpi:sessions", { taskId, threadId: null });
+      }
+      return { deleted };
+    },
     launchDraft: async ({ taskId }) => {
       return launchDraft(bb, db, sessionMirror, launchBindings, taskId);
     },
@@ -614,6 +635,15 @@ export default async function plugin(bb: BbPluginApi) {
     getSession: async ({ threadId }) => {
       const session = readSession(db, threadId);
       return { session: session ? await sessionView(bb, db, session, contextWarningPrefs) : null };
+    },
+    setSessionCompleted: async ({ threadId, completed }) => {
+      const session = setSessionCompleted(db, threadId, completed);
+      if (session) {
+        mirrorSession(db, sessionMirror, threadId);
+        bb.realtime.publish("rpi:sessions", { taskId: session.taskId, threadId });
+        bb.realtime.publish("tasks", { taskId: session.taskId });
+      }
+      return { session };
     },
     forkSession: async ({ threadId, text }) => forkSession(bb, db, sessionMirror, threadId, text),
     interruptSession: async ({ threadId }) => interruptSession(bb, db, sessionMirror, threadId),

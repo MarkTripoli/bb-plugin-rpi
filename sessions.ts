@@ -225,6 +225,7 @@ export function deriveStatus(
 
 export function normalizeSessionRow(row: {
   threadId: string;
+  completed: number | boolean;
   taskId: string;
   label: string | null;
   skillId: string | null;
@@ -250,6 +251,7 @@ export function normalizeSessionRow(row: {
 	}): SessionRow {
   return {
     ...row,
+    completed: Boolean(row.completed),
     hadTurn: Boolean(row.hadTurn),
     interrupted: Boolean(row.interrupted),
     blockedReason: row.blockedReason === "question" || row.blockedReason === "plugin" ? row.blockedReason : null,
@@ -267,6 +269,7 @@ export function readSession(db: Database, threadId: string) {
       skill_id AS skillId,
       launched_by AS launchedBy,
       forked_from_thread_id AS forkedFromThreadId,
+      completed,
       rpi_status AS rpiStatus,
       rpi_status_at AS rpiStatusAt,
       had_turn AS hadTurn,
@@ -298,6 +301,11 @@ export function readSession(db: Database, threadId: string) {
 // and history (thread_archived_at); it just stops being a session the panel shows or counts.
 export const LIVE_SESSION_CLAUSE = "thread_archived_at IS NULL";
 
+export function setSessionCompleted(db: Database, threadId: string, completed: boolean) {
+  const updated = writeRow(db, `UPDATE sessions SET completed = ? WHERE thread_id = ? AND ${LIVE_SESSION_CLAUSE}`, completed ? 1 : 0, threadId);
+  return updated.changes ? readSession(db, threadId) : null;
+}
+
 export function listSessions(db: Database, taskId?: string | null, page?: { limit?: number; offset?: number }) {
   const params: Array<string | number> = [];
   const where = taskId ? `WHERE task_id = ? AND ${LIVE_SESSION_CLAUSE}` : `WHERE ${LIVE_SESSION_CLAUSE}`;
@@ -316,6 +324,7 @@ export function listSessions(db: Database, taskId?: string | null, page?: { limi
       skill_id AS skillId,
       launched_by AS launchedBy,
       forked_from_thread_id AS forkedFromThreadId,
+      completed,
       rpi_status AS rpiStatus,
       rpi_status_at AS rpiStatusAt,
 	      had_turn AS hadTurn,
@@ -411,6 +420,7 @@ export function refreshSessionMirror(db: Database, mirror: Map<string, SessionMi
       sessions.skill_id AS skillId,
       sessions.launched_by AS launchedBy,
       sessions.forked_from_thread_id AS forkedFromThreadId,
+      sessions.completed,
       sessions.rpi_status AS rpiStatus,
       sessions.rpi_status_at AS rpiStatusAt,
       sessions.had_turn AS hadTurn,
@@ -460,6 +470,7 @@ export function mirrorSession(db: Database, mirror: Map<string, SessionMirrorRow
       sessions.skill_id AS skillId,
       sessions.launched_by AS launchedBy,
       sessions.forked_from_thread_id AS forkedFromThreadId,
+      sessions.completed,
       sessions.rpi_status AS rpiStatus,
       sessions.rpi_status_at AS rpiStatusAt,
       sessions.had_turn AS hadTurn,

@@ -21,6 +21,7 @@ export const taskRowSchema = z
     worktreeTiming: worktreeTimingSchema,
     isDraft: z.boolean(),
     archived: z.boolean(),
+    completed: z.boolean(),
     hostId: z.string().nullable(),
     baseEnvironmentId: z.string().nullable(),
     worktreeEnvironmentId: z.string().nullable(),
@@ -58,6 +59,7 @@ export const taskRecordSchema = z
     worktreeTiming: worktreeTimingSchema,
     isDraft: z.boolean(),
     archived: z.boolean(),
+    completed: z.boolean(),
     hostId: z.string().nullable(),
     baseEnvironmentId: z.string().nullable(),
     worktreeEnvironmentId: z.string().nullable(),
@@ -82,6 +84,7 @@ export type TaskRecord = z.infer<typeof taskRecordSchema>;
 export const sessionRowSchema = z
   .object({
     threadId: z.string(),
+    completed: z.boolean(),
     taskId: z.string(),
     label: z.string().nullable(),
     skillId: z.string().nullable(),
@@ -373,6 +376,7 @@ export const taskUpdateInputSchema = z
         permissionMode: permissionModeSchema.nullable().optional(),
         autoAdvance: z.boolean().optional(),
         archived: z.boolean().optional(),
+        completed: z.boolean().optional(),
         hostId: z.string().min(1).nullable().optional(),
         defaultDirectory: z.string().trim().min(1).nullable().optional(),
         providerId: z.string().nullable().optional(),
@@ -528,6 +532,7 @@ export const listTasksInputSchema = z
   .object({
     projectId: z.string().nullable().optional(),
     archived: z.boolean().nullable().optional(),
+    completed: z.boolean().nullable().optional(),
   })
   .strict();
 
@@ -665,6 +670,10 @@ export const rpcContract = defineRpcContract({
     input: archiveTaskInputSchema,
     output: z.object({ task: taskRecordSchema.nullable() }).strict(),
   },
+  deleteTask: {
+    input: getTaskInputSchema,
+    output: z.object({ deleted: z.boolean() }).strict(),
+  },
   launchDraft: {
     input: launchDraftInputSchema,
     output: z.object({ threadId: z.string() }).strict(),
@@ -688,6 +697,10 @@ export const rpcContract = defineRpcContract({
   getSession: {
     input: getSessionInputSchema,
     output: z.object({ session: sessionViewSchema.nullable() }).strict(),
+  },
+  setSessionCompleted: {
+    input: z.object({ threadId: z.string().min(1), completed: z.boolean() }).strict(),
+    output: z.object({ session: sessionRowSchema.nullable() }).strict(),
   },
   forkSession: {
     input: forkSessionInputSchema,

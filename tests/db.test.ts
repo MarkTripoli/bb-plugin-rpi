@@ -4,6 +4,22 @@ import DatabaseCtor from "better-sqlite3";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { consumeSuppression, MIGRATIONS, needsPreRenameReset } from "../db";
 
+test("completion migration preserves existing tasks and defaults them to open", () => {
+  const db = new DatabaseCtor(":memory:");
+  try {
+    const completionIndex = MIGRATIONS.findIndex((statement) => statement.startsWith("ALTER TABLE tasks ADD COLUMN completed"));
+    for (const statement of MIGRATIONS.slice(0, completionIndex)) db.exec(statement);
+    db.prepare("INSERT INTO tasks (id, project_id, name, slug, draft_prompt, created_at, updated_at) VALUES ('task_1', 'proj_1', 'Task', 'task', 'Keep me', 1, 2)").run();
+    for (const statement of MIGRATIONS.slice(completionIndex)) db.exec(statement);
+    assert.deepEqual(db.prepare("SELECT draft_prompt, archived, completed, updated_at FROM tasks").get(), {
+      draft_prompt: "Keep me", archived: 0, completed: 0, updated_at: 2,
+    });
+    assert.throws(() => db.prepare("UPDATE tasks SET completed = 2").run());
+  } finally {
+    db.close();
+  }
+});
+
 test("migrations are idempotent", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "rpi" });
   const db = bb.storage.database();

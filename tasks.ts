@@ -27,6 +27,7 @@ type RawTaskRecord = {
   worktreeTiming: "now" | "later" | "never";
   isDraft: number | boolean;
   archived: number | boolean;
+  completed: number | boolean;
   hostId: string | null;
   baseEnvironmentId: string | null;
   worktreeEnvironmentId: string | null;
@@ -51,6 +52,7 @@ function normalizeTaskRecord(row: RawTaskRecord): TaskRecord {
     ...row,
     isDraft: Boolean(row.isDraft),
     archived: Boolean(row.archived),
+    completed: Boolean(row.completed),
     autoAdvance: Boolean(row.autoAdvance),
     aa_questions_to_research: Boolean(row.aa_questions_to_research),
     aa_research_to_design: Boolean(row.aa_research_to_design),
@@ -99,6 +101,7 @@ function readTaskRecord(db: Database, taskId: string): TaskRecord | undefined {
       worktree_timing AS worktreeTiming,
       is_draft AS isDraft,
       archived,
+      completed,
       host_id AS hostId,
       base_environment_id AS baseEnvironmentId,
       worktree_environment_id AS worktreeEnvironmentId,
@@ -161,6 +164,7 @@ function taskRowFromRecord(record: TaskRecord, sessionCount: number, latestLabel
     worktreeTiming: record.worktreeTiming,
     isDraft: record.isDraft,
     archived: record.archived,
+    completed: record.completed,
     hostId: record.hostId,
     baseEnvironmentId: record.baseEnvironmentId,
     worktreeEnvironmentId: record.worktreeEnvironmentId,
@@ -178,7 +182,7 @@ function taskRowFromRecord(record: TaskRecord, sessionCount: number, latestLabel
     aa_implementation_to_pr: record.aa_implementation_to_pr,
     currentLabel: latestLabel,
     stepLabel: record.isDraft ? "Draft" : latestLabel ? labelToStepLabel(latestLabel, false) : record.workflowType,
-    attentionCount,
+    attentionCount: record.completed ? 0 : attentionCount,
     boardColumn: record.isDraft || latestLabel ? deriveBoardColumn(latestLabel, record.isDraft) : "implementation",
     sessionCount,
     createdAt: record.createdAt,
@@ -188,7 +192,7 @@ function taskRowFromRecord(record: TaskRecord, sessionCount: number, latestLabel
 
 export function generateTaskSlug(db: Database, name: string) {
   const base = normalizeSlugPart(name);
-  const rows = readRows<{ slug: string }>(db, "SELECT slug FROM tasks WHERE slug = ? OR slug LIKE ?", base, `${base}-%`);
+  const rows = readRows<{ slug: string }>(db, "SELECT slug FROM (SELECT slug FROM tasks UNION ALL SELECT slug FROM deleted_task_slugs) WHERE slug = ? OR slug LIKE ?", base, `${base}-%`);
   const used = new Set(rows.map((row) => row.slug));
   if (!used.has(base)) return base;
   for (let suffix = 2; ; suffix += 1) {
@@ -199,7 +203,7 @@ export function generateTaskSlug(db: Database, name: string) {
 
 export function listTasks(
   db: Database,
-  filters: { projectId?: string | null; archived?: boolean | null } = {},
+  filters: { projectId?: string | null; archived?: boolean | null; completed?: boolean | null } = {},
 ): TaskRow[] {
   const clauses: string[] = [];
   const params: Array<string | number> = [];
@@ -213,6 +217,11 @@ export function listTasks(
   } else {
     clauses.push("archived = 0");
   }
+  // Omitted means active tasks; null explicitly includes both active and manually done tasks.
+  if (filters.completed !== null) {
+    clauses.push("completed = ?");
+    params.push(filters.completed ? 1 : 0);
+  }
   const sql = `
     SELECT
       id,
@@ -224,6 +233,7 @@ export function listTasks(
       worktree_timing AS worktreeTiming,
       is_draft AS isDraft,
       archived,
+      completed,
       host_id AS hostId,
       base_environment_id AS baseEnvironmentId,
       worktree_environment_id AS worktreeEnvironmentId,
@@ -259,6 +269,7 @@ export function getTask(db: Database, taskId: string) {
     skillId: string | null;
     launchedBy: string;
     forkedFromThreadId: string | null;
+    completed: number | boolean;
     rpiStatus: string;
     rpiStatusAt: number;
     hadTurn: number | boolean;
@@ -286,6 +297,7 @@ export function getTask(db: Database, taskId: string) {
       skill_id AS skillId,
       launched_by AS launchedBy,
       forked_from_thread_id AS forkedFromThreadId,
+      completed,
       rpi_status AS rpiStatus,
       rpi_status_at AS rpiStatusAt,
       had_turn AS hadTurn,
@@ -311,6 +323,7 @@ export function getTask(db: Database, taskId: string) {
   );
   const sessions: SessionRow[] = sessionRows.map((row) => ({
     ...row,
+    completed: Boolean(row.completed),
     hadTurn: Boolean(row.hadTurn),
     interrupted: Boolean(row.interrupted),
     blockedReason: row.blockedReason === "question" || row.blockedReason === "plugin" ? row.blockedReason : null,
@@ -450,6 +463,7 @@ export function updateTask(
     permissionMode?: string | null;
     autoAdvance?: boolean;
     archived?: boolean;
+    completed?: boolean;
     hostId?: string | null;
     defaultDirectory?: string | null;
     providerId?: string | null;
@@ -479,6 +493,7 @@ export function updateTask(
       workflow_type = ?,
       worktree_timing = ?,
       archived = ?,
+      completed = ?,
       host_id = ?,
       default_directory = ?,
       provider_id = ?,
@@ -501,6 +516,7 @@ export function updateTask(
     patch.workflowType ?? task.workflowType,
     patch.worktreeTiming ?? task.worktreeTiming,
     patch.archived !== undefined ? (patch.archived ? 1 : 0) : task.archived ? 1 : 0,
+    patch.completed !== undefined ? (patch.completed ? 1 : 0) : task.completed ? 1 : 0,
     patch.hostId !== undefined ? patch.hostId : task.hostId,
     patch.defaultDirectory !== undefined ? patch.defaultDirectory : task.defaultDirectory,
     patch.providerId !== undefined ? patch.providerId : task.providerId,
@@ -537,6 +553,31 @@ function updateTaskDraftState(db: Database, taskId: string, isDraft: boolean) {
 
 export function archiveTask(db: Database, taskId: string) {
   return updateTask(db, taskId, { archived: true });
+}
+
+export function deleteTask(db: Database, taskId: string) {
+  return db.transaction(() => {
+    const task = readTaskRecord(db, taskId);
+    if (!task) return false;
+    if (readRow(db, "SELECT 1 FROM launch_attempts WHERE task_id = ? AND status IN ('pending', 'uncertain', 'retrying')", taskId)) {
+      throw new Error("Resolve pending task launches before deleting the task.");
+    }
+    if (readRow(db, "SELECT 1 FROM sessions WHERE task_id = ? AND thread_archived_at IS NULL AND rpi_status IN ('running', 'launching', 'resuming', 'waiting_for_workspace', 'interrupt_requested')", taskId)) {
+      throw new Error("Stop running sessions before deleting the task.");
+    }
+    for (const table of ["send_receipts", "comments", "artifact_versions"]) {
+      writeRow(db, `DELETE FROM ${table} WHERE artifact_id IN (SELECT id FROM artifacts WHERE task_id = ?)`, taskId);
+    }
+    for (const table of ["notifications", "notification_suppressions"]) {
+      writeRow(db, `DELETE FROM ${table} WHERE thread_id IN (SELECT thread_id FROM sessions WHERE task_id = ? UNION SELECT thread_id FROM child_threads WHERE task_id = ?)`, taskId, taskId);
+    }
+    for (const table of ["artifacts", "mirror_state", "scratch_pads", "task_ui_state", "child_threads", "launch_attempts", "sessions"]) {
+      writeRow(db, `DELETE FROM ${table} WHERE task_id = ?`, taskId);
+    }
+    writeRow(db, "INSERT OR IGNORE INTO deleted_task_slugs (slug) VALUES (?)", task.slug);
+    writeRow(db, "DELETE FROM tasks WHERE id = ?", taskId);
+    return true;
+  })();
 }
 
 export function taskColumnForRow(row: Pick<TaskRow, "currentLabel" | "isDraft">) {

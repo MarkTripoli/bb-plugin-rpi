@@ -276,6 +276,9 @@ export const MIGRATIONS: string[] = [
   // expectedRevision does not match the current row so two open tabs never silently clobber
   // each other's notes.
   `ALTER TABLE scratch_pads ADD COLUMN revision INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE tasks ADD COLUMN completed INTEGER NOT NULL DEFAULT 0 CHECK (completed IN (0, 1))`,
+  `ALTER TABLE sessions ADD COLUMN completed INTEGER NOT NULL DEFAULT 0 CHECK (completed IN (0, 1))`,
+  `CREATE TABLE deleted_task_slugs (slug TEXT PRIMARY KEY)`,
 ];
 
 // `bb.storage.migrate` tracks applied migrations by statement index/count, not by content, so an
