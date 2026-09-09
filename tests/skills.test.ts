@@ -101,6 +101,24 @@ test("every rpi tool referenced by skills is registered", () => {
   }
 });
 
+test("code review artifact records the five axes and separates required findings from advisories", () => {
+  const template = fs.readFileSync(path.join(root, "skills/rpi-review-code/references/code_review_template.md"), "utf8");
+  const headings = [...template.matchAll(/^(#{2,3}) (.+)$/gm)].map((match) => match[2]);
+  for (const heading of [
+    "Tests Reviewed First",
+    "Correctness",
+    "Readability and Simplicity",
+    "Architecture",
+    "Security",
+    "Performance",
+    "Critical and Required Findings",
+    "Advisories",
+    "Verdict",
+  ]) {
+    assert.equal(headings.includes(heading), true, `missing code review artifact section: ${heading}`);
+  }
+});
+
 // Third-party reference material (All Rights Reserved) lives outside this repo (see AGENTS.md
 // item 6 / package.json `files`) at RPI_REFERENCE_DIR, defaulting to a sibling checkout so a
 // plain clone never ships or copies it. When that directory is absent this test skips loudly

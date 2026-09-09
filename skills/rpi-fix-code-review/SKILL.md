@@ -20,12 +20,14 @@ Locate this skill through the skills tier listing, then read:
 
 Compare the artifact's base and head SHAs with the current repository state. Preserve unrelated user changes. If the base moved or later edits invalidate the reviewed scope, record the drift and re-check each finding against current code before editing.
 
-For every finding:
+For every Critical or Required finding:
 
 1. Reproduce or prove the failure from current code.
 2. Trace all callers of the shared function or contract involved.
 3. Mark the finding `fixed`, `declined`, or `blocked`.
 4. Decline only with concrete repository or authoritative external evidence.
+
+Optional, Nit, and FYI advisories are not mandatory. Address one only when it is clearly within scope and reduces risk or complexity without displacing required work; otherwise record it as left advisory. Ask before deleting code whose reachability or ownership remains uncertain.
 
 ## 2. Apply the smallest root-cause fixes
 
@@ -45,7 +47,7 @@ Call `rpi_next_artifact_number`, then write:
 NN-code-review-fixes-<2-4-word-kebab-summary>.md
 ```
 
-Use `references/code_review_fixes_template.md`. Map every review id to its disposition and evidence. Call `rpi_artifact_save` immediately after writing.
+Use `references/code_review_fixes_template.md`. Map every Critical or Required review id to its disposition and evidence, and record any advisory decisions separately. Call `rpi_artifact_save` immediately after writing.
 
 ## 5. Review again
 

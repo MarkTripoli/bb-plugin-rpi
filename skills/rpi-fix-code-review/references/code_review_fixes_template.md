@@ -25,6 +25,15 @@ summary: "State which findings were fixed, declined, or remain blocked and which
 - files changed:
 - regression check:
 
+## Advisory Decisions
+
+### ADV-001
+
+- disposition: accepted | left_advisory | declined
+- reason:
+
+Use `None.` when the review artifact has no advisories.
+
 ## Verification
 
 - command:
