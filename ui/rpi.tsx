@@ -2609,6 +2609,12 @@ function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string
   const versionMeta = versions.find((item) => item.version === version);
   const blocks = !isBinary && content !== null ? markdownBlocks(content) : [];
   const groups = content !== null ? markdownGroups(content, blocks) : [];
+  const commentsByBlock = new Map<number, number>();
+  for (const thread of commentThreads) {
+    if (thread.root.anchor && !thread.root.anchor.orphaned) {
+      commentsByBlock.set(thread.root.anchor.blockIndex, (commentsByBlock.get(thread.root.anchor.blockIndex) ?? 0) + 1);
+    }
+  }
 
   const saveComment = async (block: (typeof blocks)[number]) => {
     if (!versionMeta || composerText.trim() === "") return;
@@ -2663,6 +2669,7 @@ function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string
             // rendering unit, so anchors, reanchoring and existing comments stay per line.
             const block = group.blocks[0]!;
             const source = content!.slice(group.start, group.end).replace(/\n$/, "");
+            const commentCount = group.blocks.reduce((sum, item) => sum + (commentsByBlock.get(item.index) ?? 0), 0);
             return (
             <div key={block.index} className="group grid grid-cols-[28px_minmax(0,1fr)] gap-2 rounded-md border border-transparent hover:border-border focus-within:border-border">
               <button
@@ -2678,7 +2685,8 @@ function ArtifactViewer({ taskId, fileName, task, panelWidth }: { taskId: string
               >
                 <Icon name="Plus" className="size-4" />
               </button>
-              <div className="min-w-0">
+              <div className={cn("min-w-0", commentCount > 0 && "border-l-2 border-primary pl-2")}>
+                {commentCount > 0 ? <span className="sr-only">{plural(commentCount, "comment")} on this line.</span> : null}
                 {group.kind === "frontmatter" ? (
                   <pre className="whitespace-pre-wrap font-mono text-xs text-muted-foreground">{source}</pre>
                 ) : (
@@ -2931,6 +2939,9 @@ function CommentThread({ artifactId, thread, update }: { artifactId: string; thr
         <div className="min-w-0">
           <div className="text-xs font-medium text-foreground">{root.createdByAgent ? "Agent" : "You"} <span className="text-muted-foreground">{relativeTime(root.createdAt)}</span></div>
           <div className="text-xs text-muted-foreground">{root.anchor?.orphaned ? "unanchored" : `line ${(root.anchor?.blockIndex ?? 0) + 1}`}</div>
+          {root.anchor?.selectedText ? (
+            <blockquote title={root.anchor.selectedText} className="mt-1 truncate border-l-2 border-primary pl-2 font-mono text-xs text-muted-foreground">{root.anchor.selectedText}</blockquote>
+          ) : null}
         </div>
         <button type="button" className="text-xs text-muted-foreground hover:text-foreground" onClick={() => void update(rpc.call("resolveComments", { artifactId, commentIds: [root.id], resolved: !root.isResolved }))}>
           {root.isResolved ? "Unresolve" : "Resolve"}
