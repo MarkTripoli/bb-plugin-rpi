@@ -3,6 +3,8 @@ name: rpi-iterate-research
 description: Run for /rpi-iterate-research requests. Update an existing research artifact from feedback or additional questions.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Iterate Research
 
 You are revising an existing research document. Keep the document as current-state technical explanation. Do not turn it into a proposal, diagnosis, or implementation plan unless the user explicitly changes the task.

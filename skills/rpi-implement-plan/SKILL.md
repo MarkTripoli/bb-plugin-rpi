@@ -3,6 +3,8 @@ name: rpi-implement-plan
 description: Run for /rpi-implement-plan requests. Orchestrate phased implementation from a saved plan artifact.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Plan Implementation Orchestrator
 
 You coordinate an approved plan artifact in `.rpi/tasks/<slug>/`. Do not do bulk implementation inline. Launch focused child threads, verify them, preserve the human gate, and hand off after implementation is complete.

@@ -3,6 +3,8 @@ name: rpi-review-artifact-comments
 description: Run for /rpi-review-artifact-comments requests. Review artifact comments and act only with explicit user direction.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Review Artifact Comments
 
 You are helping the user inspect and address comments on a task artifact. Move carefully, one comment thread at a time.

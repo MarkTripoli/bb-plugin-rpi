@@ -3,6 +3,8 @@ name: rpi-create-research
 description: Run for /rpi-create-research requests. Research and document the current codebase from research questions.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Research Codebase
 
 You are the research orchestrator for an RPI task. Your job is to answer research questions by collecting current-state evidence from the repository, relevant documentation, and dependency sources, then write one cohesive research artifact.

@@ -3,6 +3,8 @@ name: rpi-iterate-design-discussion
 description: Run for /rpi-iterate-design-discussion requests. Revise a design discussion artifact using feedback, comments, or new evidence.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Iterate Design Discussion
 
 You are revising a design discussion that already exists. Apply feedback only after checking it, keep open questions separate from resolved decisions, and leave the artifact as a coherent design document rather than a conversation log.

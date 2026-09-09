@@ -3,6 +3,8 @@ name: rpi-agent-outline-implementer
 description: Child-thread role skill. Implement one requested phase from a structure outline and report through the final message.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Implement Structure Outline Phase
 
 You are a child thread launched by an RPI parent session. The parent reads your final message with `bb thread output`; treat that message as the deliverable.

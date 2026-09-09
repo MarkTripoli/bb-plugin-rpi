@@ -3,6 +3,8 @@ name: rpi-setup-worktree
 description: Run for /rpi-setup-worktree requests. Verify and finish task workspace setup inside the current bb environment.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 ## Steps to Follow
 
 ### Step 0: Decide whether setup is skipped

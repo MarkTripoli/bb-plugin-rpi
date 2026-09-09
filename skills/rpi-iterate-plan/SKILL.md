@@ -3,6 +3,8 @@ name: rpi-iterate-plan
 description: Run for /rpi-iterate-plan requests. Revise an implementation plan from feedback.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Revise Implementation Plan
 
 You are revising an existing implementation plan. Check feedback before applying it, preserve the plan structure, and keep validation actionable.

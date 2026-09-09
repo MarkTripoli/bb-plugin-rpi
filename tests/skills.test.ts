@@ -91,6 +91,17 @@ test("all shipped final-answer templates are covered", () => {
   assert.deepEqual(found, finalTemplateExpectations.map(([file]) => file).sort());
 });
 
+test("every skill references the shared writing guide relative to its installed directory", () => {
+  const guide = path.join(root, "skills/WRITING.md");
+  assert.ok(fs.readFileSync(guide, "utf8").trim());
+  for (const file of listFiles(path.join(root, "skills")).filter((file) => path.basename(file) === "SKILL.md")) {
+    const content = fs.readFileSync(file, "utf8");
+    const references = [...content.matchAll(/\[RPI writing guide\]\(([^)]+)\)/g)];
+    assert.equal(references.length, 1, `${path.relative(root, file)} must load the writing guide once`);
+    assert.equal(path.resolve(path.dirname(file), references[0]![1]!), guide);
+  }
+});
+
 test("every rpi tool referenced by skills is registered", () => {
   const registered = new Set<string>(ARTIFACT_TOOL_NAMES);
   for (const file of listFiles(path.join(root, "skills"))) {

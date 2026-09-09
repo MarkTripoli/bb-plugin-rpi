@@ -3,6 +3,8 @@ name: rpi-resolve-pr-reviews
 description: Run for /rpi-resolve-pr-reviews requests. Address pull request review threads, reply with evidence, and repeat until approved.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Resolve Pull Request Reviews
 
 Inspect the current branch's pull request or merge request, repair actionable feedback, reply to every handled thread, and record whether the change is approved. External replies and resolutions require the user's action-time confirmation.

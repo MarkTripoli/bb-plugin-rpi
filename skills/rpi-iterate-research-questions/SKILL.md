@@ -3,6 +3,8 @@ name: rpi-iterate-research-questions
 description: Run for /rpi-iterate-research-questions requests. Update an existing research-questions artifact from feedback.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Iterate Research Questions
 
 You are revising an existing research-questions document. Preserve its purpose: it is still a neutral query plan for studying the current system, not a plan for the requested implementation.

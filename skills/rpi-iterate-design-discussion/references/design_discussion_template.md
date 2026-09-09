@@ -9,7 +9,7 @@ sha: [current commit]
 
 ### Summary of change request
 
-[Summarize the requested change from the task or ticket. Focus on user-visible behavior and the reason the work exists.]
+[State the requested behavior and reason in one or two sentences. Keep the specific before/after details in the sections below.]
 
 ### Current State
 
@@ -35,7 +35,7 @@ sha: [current commit]
 
 #### [Open decision title]
 
-[The design question.]
+[State the decision the user needs to make in one sentence.]
 
 - Option A: [choice, tradeoff, and impact]
 - Option B: [choice, tradeoff, and impact]
@@ -52,8 +52,6 @@ Recommendation: [recommended option and why the research or product pattern supp
 [Brief note on alternatives not chosen and why.]
 
 ### Patterns to follow
-
-These are existing product or codebase patterns that should constrain implementation.
 
 #### [Pattern title]
 

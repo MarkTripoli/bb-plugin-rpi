@@ -3,6 +3,8 @@ name: rpi-create-structure-outline
 description: Run for /rpi-create-structure-outline requests. Create a phased implementation outline from design artifacts.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Create Structure Outline
 
 You are creating a phased implementation outline from the research and design artifacts. This artifact decides implementation sequencing: thin, independently verifiable phases that can later be expanded into a detailed plan or implemented directly from the outline.

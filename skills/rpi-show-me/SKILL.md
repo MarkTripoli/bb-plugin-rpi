@@ -3,6 +3,8 @@ name: rpi-show-me
 description: Run for /rpi-show-me requests. Explain the current topic visually with compact diagrams or a focused HTML artifact.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Show Me
 
 Help the user understand the current topic through the smallest useful visual. Keep prose short and place each visual next to the point it explains.

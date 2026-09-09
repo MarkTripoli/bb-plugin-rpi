@@ -3,6 +3,8 @@ name: rpi-create-design-discussion
 description: Run for /rpi-create-design-discussion requests. Create a design discussion artifact from task and research context.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Design Discussion Phase
 
 You are in the design discussion phase. Convert the task request and completed research into a decision document the user can review before the implementation outline. The document should explain the current product behavior, the desired user-facing outcome, the proposed design shape, the open choices, and the codebase patterns that should constrain the work. This phase decides direction; it does not implement code.

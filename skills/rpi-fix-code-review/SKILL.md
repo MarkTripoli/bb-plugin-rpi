@@ -3,6 +3,8 @@ name: rpi-fix-code-review
 description: Run for /rpi-fix-code-review requests. Validate and fix every actionable finding from a code review artifact.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Fix Code Review Findings
 
 Repair the reviewed change, verify the result, and always send it through another independent code review before pull request creation.

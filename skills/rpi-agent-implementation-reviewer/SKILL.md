@@ -3,6 +3,8 @@ name: rpi-agent-implementation-reviewer
 description: Child-thread role skill. Compare planned implementation with actual diff and report reviewer-relevant deviations.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Implementation Reviewer Agent
 
 You analyze the difference between the planned work and what was actually implemented. Your output helps the parent session decide whether to proceed, ask for fixes, or describe deviations in a PR.

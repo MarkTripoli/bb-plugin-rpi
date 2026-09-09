@@ -3,6 +3,8 @@ name: rpi-create-plan
 description: Run for /rpi-create-plan requests. Create a detailed implementation plan from the structure outline.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Create Plan
 
 You are in the plan-writing phase. Expand the structure outline into a detailed implementation plan with concrete edits, examples, and verification. The plan is the last artifact before worktree setup or implementation.

@@ -3,6 +3,8 @@ name: rpi-ci-commit
 description: Run for /rpi-ci-commit requests. Create focused commits for completed work.
 ---
 
+After the task-context step, read the [RPI writing guide](../WRITING.md), resolved relative to this installed skill directory. Apply it before drafting or revising artifacts and before replying.
+
 # Commit Changes
 
 You create git commits for completed task work. Do not pause for another approval; this skill is the commit step.
