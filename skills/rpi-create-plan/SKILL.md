@@ -13,7 +13,7 @@ Expand the structure outline into a detailed implementation plan with concrete e
 
 1. **Read primary inputs fully, others by summary**:
    - Read `references/plan_template.md`, `references/plan_final_answer.md`, `references/plan_in_worktree_answer.md`, `references/plan_disabled_answer.md`.
-   - Read fully without partial reads: `task.md` or `ticket.md`, plus the newest design artifact (TDD, PRD, structure outline, or design discussion).
+   - Read completely from the exact revisions `rpi_task_context` selected: `task.md` or `ticket.md`, plus the newest design artifact (TDD, PRD, structure outline, or design discussion).
    - Other artifacts from the manifest: use the `summary` field. Open only when the design leaves a gap.
 
 2. **Read relevant source files**:

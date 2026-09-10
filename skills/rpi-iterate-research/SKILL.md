@@ -11,7 +11,7 @@ Revise an existing research document. Keep it as current-state technical explana
 
 ## Input
 
-When `@artifact` is passed, resolve it against the artifact list from `rpi_task_context`. If a path is supplied, confirm it is inside the task artifact directory unless the user clearly named an external source file for evidence. Otherwise list the task directory with `ls -La .rpi/tasks/<slug>` and look for research artifacts (exclude research-questions).
+When `@artifact` is passed, resolve it against the artifact list from `rpi_task_context`. If a path is supplied, confirm it is inside the task artifact directory unless the user clearly named an external source file for evidence. Otherwise use the selected manifest for research artifacts (exclude research-questions); if it is insufficient, page `rpi_artifacts_list`. Do not list, search, or glob the task mirror directly. Do not read `task.md`, `ticket.md`, or a withheld checkpoint.
 
 - One research artifact: read it fully and proceed.
 - Multiple: ask which one.
@@ -21,7 +21,7 @@ Do not read `task.md`, `ticket.md`, research-questions files, design artifacts, 
 
 ## Steps
 
-1. **Read the artifact fully**. Read references/research_final_answer.md from this skill's directory. Read the selected research artifact with no limit or offset. Understand the selected research artifact's frontmatter, research question, summary, findings, code references, architecture notes, open questions. Do not browse other files in the task artifact directory as background.
+1. **Read the artifact fully**. Read references/research_final_answer.md from this skill's directory. Read the selected research artifact completely by following `rpi_artifact_read.nextOffset`. Understand the selected research artifact's frontmatter, research question, summary, findings, code references, architecture notes, open questions. Do not browse other files in the task artifact directory as background.
 
 2. **Process feedback**. Classify: additional research (gather evidence), correction (revise stale sections), clarification (improve clarity), comment response (call `rpi_get_artifact_comments` if the user asks; do not resolve comments here unless explicitly asked and unambiguous).
 

@@ -17,7 +17,7 @@ Cite concrete files, lines, commands, schemas, docs, URLs.
 
 ## Input
 
-If `rpi_task_context` identifies a research-questions artifact, use it. Otherwise look for `research-questions` in the task directory with `ls -La .rpi/tasks/<slug>`.
+If `rpi_task_context` identifies a research-questions artifact, use it. Otherwise page `rpi_artifacts_list` until the research-questions candidates are known. Do not list, search, or glob the task mirror directly. Do not read `task.md`, `ticket.md`, or a withheld checkpoint.
 
 - One research-questions file: read it fully.
 - Multiple: ask which one.
@@ -27,7 +27,7 @@ Do not read `task.md`, `ticket.md`, design artifacts, plans, or PR descriptions 
 
 ## Steps
 
-1. **Read named files first**. Read references/research_template.md from this skill's directory. If the user or research-questions doc names files, read them fully with no limit or offset before spawning.
+1. **Read named files first**. Read references/research_template.md from this skill's directory. If the user or research-questions doc names files, read them completely by following `rpi_artifact_read.nextOffset` before spawning.
 
 2. **Decompose the research**. Break the query into independent areas. Plan before spawning: entry points, persistence, state, events, APIs, commands, UI, tests, fixtures, dependency docs, directories.
 

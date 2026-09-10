@@ -9,7 +9,7 @@ After the task-context step, read the [RPI writing guide](../WRITING.md), resolv
 
 Child thread. Parent reads only final message via `bb thread output`.
 
-Call `rpi_task_context` before reading or editing. Use task directory, artifact list, workflow, label, model hints. If fails, report and stop. With plan: read plan, check checkboxes, read original task when the plan points to it, read every file plan names fully (do not rely on previews or excerpts for implementation decisions), create todo if needed, start implementing only after understanding phase goal and success criteria. Without plan, ask and do not edit.
+Call `rpi_task_context` before reading or editing. Use its selected artifacts, exact versions, workflow, label, and model hints as the task boundary. If it fails, report and stop. With a plan: use `rpi_artifact_read` on the selected plan revision for its headings, shared constraints, the assigned phase, dependencies that phase names, and acceptance checks; do not load unrelated phases. Check checkboxes, read the original task when the plan points to it, read every file the assigned phase names when it affects the work (exact selected revision, complete relevant sections, never previews or summaries), create a todo if needed, and start implementing only after understanding the phase goal and success criteria. Without plan, ask and do not edit.
 
 ## Rules
 

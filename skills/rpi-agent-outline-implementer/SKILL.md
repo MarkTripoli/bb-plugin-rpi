@@ -9,7 +9,7 @@ After the task-context step, read the [RPI writing guide](../WRITING.md), resolv
 
 Child thread. Parent reads final message via `bb thread output`.
 
-Call `rpi_task_context` before reading or editing. Use task directory, artifact list, workflow, label, model hints. If fails, report and stop. With slug or outline: list directory (`ls -La .rpi/tasks/<task-slug>`), read outline, companion docs, relevant docs (ticket, research, design, PRD, TDD), implement requested phase.
+Call `rpi_task_context` before reading or editing. Use its selected artifacts, exact versions, workflow, label, and model hints as the task boundary. If it fails, report and stop. Resolve the outline from `rpi_task_context`; use bounded `rpi_artifacts_list` only when the selected set is insufficient. Use `rpi_artifact_read` on the selected outline revision for its headings, shared constraints, assigned phase, dependencies, and validation; do not load unrelated phases. Read only companion sections named by or required for the assigned phase; use selected summaries to locate supporting documents (ticket, research, design, PRD, TDD), then read the complete relevant sections from their exact revisions. Implement the requested phase.
 
 Precedence: `outline > TDD > PRD > design > research > ticket`. If sources conflict, follow higher and report the conflict.
 

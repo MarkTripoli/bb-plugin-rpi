@@ -16,7 +16,7 @@ Revise an existing implementation plan. Check feedback before applying it, prese
    - Read `references/plan_template.md`, `references/plan_final_answer.md`, `references/plan_in_worktree_answer.md`, `references/plan_disabled_answer.md`.
 
 2. **Read primary inputs fully, others by summary**:
-   - Read fully without partial reads: the plan and the supplied feedback (files, comments, or the user's message).
+   - Read completely from their exact revisions: the plan and the supplied feedback (files, comments, or the user's message).
    - Upstream artifacts (task, ticket, research, design, PRD, TDD, structure outline): use their `summary` fields from the manifest. Open only when feedback touches something the summary covers.
 
 3. **Process feedback**:

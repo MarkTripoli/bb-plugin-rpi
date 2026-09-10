@@ -13,18 +13,13 @@ Coordinate phased implementation from a structure outline in `.rpi/tasks/<slug>/
 
 ### 1. Discover documents
 
-Do not rely on glob-only discovery or a recursive repository search.
+Use the selected outline in `rpi_task_context`. If none is selected, page `rpi_artifacts_list` and resolve ambiguity before reading one. Do not search, glob, or list the task mirror directly.
 
-Identify these artifacts when present:
+Companion documents when present: research, design discussion, PRD, TDD, `task.md` or `ticket.md`.
 
-- Structure outline: a file containing `structure-outline`.
-- Research, design discussion, PRD, TDD, `task.md` or `ticket.md`.
+Use `rpi_artifact_read` on the selected outline version: headings, implementation overview, shared constraints, first incomplete phase, and that phase's validation. Read only the complete companion sections that influence the current phase.
 
-Read the structure outline fully before launching work. Read companion documents only after locating them, and read them fully when they influence implementation.
-
-Document precedence: **structure outline > TDD > PRD > design discussion > research > task or ticket**
-
-When artifacts disagree, follow the higher-precedence source and mention the conflict in the child assignment or user report.
+When artifacts disagree, the structure outline wins; mention the conflict in the child assignment or user report.
 
 ### Progress tracking
 

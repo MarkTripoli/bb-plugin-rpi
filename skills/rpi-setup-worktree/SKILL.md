@@ -33,7 +33,7 @@ Already in worktree: continue with the setup work in the current worktree: resol
 
 Read `task.md` or `ticket.md`, then plan artifact (`/rpi-implement-plan`) or outline (`/rpi-implement-outline`).
 
-`ls -La .rpi/tasks/<task-slug>` if source unknown. No glob-only discovery (symlinks).
+Use `rpi_artifacts_list` if the source artifact is not already selected. Do not list, search, or glob the task mirror directly.
 
 ### 2. Create default config when none exists
 

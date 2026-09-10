@@ -13,9 +13,9 @@ Use this when implementation already happened and the user has follow-up feedbac
 
 ### 1. Read all required inputs fully
 
-- Resolve any `@file` argument against the artifact list. Read referenced artifacts fully.
+- Resolve any `@file` argument against the selected artifacts. Read referenced artifacts completely from their exact revisions.
 - If comments are relevant, call `rpi_get_artifact_comments` for the named artifact and include unresolved comments by default.
-- Read the plan or outline artifact and any user-provided paths without truncation.
+- Read the plan or outline artifact and any user-provided paths completely from their exact revisions. If the selected set is insufficient, call `rpi_artifacts_list`. Do not list, search, or glob the task mirror directly.
 - Read the plan file when it exists. If no plan exists, read the ticket or task file plus the structure outline, design discussion, PRD/TDD, and research artifacts needed to understand the implemented work.
 - Do not read unrelated artifacts just because they are present. Prefer the files named by the user, the current implementation source artifact, and the minimum companion artifacts needed to make the change correctly.
 

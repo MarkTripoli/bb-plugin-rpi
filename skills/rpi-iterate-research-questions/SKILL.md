@@ -11,7 +11,7 @@ Revise an existing research-questions document. Preserve its purpose: neutral qu
 
 ## Input
 
-The invocation may provide `docPath` (the research-questions file), an `@artifact` reference (resolve against the artifact list from `rpi_task_context`), a feedback file, ticket comment export, pasted comments, or plain-language instructions. If only a task directory or slug is given, list with `ls -La .rpi/tasks/<slug>`.
+The invocation may provide `docPath` (the research-questions file), an `@artifact` reference (resolve against the artifact list from `rpi_task_context`), a feedback file, ticket comment export, pasted comments, or plain-language instructions. If only a task directory or slug is given and the selected set is insufficient, call `rpi_artifacts_list`. Do not list, search, or glob the task mirror directly.
 
 - One research-questions artifact: read it.
 - Multiple: ask which one.
@@ -20,7 +20,7 @@ Do not read `task.md`, `ticket.md`, design artifacts, research artifacts, plans,
 
 ## Steps
 
-1. **Read the artifact fully**. Read references/research_questions_final_answer.md from this skill's directory. Read the selected research-questions artifact from start to finish with no limit or offset. Understand the current questions, frontmatter, key context pointers, boundaries.
+1. **Read the artifact fully**. Read references/research_questions_final_answer.md from this skill's directory. Read the selected research-questions artifact completely by following `rpi_artifact_read.nextOffset`. Understand the current questions, frontmatter, key context pointers, boundaries.
 
 2. **Read feedback**. If the prompt includes a feedback file, comment block, or explicit `@...` input, read it fully. If artifact comments and the user asks, call `rpi_get_artifact_comments`.
 

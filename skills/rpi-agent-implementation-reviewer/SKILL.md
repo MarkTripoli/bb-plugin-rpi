@@ -13,7 +13,7 @@ Call `rpi_task_context` before reading files. Use task directory, artifact list,
 
 ## Process
 
-Locate: If assignment has file, read fully. If only directory, list (`ls -La .rpi/tasks/<task-slug>`) and choose recent: `*-plan-*.md`, `*-outline-*.md`, or PRD/TDD. If none, report no comparison.
+Locate: If assignment has file, read fully. If only a directory, use `rpi_artifacts_list` (never list, search, or glob the task mirror) and choose the most recent: `*-plan-*.md`, `*-outline-*.md`, or PRD/TDD. If none, report no comparison.
 
 Extract: Capture files expected created/modified/deleted, patterns, boundaries, criteria, APIs/shapes/UI/commands/tests, manual checks. Concise notes. No long quotes.
 
