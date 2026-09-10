@@ -7,26 +7,26 @@ After the task-context step, read the [RPI writing guide](../WRITING.md), resolv
 
 # Pull Request Description
 
-Create or update the pull request description for the current task branch. Explain why the change exists and how it is shaped.
+Create or update PR description. Explain why and how.
 
 ## Workflow
 
-### 0. Load task context
+### 0. Load context
 
 Call `rpi_task_context` before reading files. Use the returned task directory, slug, artifact manifest, environment id, provider, and saved artifact links.
 
-Locate this skill through the skills tier listing, then read:
+Read from this skill directory:
 
 - `references/pr_description_template.md`
 - `references/show-me.md`
-- `references/pr_walkthrough_example.html` only when the user wants an HTML walkthrough
+- `references/pr_walkthrough_example.html` (user wants HTML walkthrough only)
 - `references/pr_description_final_answer.md`
 
-### 1. Read the description template
+### 1. Read template
 
-Read `references/pr_description_template.md` first. Keep the PR body inside that template. Do not add a changelog, verification report, plan appendix, or long narrative.
+Read `references/pr_description_template.md`. Keep body in template. No changelog, verification report, plan appendix, long narrative.
 
-### 2. Identify or create the pull request
+### 2. Identify or create PR
 
 Use bb environment PR facilities, not provider-specific CLIs as the default path:
 
@@ -39,11 +39,11 @@ bb environment pull-request show $BB_ENVIRONMENT_ID
 
 If no PR exists, inspect branch status and committed changes. Commit and push only when required, then create or expose the PR through bb's environment PR surface.
 
-### 3. Gather only useful context
+### 3. Gather context
 
-Read `task.md` or `ticket.md` and only explanatory task artifacts: plan, outline, PRD/TDD, design discussion, implementation receipts, or explicit `@file` inputs.
+Read `task.md` or `ticket.md`, explanatory artifacts: plan, outline, PRD/TDD, design, receipts, @file inputs.
 
-Read the full PR diff plus the surrounding code needed to understand ownership and behavior.
+Read full diff plus surrounding code.
 
 If the task has a plan, launch the reviewer child:
 
@@ -55,53 +55,38 @@ bb thread output <thread-id>
 
 Verify important child claims against the diff.
 
-### 4. Write the PR description
+### 4. Write description
 
-Use the template exactly:
+Template exactly:
 
-- `Why the change` is one sentence.
-- `Special things to note` is one to three bullets. Use `- None.` when there are no warnings, migrations, constraints, omissions, or surprises.
-- `Change outline` is a compact structural view inspired by `references/show-me.md`.
-- Include only views that help explain this PR: data shape, endpoint contract, pseudocode, shallow file tree, component tree, call flow, control flow, or data flow.
-- Prefer `diff` blocks for changes to an existing shape.
-- Show the full resulting shape when the structure is mostly new or a patch view would hide ordering or ownership.
-- Keep every view focused on files, calls, fields, components, and boundaries a reviewer needs.
+- `Why the change`: one sentence.
+- `Special things to note`: one to three bullets. `- None.` when no warnings, migrations, constraints, omissions, surprises.
+- `Change outline`: compact structural view from `references/show-me.md`. Views that help: data shape, endpoint contract, pseudocode, file tree, component tree, call/control/data flow. `diff` for changes, full shape for new. Focus on files, calls, fields, components, boundaries.
 
 Do not include walkthrough artifacts in the PR body unless asked. When requested, create a separate HTML artifact from `references/pr_walkthrough_example.html`, fill it with real diff nodes, write it under the task directory, and save it.
 
 ### 5. Save and publish
 
-Write the PR description to:
+Write `.rpi/tasks/<task-slug>/pr-description.md` (no task dir: `.rpi/tasks/pr-<number>/description.md`).
 
-```text
-.rpi/tasks/<task-slug>/pr-description.md
-```
+Call `rpi_artifact_save`. Publish:
 
-If no task directory exists, use `.rpi/tasks/pr-<number>/description.md`.
+1. `gh` on PATH, GitHub PR: update body.
+2. `glab` on PATH, GitLab MR: update description.
+3. Otherwise: print path, manual paste.
 
-Call `rpi_artifact_save` after writing. Then publish the saved body when possible:
+Confirm URL, title, number, base, head.
 
-1. If `gh` is on PATH and the current branch has a GitHub PR, update the PR body from `.rpi/tasks/<task-slug>/pr-description.md`.
-2. Else if `glab` is on PATH and the current branch has a GitLab MR, update the MR description from `.rpi/tasks/<task-slug>/pr-description.md`.
-3. Otherwise, print the artifact path and say the PR or MR body must be pasted manually.
+### 6. Report
 
-Confirm URL, title, number, base, and head when publication succeeds.
-
-### 6. Report completion
-
-Read `references/pr_description_final_answer.md` and answer using it exactly. Include:
-
-- PR URL.
-- Saved description artifact directive.
-- Short file-change summary.
-- Deviation summary or `No plan file found`.
+Read and use `references/pr_description_final_answer.md` exactly. Include PR URL, saved directive, file-change summary, deviation summary or `No plan file found`.
 
 The final answer must end with exactly one fenced `text` block. This is a human gate; auto-advance does not apply unless it starts another manual visual pass.
 
-## Style Rules
+## Style
 
-- Write like one engineer to another.
-- Keep the description reviewable in one pass.
-- Put risk before broad summaries.
-- Avoid filler, slang, and unexplained acronyms.
-- Use provider-specific PR commands only when bb cannot do the required action.
+- Engineer to engineer.
+- Reviewable in one pass.
+- Risk before summaries.
+- No filler, slang, unexplained acronyms.
+- Provider-specific PR commands only when bb cannot.

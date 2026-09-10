@@ -7,56 +7,38 @@ After the task-context step, read the [RPI writing guide](../WRITING.md), resolv
 
 # Revise Implementation Plan
 
-You are revising an existing implementation plan. Check feedback before applying it, preserve the plan structure, and keep validation actionable.
-
-## bb Task Setup
-
-0. Call `rpi_task_context` before reading files. Use its task directory, artifact manifest, repository, branch, provider, and thread id. If it fails, stop.
-1. Resolve the target plan from `@file` or the artifact manifest. Ask only if multiple plan artifacts are plausible.
-2. Locate this skill through the skills tier listing, then read references relative to this skill directory: `references/plan_template.md`, `references/plan_final_answer.md`, `references/plan_in_worktree_answer.md`, and `references/plan_disabled_answer.md`.
-3. After editing, call `rpi_artifact_save` with the plan file name and keep the returned `::rpi-artifact{...}` directive for the final answer.
+Revise an existing implementation plan. Check feedback before applying it, preserve the plan structure, and keep validation actionable.
 
 ## Steps
 
-1. **Read the primary inputs fully, the rest by summary**:
-   - Primary inputs, read fully: the plan and the supplied feedback (files, comments, or the user's message).
-   - Upstream artifacts (task or ticket, research, design notes, PRD, TDD, structure outline): use their `summary` fields from the `rpi_task_context` manifest. Open one only when the feedback touches something its summary covers, and read that section by heading rather than the whole file.
-   - Resolve task artifacts through `rpi_task_context` and bounded `rpi_artifacts_list`; do not list, search, or glob the task mirror directly.
-   - Do not use partial reads.
+1. **Resolve target and read references**:
+   - Resolve the target plan from `@file` or the artifact manifest. Ask only if multiple plan artifacts are plausible.
+   - Read `references/plan_template.md`, `references/plan_final_answer.md`, `references/plan_in_worktree_answer.md`, `references/plan_disabled_answer.md`.
 
-2. **If a ticket or comment file is provided, read it as feedback**:
-   - Treat it as user instruction to evaluate, not as automatically correct.
+2. **Read primary inputs fully, others by summary**:
+   - Read fully without partial reads: the plan and the supplied feedback (files, comments, or the user's message).
+   - Upstream artifacts (task, ticket, research, design, PRD, TDD, structure outline): use their `summary` fields from the manifest. Open only when feedback touches something the summary covers.
+
+3. **Process feedback**:
+   - If a ticket or comment file is provided, treat it as instruction to evaluate, not as automatically correct.
    - Map each item to the affected plan phase or success criterion.
-   - If comments are relevant, call `rpi_get_artifact_comments` for the plan artifact.
-
-3. **If the user gives input**:
-   - Do not accept corrections blindly.
-   - Read mentioned files or directories.
+   - Call `rpi_get_artifact_comments` for the plan if comments are relevant.
+   - Do not accept corrections blindly. Read mentioned files or directories.
    - Verify code examples, file paths, and command names.
-   - If the plan depends on uncertain behavior, inspect the source directly or spawn a narrow child research thread and read it with `bb thread output`.
+   - If the plan depends on uncertain behavior, inspect the source directly or spawn `/rpi-agent-codebase-analyzer` to verify the narrow fact.
 
-   Child research pattern:
-
-   ```text
-   bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same provider> --model <research model from rpi_task_context preferences> --prompt "/rpi-agent-codebase-analyzer <narrow fact to verify>"
-   bb thread wait <thread-id>
-   bb thread output <thread-id>
-   ```
-
-4. **Process the feedback**:
+4. **Update the plan**:
+   - Edit the plan at its existing path.
    - Reorganize phases when requested or when the current sequence is not independently verifiable.
    - Update code examples when file or API facts change.
    - Fix inaccurate paths, descriptions, or validation commands.
-   - Preserve frontmatter and the overall template shape.
-
-5. **Update the document**:
-   - Edit the plan at its existing path.
+   - Preserve frontmatter and template shape.
    - Keep examples accurate and concise.
    - Ensure automated checks are commands the implementer can run.
    - Keep manual checks specific and remove filler.
    - Maintain phase sections with success criteria.
 
-6. **Inspect workspace state**:
+5. **Inspect workspace state**:
 
 ```text
 Read .rpi/workspace.json if present
@@ -64,36 +46,18 @@ Read .rpi/workspace.local.json if present
 git rev-parse --git-dir
 ```
 
-7. **Select the final answer template**:
+6. **Select the final answer template**:
    - If already in a worktree, use `references/plan_in_worktree_answer.md`.
-   - Else if workspace setup is disabled by local config or shared config, create or check out the task branch, then use `references/plan_disabled_answer.md`.
+   - Else if workspace setup is disabled, create or check out the task branch, then use `references/plan_disabled_answer.md`.
    - Otherwise use `references/plan_final_answer.md`.
 
-8. Save with `rpi_artifact_save` and respond following the selected template exactly.
+7. Save with `rpi_artifact_save` and respond following the selected template exactly.
 
-## Plan Writing Guidelines
+## Plan Guidelines
 
 - Keep every phase independently testable.
 - Include concrete code examples when they prevent ambiguity.
 - Use runnable automated checks.
 - Use manual validation only when human judgment is needed.
 - Pause for human confirmation at every phase boundary before the next phase starts.
-
-## Artifact and Reading Rules
-
-- Read the plan and feedback fully; take other task artifacts by manifest summary first. Do not read research-question artifacts; use completed research instead.
-- Do not inspect unrelated task directories unless the user explicitly asks.
-- Treat failed artifact saves, failed comment calls, or unavailable task context as blockers.
 - Normal iteration edits the existing plan file; do not allocate a new artifact number unless the user asks for a separate plan.
-
-## Document Precedence
-
-When documents disagree, the latest phase artifact wins:
-
-**plan > structure outline > TDD > PRD > design discussion > research > ticket**
-
-The plan is the final implementation authority. Earlier material provides context, but the updated plan must absorb the current decision.
-
-## Markdown Formatting
-
-When an artifact needs to show markdown that itself contains fenced code, wrap the outer example in four backticks.

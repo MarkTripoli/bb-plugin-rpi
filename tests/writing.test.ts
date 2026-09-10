@@ -58,3 +58,25 @@ function listFiles(dir: string): string[] {
     return entry.isDirectory() ? listFiles(full) : [full];
   });
 }
+
+// Phase 22 compressed every SKILL.md to about half its words (32k to 16.5k total). These caps
+// hold the gain; raise a number only with a phase doc that says why.
+const SKILL_WORD_BUDGET = 850;
+const SKILLS_TOTAL_WORD_BUDGET = 18000;
+
+test("SKILL.md files stay within their word budgets and use plain prose", () => {
+  const skillFiles = listFiles(path.join(root, "skills")).filter((file) => path.basename(file) === "SKILL.md");
+  const over: string[] = [];
+  const symbols: string[] = [];
+  let total = 0;
+  for (const file of skillFiles) {
+    const content = fs.readFileSync(file, "utf8");
+    const words = content.split(/\s+/).filter(Boolean).length;
+    total += words;
+    if (words > SKILL_WORD_BUDGET) over.push(`${path.relative(root, file)}: ${words}`);
+    if (/[≠→]/.test(content)) symbols.push(path.relative(root, file));
+  }
+  assert.deepEqual(over, [], `over ${SKILL_WORD_BUDGET} words`);
+  assert.deepEqual(symbols, [], "caveman symbols (≠, →) in skill prose");
+  assert.ok(total <= SKILLS_TOTAL_WORD_BUDGET, `skills total ${total} words exceeds ${SKILLS_TOTAL_WORD_BUDGET}`);
+});

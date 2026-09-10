@@ -7,130 +7,44 @@ After the task-context step, read the [RPI writing guide](../WRITING.md), resolv
 
 # Review Artifact Comments
 
-You are helping the user inspect and address comments on a task artifact. Move carefully, one comment thread at a time.
+Inspect and address comments on a task artifact. Move one thread at a time. Read, summarize, ask how to proceed, apply edits, reply, resolve, or delete. State-changing operations require direct user instruction.
 
-This skill can read comments, summarize them, ask how to proceed, apply edits, reply, resolve, or delete comments. State-changing comment operations require direct user instruction.
+## Setup
 
-## Step 0: Load bb task context
+Call `rpi_task_context`. Use the returned task directory, artifact list, and task slug to resolve artifact names. Tools: `rpi_get_artifact_comments`, `rpi_update_artifact_comments`, `rpi_reply_to_artifact_comment`. If unavailable or not task thread, tell user, ask to move to task session.
 
-Call `rpi_task_context` before reading files. Use the returned task directory, artifact list, and task slug to resolve artifact names.
+## Input
 
-The available comment tools are:
+1. Prompt has `<comments>` block: work from it.
+2. No block, has artifact name: call `rpi_get_artifact_comments`.
+3. Neither: ask, wait.
 
-- `rpi_get_artifact_comments`
-- `rpi_update_artifact_comments`
-- `rpi_reply_to_artifact_comment`
-
-If these tools are unavailable or `rpi_task_context` says the thread is not attached to a task, tell the user that comment tools are not available in this session and ask them to move to a task session with artifact access.
-
-## Input Format
-
-The user may invoke this skill with different levels of detail:
-
-1. If the prompt contains a `<comments>...</comments>` block, work from that block.
-2. If no comment block is present but an artifact file name is supplied or obvious from conversation, call `rpi_get_artifact_comments` for that artifact.
-3. If neither comments nor an artifact name are provided, ask which artifact to inspect and wait for the answer.
-
-### Comment block format
-
-A comment block normally has:
-
-- a `<comments>` wrapper with an artifact name attribute
-- one or more `<comment>` entries
-- comment ids
-- the quoted artifact block being discussed, when available
-- author text and replies
-
-Read:
-
-```text
-references/comment_xml_format.md
-```
-
-when you need a reminder of the XML shape.
+Blocks: `<comments>` wrapper, artifact name, `<comment>` entries, ids, quotes, author/replies. Read `references/comment_xml_format.md` for shape.
 
 ## Workflow
 
-1. **Read the artifact**
+1. **Read artifact.** Read the target artifact from the task directory if you have not already read it. Read fully before deciding.
 
-   Read the target artifact from the task directory if you have not already read it. Read it fully before deciding how comments apply.
+2. **Fetch.** Use XML when present; else `rpi_get_artifact_comments`. Unresolved by default. Resolved only if user asks or task requires.
 
-2. **Read or fetch comments**
+3. **Ask unless instructed.** No action given: stop after reading, ask. Keep the choices concise and grounded in the comments you saw.
 
-   Use the provided XML block when present. Otherwise fetch comments with `rpi_get_artifact_comments`.
+4. **Follow action.** One thread at a time.
+   - Edit: same artifact unless user wants new, preserve frontmatter/structure unless correction needed, call `rpi_artifact_save`.
+   - Reply: `rpi_reply_to_artifact_comment`, specific, no hiding decisions.
+   - Resolve/delete: `rpi_update_artifact_comments`, only user-told, reverse mistakes when possible.
 
-   Include unresolved comments by default. Include resolved comments only if the user asks or the task requires reviewing already handled discussion.
+5. **Note when useful.** Most need no artifact. If user asks or complex: read `references/comments_template.md`, `rpi_next_artifact_number`, write `NN-comment-review-<summary>.md`, `rpi_artifact_save`.
 
-3. **Ask how to proceed unless already instructed**
+6. **Final.** Read `references/comments_final_answer.md`. Use template. Include directive if saved. End with one fenced `text` block: `/rpi-iterate-implementation`.
 
-   If the user has not already given an action such as "apply all comments" or "resolve these comments", stop after reading the artifact and comments and ask what they want.
+## Rules
 
-   Keep the choices concise and grounded in the comments you saw. For example:
-
-   ```text
-   I found 4 comments on `design-discussion.md`. Do you want me to:
-   1. revise the artifact from each comment
-   2. revise it and resolve the handled comments
-   3. investigate the questions and reply with findings
-   4. take a different path
-   ```
-
-4. **Follow the confirmed action**
-
-   Work one root comment or thread at a time.
-
-   If editing the artifact:
-
-   - update the same artifact unless the user asks for a new file
-   - preserve frontmatter and section structure unless the edit requires a valid correction
-   - call `rpi_artifact_save` after writing
-
-   If replying:
-
-   - use `rpi_reply_to_artifact_comment`
-   - keep replies specific to the comment
-   - do not use replies to hide unresolved decisions
-
-   If resolving or deleting:
-
-   - use `rpi_update_artifact_comments`
-   - resolve only comments the user told you to resolve
-   - delete only comments the user told you to delete
-   - if you make a mistaken state change, use the same update tool to reverse it when possible
-
-5. **Save a comment-review note only when useful**
-
-   Most runs do not need a new artifact. If the user asks for a record or the review is complex, read:
-
-   ```text
-   references/comments_template.md
-   ```
-
-   Call `rpi_next_artifact_number` and write:
-
-   ```text
-   NN-comment-review-<2-4-word-kebab-summary>.md
-   ```
-
-   Then call `rpi_artifact_save`.
-
-6. **Final response**
-
-   Read:
-
-   ```text
-   references/comments_final_answer.md
-   ```
-
-   Use the template. Include the artifact directive if one was saved. The final response must end with exactly one fenced `text` block containing `/rpi-iterate-implementation`.
-
-## Important Notes
-
-- You may offer to resolve, reply, or delete comments, but do it only after the user confirms or instructs that action.
-- If the user's instruction is ambiguous, ask before changing comment state.
-- Do not batch unrelated comment threads together when the decisions differ.
-- Do not mark comments resolved merely because you read them.
-- Do not delete comments as cleanup.
-- Do not read unrelated task artifacts.
-- Do not create a new artifact unless it helps the comment-review workflow.
-- Keep comment ids intact when reporting what you did.
+- Offer resolve/reply/delete only after confirm.
+- Ask before state change when ambiguous.
+- No batch unrelated threads with different decisions.
+- No resolve just from reading.
+- No delete as cleanup.
+- No unrelated artifacts.
+- No new artifact unless helps workflow.
+- Keep ids intact.

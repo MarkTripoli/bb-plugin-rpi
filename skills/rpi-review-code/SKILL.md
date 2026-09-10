@@ -7,95 +7,67 @@ After the task-context step, read the [RPI writing guide](../WRITING.md), resolv
 
 # Code Review
 
-Review the task's complete code change without editing product code. The output is a durable review artifact that either sends concrete findings to a fix session or records a clean review and permits pull request creation.
+Review the complete code change without editing product code. Output is a durable artifact containing concrete findings or recording a clean review.
 
-## 0. Load task context
+## Setup
 
-Call `rpi_task_context` before reading files. Use its task directory, artifact manifest, environment, workflow, provider, and model values. Read explicit `@file` arguments fully.
+Call `rpi_task_context`. Read `@file` args fully. Read `references/code_review_template.md`, `code_review_findings_answer.md`, `code_review_clean_answer.md`, `code_review_blocked_answer.md`.
 
-Locate this skill through the skills tier listing, then read:
+## Pin scope
 
-- `references/code_review_template.md`
-- `references/code_review_findings_answer.md`
-- `references/code_review_clean_answer.md`
-- `references/code_review_blocked_answer.md`
+Determine merge target: existing PR, bb metadata, or repo default. Record base branch, merge-base SHA, HEAD SHA, staged/unstaged changes, untracked task files, commits after merge base. Review committed/working-tree changes against merge base. Exclude `.rpi/tasks/`, unrelated changes. Stop if base unresolved. Empty or incomplete scope is not clean.
 
-## 1. Pin the review scope
+## Requirements and tests
 
-Determine the intended merge target from the existing pull request, bb environment metadata, or the repository's tracked default branch, in that order. Resolve and record:
+Read `task.md`/`ticket.md`, newest artifact (prefer plan, outline, TDD, PRD). Use artifact summaries to avoid opening unrelated documents. Read repo instructions, standards for changed files. Read changed/existing tests before judging. Check claims, boundaries, catches regression/requirement. Inspect commit/PR description; title stands alone, body explains behavior/motivation/decisions/evidence/limits. Record models when known.
 
-- base branch and merge-base SHA
-- current HEAD SHA
-- staged and unstaged changes
-- untracked files that belong to the task
-- commits in the task branch after the merge base
+## Review
 
-Use the merge base as the fixed comparison point. Review committed and working-tree changes. Exclude `.rpi/tasks/` and unrelated user changes. If the base cannot be resolved, stop and report the blocker. Do not call an empty or incomplete scope clean.
+Trace behavior through callers/tests. Evaluate every applicable axis:
 
-## 2. Recover the requirements and read tests first
+1. **Correctness:** requirements, null/boundary cases, failures, test validity, state, races, retries, lifecycle, cleanup, idempotency, persistence, migrations, compatibility.
+2. **Readability:** precise names, direct flow, organization, unnecessary abstractions, dead code. Conditionals on unrelated paths/repeated branching = structural concerns.
+3. **Architecture:** patterns, ownership, dependencies, duplication, coupling, abstraction, boundaries. Refactors reduce concepts, not relocate.
+4. **Security:** untrusted inputs, authorization, secrets, parameterization, encoding, provenance, boundary validation.
+5. **Performance:** N+1, unbounded queries/loops, blocking async, unnecessary renders, missing pagination, hot-path allocations.
 
-Read `task.md` or `ticket.md` and the newest implementation source artifact, preferring plan, structure outline, TDD, then PRD. Use artifact summaries to avoid opening unrelated documents. Read repository instructions and documented coding standards that govern changed files.
+Interfaces: accessibility, keyboard/pointer, responsive, manual/screenshot evidence.
 
-Before judging the implementation, read the changed tests and the existing tests for the affected behavior. Establish what they claim, which boundaries they cover, and whether they would fail for the reported regression or requirement.
+## Health and severity
 
-Inspect the commit or pull request description when one exists. Its title should stand alone in history, and its body should explain the behavior change, motivation, non-obvious decisions, evidence, and known limits. Record the implementation model and review model when known; a different reviewer model is useful independent evidence, but its absence is not itself a blocker.
+Clean: improves health, satisfies task, follows conventions, no Critical/Required. Do not block on preference/perfection/non-blocking.
 
-## 3. Review the change on five axes
+Classify:
+- **Critical:** blocker with reachable security/data-loss/broken-functionality.
+- **Required:** concrete defect, missing regression, structural regression from change.
+- **Optional:** worthwhile, not required.
+- **Nit:** minor preference tooling misses.
+- **FYI:** context only.
 
-Trace changed behavior through its callers and tests. Evaluate every applicable axis and record the evidence in the artifact:
+Critical/Required set `findings`. Optional/Nit/FYI are Advisories, do not prevent `clean`.
 
-1. **Correctness:** requirements, null and boundary cases, failure paths, test validity, state consistency, races, retries, lifecycle, cleanup, idempotency, persistence, migrations, and compatibility.
-2. **Readability and simplicity:** precise names, direct control flow, cohesive organization, unnecessary lines or abstractions, dead compatibility remnants, and comments only where intent is not evident. Treat a new conditional bolted onto an unrelated path or repeated branching on the same shape as a structural concern.
-3. **Architecture:** consistency with established patterns, module ownership, dependency direction, duplication, coupling, abstraction level, and explicit type boundaries. A refactor must reduce the number of concepts a reader holds, not merely move them.
-4. **Security:** untrusted inputs and external data, authorization, secrets, query parameterization, output encoding, dependency provenance, and trust-boundary validation.
-5. **Performance:** N+1 work, unbounded queries or loops, blocking work in asynchronous paths, unnecessary UI renders, missing pagination, and large allocations on hot paths.
+Lead with highest-leverage. Prefer proven to weak. Structural: name smallest fix (collapse branches, separate orchestration/policy, move to owner, reuse helper, explicit boundary, delete pass-through, extract module).
 
-For interface changes, include accessibility, keyboard and pointer behavior, responsive layout, and manual or screenshot evidence when applicable.
+Size: ~100 easy, ~300 coherent, ~1000 check split. Signals. Require split when bundled/worsens oversized. Review complete scope.
 
-## 4. Apply the health and severity standard
+Dependencies: verify stack insufficient, check lockfile/maintenance/license/security/changelog. One upgrade unless coupled.
 
-A clean verdict means the change improves overall code health, satisfies the task, follows repository conventions, and has no Critical or Required findings. Do not block on personal preference, unattainable perfection, or a non-blocking suggestion.
+Identify newly orphaned code explicitly. Orphaned: task-caused dead = Required. No deletion of uncertain pre-existing without direction.
 
-Classify every recorded item:
+Report evidence-backed from change. Critical/Required: id, file:line, failure, evidence, fix. Advisories: location, evidence, suggestion. No praise, enforced nits, speculation, pre-existing.
 
-- **Critical:** merge blocker with a reachable security, data-loss, or broken-functionality path.
-- **Required:** must be repaired before merge because it is a concrete defect, missing necessary regression check, or structural regression caused by the change.
-- **Optional:** worthwhile improvement that is not required for a healthy merge.
-- **Nit:** minor presentation or naming preference that tooling does not already enforce.
-- **FYI:** context only, with no requested action.
+Run read-only checks to confirm/reject. No edits.
 
-Only Critical and Required items count as findings and set `status: findings`. Put Optional, Nit, and FYI items under Advisories; they do not force a fix round or prevent `status: clean`.
+Verify tests/build/manual/screenshots. Green checks alone are not sufficient.
 
-Lead with the highest-leverage issue. Prefer a few proven findings to a long list of weak comments. For a structural finding, name the smallest credible restructuring, such as collapsing duplicate branches, separating orchestration from policy, moving feature logic to its owning module, reusing the canonical helper, making a type boundary explicit, deleting a pass-through abstraction, or extracting a focused module.
+## Save
 
-Inspect change size and the resulting file sizes. Roughly 100 changed lines is easy to review, 300 can still be one coherent change, and 1,000 warrants a split check. These are signals, not automatic blockers. Require a split when unrelated concerns are bundled or the change materially worsens an already oversized module. Still review the complete pinned scope.
+Call `rpi_next_artifact_number`. Write `NN-code-review-<summary>.md` using template. Set `findings` when actionable remain, `clean` when none, `blocked` when gate failed. Blocked is not clean. Call `rpi_artifact_save`.
 
-If the change adds or upgrades dependencies, verify that the existing stack cannot cover the need, inspect the lockfile, maintenance, license, security state, and relevant changelog or migration guidance. Prefer one dependency upgrade per change unless a coupled set is justified.
+## Next
 
-Identify newly orphaned code explicitly. Treat clearly task-caused dead code as Required. Do not request deletion of uncertain or unrelated pre-existing code without user direction.
+- Findings: use `references/code_review_findings_answer.md`, next `/rpi-fix-code-review @<artifact>`.
+- Clean: use `code_review_clean_answer.md`, next `/rpi-describe-pr`.
+- Blocked: use `code_review_blocked_answer.md`, stop until gate runs.
 
-Report only evidence-backed items caused by the reviewed change. Every Critical or Required finding needs a stable id, file and line, concrete failure mode, evidence or reproduction, and the smallest credible fix direction. Every advisory needs a location, evidence, and bounded suggestion. Do not include praise, style nits already enforced by tooling, speculative risks without a reachable path, or pre-existing unrelated defects.
-
-Run focused read-only checks when they can confirm or reject a suspected finding. Do not edit source files during this phase.
-
-Verify the verification story: tests, build, manual checks, screenshots or before-and-after evidence when applicable. A green test suite is necessary evidence, not proof that architecture, security, or requirements are correct.
-
-## 5. Save the review artifact
-
-Call `rpi_next_artifact_number`, then write:
-
-```text
-NN-code-review-<2-4-word-kebab-summary>.md
-```
-
-Use `references/code_review_template.md`. Set `status: findings` when one or more actionable findings remain, `status: clean` only when the complete pinned scope has no findings, or `status: blocked` when a required review gate could not run. A blocked review is not clean.
-
-Call `rpi_artifact_save` immediately after writing.
-
-## 6. Choose the next phase
-
-- Findings: use `references/code_review_findings_answer.md`. The next command must be `/rpi-fix-code-review @<artifact>`.
-- Clean review: use `references/code_review_clean_answer.md`. The next command must be `/rpi-describe-pr`.
-- Blocked review: use `references/code_review_blocked_answer.md`. Stop the loop until the missing gate can run.
-
-Respond with the selected template only. End with exactly one fenced `text` command.
+Use template only. End with one fenced `text` command.
