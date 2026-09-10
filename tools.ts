@@ -27,6 +27,7 @@ import { TASK_ROOT_DIR } from "./constants";
 import { parseJson, readRow } from "./db";
 import { ingest, hydrate } from "./mirror";
 import { mirrorSession, resolveResearchModel, type ChildThreadMirrorRow, type SessionMirrorRow } from "./sessions";
+import { lintWriting } from "./writing";
 
 type Database = BetterSqlite3.Database;
 
@@ -386,11 +387,19 @@ export function registerArtifactTools(
         artifact = getArtifact(db, row.taskId, fileName);
       }
       if (!artifact) throw new Error(`artifact not found: ${file_name}`);
+      const saved = fileName.endsWith(".md") ? getArtifactVersion(db, row.taskId, fileName) : null;
+      const writingIssues = saved ? lintWriting(saved.version.content.toString("utf8")) : [];
       return JSON.stringify({
         version: artifact.currentVersion,
         ingested: result.ingested,
         permalink: artifactPermalink(row.taskId, artifact.fileName),
         path: artifactPanelPath(row.taskId, artifact.fileName),
+        ...(writingIssues.length > 0
+          ? {
+              writing_issues: writingIssues,
+              writing_action: "Rewrite each listed line per the RPI writing guide (delete the filler or state the fact), then call rpi_artifact_save again before replying.",
+            }
+          : {}),
       }, null, 2);
     },
   });

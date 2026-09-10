@@ -2,7 +2,7 @@
 
 All 33 RPI skills now load one [writing guide](../../skills/WRITING.md) before drafting, revising, or replying. Research and design-discussion templates also ask for shorter summaries and avoid repeating explanations.
 
-## What the reference skills do
+## What the reference workflow's skills do
 
 The reference prompts use several reinforcing techniques:
 
