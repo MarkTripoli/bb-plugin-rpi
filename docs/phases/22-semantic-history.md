@@ -10,12 +10,13 @@
 
 ## Verification
 
-- `node --test tests/conventional-commits.test.mjs`
-- `PR_TITLE='feat: make manual RPI launches reviewable' npm run check:conventional`
-- `npm test`
-- `bb plugin build`
-- GitHub check run on pull request #6
-- GitHub branch protection for `main`
+- `node --test tests/conventional-commits.test.mjs`: 2 passed, 0 failed.
+- `PR_TITLE='feat: make manual RPI launches reviewable' npm run check:conventional`: validated the title and current commit range.
+- `npm test`: 271 passed, 0 failed, including typecheck.
+- `bb plugin types --check`: project and host SDK 0.4.34 match.
+- `bb plugin build`: passed with only the existing Node `module.register()` deprecation warning.
+- [GitHub Actions run 34488636882](https://github.com/MarkTripoli/bb-plugin-rpi/actions/runs/34488636882): passed on commit `ba8b6e4`.
+- [Repository ruleset 22780300](https://github.com/MarkTripoli/bb-plugin-rpi/rules/22780300): active on the default branch with no bypass actors and requires `Conventional commits and PR title` from GitHub Actions.
 
 ## Deviations and open items
 
