@@ -11,19 +11,13 @@ Use this when implementation already happened and the user has follow-up feedbac
 
 ## Steps
 
-### 0. Load task context
-
-Call `rpi_task_context` before reading files. Use the returned task directory, task slug, artifact list, current environment, provider, model preferences, and artifact links.
-
-Resolve any `@file` argument against the artifact list. Read referenced artifacts fully. If comments are relevant, call `rpi_get_artifact_comments` for the named artifact and include unresolved comments by default.
-
 ### 1. Read all required inputs fully
 
-Read the plan or outline artifact and any user-provided paths completely from their exact revisions. If the selected set is insufficient, call `rpi_artifacts_list`. Do not list, search, or glob the task mirror directly.
-
-Read the plan file when it exists. If no plan exists, read the ticket or task file plus the structure outline, design discussion, PRD/TDD, and research artifacts that are needed to understand the implemented work.
-
-Do not read unrelated artifacts just because they are present. Prefer the files named by the user, the current implementation source artifact, and the minimum companion artifacts needed to make the change correctly.
+- Resolve any `@file` argument against the selected artifacts. Read referenced artifacts completely from their exact revisions.
+- If comments are relevant, call `rpi_get_artifact_comments` for the named artifact and include unresolved comments by default.
+- Read the plan or outline artifact and any user-provided paths completely from their exact revisions. If the selected set is insufficient, call `rpi_artifacts_list`. Do not list, search, or glob the task mirror directly.
+- Read the plan file when it exists. If no plan exists, read the ticket or task file plus the structure outline, design discussion, PRD/TDD, and research artifacts needed to understand the implemented work.
+- Do not read unrelated artifacts just because they are present. Prefer the files named by the user, the current implementation source artifact, and the minimum companion artifacts needed to make the change correctly.
 
 ### 2. Understand the current state
 
@@ -34,15 +28,7 @@ Inspect the repository before editing:
 - Read commits or changes made since that point.
 - Determine which phases are already implemented and whether the user is giving feedback mid-phase.
 
-If the user is asking to implement an unstarted phase, do not implement it inline. Spawn the appropriate child implementer:
-
-```bash
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same provider> --model <implementation model from rpi_task_context prefs, or current model> --prompt "/rpi-agent-implementer Implement Phase [N] from <plan-or-outline-path>. Read the companion documents named in the assignment. Stop after automated verification."
-bb thread wait <thread-id>
-bb thread output <thread-id>
-```
-
-Use `/rpi-agent-outline-implementer` instead when the source is a structure outline rather than a plan.
+If the user is asking to implement an unstarted phase, do not implement it inline. Spawn `/rpi-agent-implementer` for plan phases or `/rpi-agent-outline-implementer` for structure outline phases.
 
 ### 3. Verify user feedback before accepting it
 
@@ -63,7 +49,7 @@ If there are several viable fixes and no clear default, ask before editing.
 
 ### 5. Apply the fix
 
-When the fix is clear, make the smallest correct change in the shared/root-cause location. Run the relevant tests, build, lint, or other checks. If the work changes task artifacts, call `rpi_next_artifact_number` before creating a new implementation note, then call `rpi_artifact_save` after every task-directory write.
+When the fix is clear, make the smallest correct change in the shared/root-cause location. Run the relevant tests, build, lint, or other checks. If the work changes task artifacts, call `rpi_next_artifact_number` before creating a new implementation note.
 
 If the change updates comments, use `rpi_reply_to_artifact_comment` or `rpi_update_artifact_comments` only for the exact comment ids involved, and only when the user has asked you to resolve or reply.
 
@@ -72,22 +58,6 @@ If the change updates comments, use `rpi_reply_to_artifact_comment` or `rpi_upda
 Read `references/implementation_final_answer.md` from this skill directory and respond using that structure exactly. Include the saved `::rpi-artifact{...}` directive if a task artifact was written. The final answer must end with the single fenced `text` command from the template.
 
 ## Guidance
-
-### Artifact Links
-
-`rpi_artifact_save` returns a `::rpi-artifact{...}` directive for the saved file. Keep that line in your final answer so the task UI can render the artifact link.
-
-### Markdown Fences
-
-When writing Markdown that itself contains fenced examples, use a longer outer fence so nested code blocks remain valid:
-
-````markdown
-# Example
-
-```bash
-npm test
-```
-````
 
 ### Comments
 

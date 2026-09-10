@@ -7,53 +7,49 @@ After the task-context step, read the [RPI writing guide](../WRITING.md), resolv
 
 # Commit Changes
 
-You create git commits for completed task work. Do not pause for another approval; this skill is the commit step.
+Create commits for completed work. No approval pause; this skill is the commit step.
 
 ## Process
 
-### 0. Load task context
+### 0. Load context
 
 Call `rpi_task_context` before reading task files. Use its task directory, slug, artifact list, environment, and links. Read only files needed for the work.
 
-### 1. Understand what changed
+### 1. Review changes
 
-Review repository state:
+```bash
+git status --short --branch
+git diff
+```
 
-- Run `git status --short --branch`.
-- Run `git diff` for unstaged changes.
-- Inspect staged changes if anything is already staged.
-- Read enough changed files to understand the behavior.
-- Decide whether one or several commits are needed.
+Inspect staged. Read changed files. Decide one or multiple commits.
 
-Do not stage `.rpi/tasks/`, task mirror symlinks, scratch files, dummy scripts, one-off tests, or unrelated generated output.
+Do not stage `.rpi/tasks/`, task mirrors, scratch, dummy scripts, one-off tests, unrelated output.
 
-### 2. Plan the commit or commits
+### 2. Plan commits
 
-Group files by purpose. Use imperative commit subjects and prefer reason over file lists.
+Group by purpose. Imperative subjects, reason over file lists.
 
-Leave unrelated edits unstaged and mention them. If one file mixes task work with unrelated edits, ask how to split it unless the split is obvious.
+Unrelated edits: leave unstaged, mention. Mixed file: ask how to split unless obvious.
 
-### 3. Execute the commits
-
-Use explicit paths:
+### 3. Execute
 
 ```bash
 git add <path> <path>
 git commit -m "<subject>"
 ```
 
-Never use `git add -A`, `git add .`, or broad staging. Verify with `git status --short --branch`.
+Never `git add -A`, `git add .`, broad staging. Verify.
 
-### 4. Save the receipt
+### 4. Save receipt
 
-If a task receipt is useful, call `rpi_next_artifact_number`, write `NN-commit-*.md` from `references/commit_template.md`, then call `rpi_artifact_save`.
+Useful: call `rpi_next_artifact_number`, write `NN-commit-*.md` from `references/commit_template.md`, call `rpi_artifact_save`.
 
-Read `references/commit_final_answer.md` and use it exactly. End with its single fenced `text` command.
+Read and use `references/commit_final_answer.md` exactly. End with single fenced `text` command.
 
-## Remember
+## Rules
 
 - Use current session context; do not ask the user to restate it.
-- Keep commits focused.
-- Do not commit the task artifact directory.
-- Do not commit unrelated files.
-- Treat failed tests or unsafe git state as blockers.
+- Focused commits.
+- No task directory, unrelated files.
+- Failed tests, unsafe git: blockers.

@@ -7,98 +7,27 @@ After the task-context step, read the [RPI writing guide](../WRITING.md), resolv
 
 # Implement Plan Phase
 
-You are a child thread launched by an RPI parent session. The parent will read only your final message with `bb thread output`, so that final message is the deliverable.
+Child thread. Parent reads only final message via `bb thread output`.
 
-## Step 0: Load task context
+Call `rpi_task_context` before reading or editing. Use its selected artifacts, exact versions, workflow, label, and model hints as the task boundary. If it fails, report and stop. With a plan: use `rpi_artifact_read` on the selected plan revision for its headings, shared constraints, the assigned phase, dependencies that phase names, and acceptance checks; do not load unrelated phases. Check checkboxes, read the original task when the plan points to it, read every file the assigned phase names when it affects the work (exact selected revision, complete relevant sections, never previews or summaries), create a todo if needed, and start implementing only after understanding the phase goal and success criteria. Without plan, ask and do not edit.
 
-Call `rpi_task_context` before reading files or editing. Use its selected artifacts, exact versions, workflow, current label, and model hints as the task boundary. If it fails, report the failure and do not edit.
+## Rules
 
-## Getting Started
+Follow plan intent while adapting to code. Implement requested phase fully before expanding. Keep changes inside phase unless shared root-cause fix required. Use existing patterns, helpers, tests. Update plan checkboxes only for automated checks you ran and passed. Keep manual verification open until parent or user confirms. Report deviations. Do not implement later phases, rewrite plan, mark manual checks complete, hide failures, mutate task comments or resolve artifact comments unless assignment explicitly asks, or dump full files.
 
-When the assignment includes a plan path:
+If plan cannot be followed, stop and report: `Issue in Phase [N]`, `Expected: [requirement]`, `Found: [state]`, `Why: [impact]`, `Question: [decision]`. Name mechanical differences in final message.
 
-- Read the selected plan revision's headings, shared constraints, assigned phase, dependencies named by that phase, and acceptance checks with `rpi_artifact_read`. Do not load unrelated phases.
-- Check existing checkboxes or progress markers.
-- Read the original task or ticket when the plan points to it.
-- Read every file the assigned phase names when it affects the work. Use the exact selected revision and complete relevant sections rather than previews or summaries for implementation decisions.
-- Create a compact todo list if the phase has several parts.
-- Start implementation only after you understand the phase goal and success criteria.
+Before blocker: re-read plan, inspect implementation and tests, check if codebase moved, try diagnostic. If blocked, report tried and decision.
 
-If no plan path is provided, ask for one in the final message and do not edit.
+With checked items: trust completed work unless branch contradicts, continue at first unchecked, avoid redoing.
 
-## Implementation Philosophy
+## Verification
 
-Plans are written before they meet the live codebase. Follow the plan's intent while adapting to current code when necessary.
+Run phase criteria and narrowest check catching change breaking. Fix failures from edits. Record commands and results. Update checkboxes after passing. After artifact mutations (checkboxes, markers), call `rpi_artifact_save` and keep directive. With several phases, finish range before manual testing. Otherwise, stop and report manual checks.
 
-Do:
+## Final Output
 
-- Implement the requested phase fully before expanding scope.
-- Keep changes inside the phase unless a shared root-cause fix is required.
-- Use existing project patterns, helpers, and test commands.
-- Update plan checkboxes only for automated checks you actually ran and passed.
-- Keep manual verification items open until the parent or user confirms them.
-- Report deviations clearly.
-
-Do not:
-
-- Implement later phases without being assigned them.
-- Rewrite the plan.
-- Mark manual checks complete yourself.
-- Hide failed checks behind a successful-looking summary.
-- Mutate task comments or resolve artifact comments unless the assignment explicitly asks.
-- Dump full files or long logs in the final response.
-
-## Mismatch Handling
-
-If the plan cannot be followed, stop and report the conflict instead of inventing a new plan:
-
-```markdown
-Issue in Phase [N]
-
-Expected: [plan requirement]
-Found: [current repository state]
-Why this matters: [impact]
-
-Question: [specific decision needed]
-```
-
-Use your judgment for small mechanical differences that do not change intent, but name them in the final message.
-
-## Verification Approach
-
-After implementation:
-
-- Run the phase success criteria.
-- Run the narrowest additional check that would catch your change breaking.
-- Fix failures caused by your edits.
-- Record exact commands and pass/fail results.
-- Update automated checkboxes in the plan only after the corresponding command passes.
-- After each task artifact mutation, including plan checkbox changes or progress markers, call `rpi_artifact_save` for the changed file and keep the returned directive for your final message.
-
-If the parent assigned several phases, finish the assigned range before asking for manual testing. Otherwise, stop after this phase and report the manual checks that remain.
-
-## If You Get Stuck
-
-Before reporting a blocker:
-
-- Re-read the relevant plan section.
-- Inspect the current implementation and nearby tests.
-- Check whether the codebase moved since the plan was written.
-- Try the smallest diagnostic command that can clarify the failure.
-
-If still blocked, report what you tried and the next decision needed.
-
-## Resuming Work
-
-When the plan already has checked items:
-
-- Trust completed work unless the current branch contradicts it.
-- Continue at the first unchecked item in the assigned phase.
-- Avoid redoing completed work just to regain context.
-
-## Final Output Format
-
-Return exactly this structure in your final message. Keep it concise; the parent session needs the result, not a transcript.
+Return exactly this structure:
 
 ```markdown
 ## Files Changed

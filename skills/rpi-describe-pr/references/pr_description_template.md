@@ -30,4 +30,4 @@ Ticket: [{TICKET_ID}]({TICKET_URL}) | Task: [{TASK_SLUG}]({TASK_URL}) | Walkthro
 {Pseudocode, control flow, call tree, data flow, or component tree.}
 ```
 
-{End with the detail a reviewer should keep in mind while reading the diff.}
+{End with the one detail a reviewer needs before reading the diff.}

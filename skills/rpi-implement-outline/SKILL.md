@@ -7,33 +7,19 @@ After the task-context step, read the [RPI writing guide](../WRITING.md), resolv
 
 # Outline Implementation Orchestrator
 
-You coordinate phased implementation from a structure outline in `.rpi/tasks/<slug>/`. This skill is itself the implementation orchestrator. Do not redirect to `/rpi-implement-plan` or `/rpi-create-plan`; launch the outline implementer child thread directly.
+Coordinate phased implementation from a structure outline in `.rpi/tasks/<slug>/`. Launch the outline implementer child thread directly. Do not redirect to `/rpi-implement-plan` or `/rpi-create-plan`.
 
 ## Getting Started
 
-### 0. Load task context and discover documents
+### 1. Discover documents
 
-Call `rpi_task_context` before reading files. Use the returned task directory, assignment, selected artifact revisions, checkpoint, bb environment, provider, and model preferences. Use `rpi_artifacts_list` only when the selected set is insufficient.
+Use the selected outline in `rpi_task_context`. If none is selected, page `rpi_artifacts_list` and resolve ambiguity before reading one. Do not search, glob, or list the task mirror directly.
 
-Use the selected outline in `rpi_task_context`. If no outline is selected, page `rpi_artifacts_list` and resolve ambiguity before reading one. Do not search, glob, or list the task mirror directly.
+Companion documents when present: research, design discussion, PRD, TDD, `task.md` or `ticket.md`.
 
-Identify these artifacts when present:
+Use `rpi_artifact_read` on the selected outline version: headings, implementation overview, shared constraints, first incomplete phase, and that phase's validation. Read only the complete companion sections that influence the current phase.
 
-- Structure outline: a file containing `structure-outline`.
-- Research: files containing `research`.
-- Design discussion: files containing `design-discussion`.
-- PRD and TDD files if the task used that workflow.
-- `task.md` or `ticket.md`.
-
-Use `rpi_artifact_read` on the selected outline version. Read its headings, implementation overview, shared constraints, first incomplete phase, and that phase's validation. Read only the complete companion sections that influence the current phase.
-
-Document precedence is:
-
-```text
-structure outline > TDD > PRD > design discussion > research > task or ticket
-```
-
-When artifacts disagree, follow the higher-precedence source and mention the conflict in the child assignment or user report.
+When artifacts disagree, the structure outline wins; mention the conflict in the child assignment or user report.
 
 ### Progress tracking
 
@@ -42,24 +28,11 @@ The outline implementer updates the outline artifact as work completes:
 - Validation checkboxes move from open to checked only when automated verification passes.
 - A phase title is marked complete only after all validation, including human confirmation, is done.
 
-If you or a child thread writes the outline or an implementation receipt, call `rpi_artifact_save` immediately after the write and preserve the returned artifact directive.
-
 ## Workflow
 
 ### 1. Launch the outline implementer child thread
 
-Spawn one child thread for the current phase. Include paths to the outline and companion documents, but do not paste their contents into the prompt.
-
-```bash
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same provider> --model <implementation model from rpi_task_context prefs, or current model> --prompt "/rpi-agent-outline-implementer Implement Phase [N] from .rpi/tasks/<task-slug>/<outline-file>. Companion documents: research=<path if present>; design=<path if present>; prd=<path if present>; tdd=<path if present>. The outline wins on conflicts. Stop after automated verification and update progress markers you can verify."
-```
-
-Wait and read the final child message:
-
-```bash
-bb thread wait <thread-id>
-bb thread output <thread-id>
-```
+Spawn `/rpi-agent-outline-implementer` for the current phase. Include paths to the outline and companion documents; do not paste contents.
 
 The final message is the deliverable. Compare it to the outline before reporting success.
 
@@ -90,7 +63,7 @@ Pause before moving on unless the user explicitly requested several phases in on
 
 ### 4. Commit the changes
 
-After confirmation, create a focused commit or hand off to `/rpi-ci-commit`, depending on the current workflow. Do not commit `.rpi/tasks/`; it is a task mirror and may be a symlink. Use explicit `git add <path>` commands.
+After confirmation, create a focused commit or hand off to `/rpi-ci-commit`. Do not commit `.rpi/tasks/`; it is a task mirror and may be a symlink. Use explicit `git add <path>` commands.
 
 ### 5. Repeat for the next phase
 
@@ -102,7 +75,7 @@ Repeat the same discovery, child implementation, verification, human gate, and c
 
 When resuming a partially implemented outline:
 
-- Read the outline overview and headings to identify phase markers, checked validation items, and the first incomplete section.
+- Read the outline and identify phase markers, checked validation items, and incomplete sections.
 - Trust completed phases unless current evidence contradicts them.
 - Continue at the first phase that is not complete.
 - Ask the child to resume the remaining phase work, not to redo completed phases.
@@ -134,21 +107,9 @@ If the user explicitly asks for multiple phases in one run:
 
 ### Artifact and Reference Handling
 
-Read reference files relative to the installed skill directory. Locate that directory through the skills tier listing, then read `references/implementation_template.md` when writing an implementation receipt and `references/implementation_final_answer.md` for the final answer.
+Read `references/implementation_template.md` when writing an implementation receipt and `references/implementation_final_answer.md` for the final answer.
 
-Call `rpi_next_artifact_number` before creating a new `NN-implementation-*.md` receipt. After every write in `.rpi/tasks/<slug>/`, call `rpi_artifact_save`.
-
-## Workflow Checklist
-
-- [ ] Call `rpi_task_context`.
-- [ ] Resolve the outline from selected context or bounded artifact discovery.
-- [ ] Read the outline overview, shared constraints, current phase, and validation from the exact selected revision.
-- [ ] Read companion documents needed for implementation.
-- [ ] Spawn `/rpi-agent-outline-implementer` for the current phase.
-- [ ] Wait for and read the child output.
-- [ ] Verify the reported work.
-- [ ] Ask for manual validation.
-- [ ] Commit only after confirmation, or hand off to `/rpi-ci-commit`.
+Call `rpi_next_artifact_number` before creating a new `NN-implementation-*.md` receipt.
 
 ## After Final Phase Completion
 

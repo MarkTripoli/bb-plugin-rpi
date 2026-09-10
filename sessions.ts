@@ -1128,16 +1128,43 @@ export async function archiveTaskThreads(bb: BbPluginApi, db: Database, taskId: 
   return { archived: rows.length - failed, failed };
 }
 
+// Shared by every phase skill. Skills state only phase-specific steps; these rules used to be
+// pasted into each SKILL.md.
+const SESSION_RULES = [
+  "Session rules:",
+  "- Use the task directory rpi_task_context returns. Never guess a sibling under .rpi/tasks from memory. If the tool fails, stop.",
+  "- Discover task artifacts only through rpi_task_context selections and bounded rpi_artifacts_list pages. Never list, search, or glob the task mirror directly.",
+  "- Do not open other task directories unless the user asks. Do not read research-question artifacts outside the research phase.",
+  "- A failed artifact save, failed comment call, or missing task context is a blocker. Never write untracked side files to work around it.",
+  "- New numbered artifacts: call rpi_next_artifact_number; name `NN-<type>-<2-4-word-kebab-slug>.md`.",
+  "- When documents disagree, the latest phase artifact wins. This phase's artifact absorbs feedback; earlier material is context.",
+  "- Rework sections in place. An artifact is the current state, not an edit log or Q&A transcript.",
+  "- Markdown that must show a fenced block: wrap the outer example in four backticks.",
+  "- Locate this installed skill through the skills tier listing and read its references/ files relative to that directory.",
+].join("\n");
+
+const CHILD_THREAD_RECIPE = [
+  "Child threads: spawn only when a missing fact would change the artifact. Roles: rpi-agent-codebase-locator finds files and tests, rpi-agent-codebase-analyzer explains current behavior, rpi-agent-codebase-pattern-finder finds local precedents, rpi-agent-web-search-researcher checks external behavior or documentation. Spawn independent assignments first, then wait and read each final message; use only findings you read from `bb thread output`.",
+  "```text",
+  "bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model hint> --prompt \"/rpi-agent-<role> <assignment>\"",
+  "bb thread wait <thread-id>",
+  "bb thread output <thread-id>",
+  "```",
+  "If a child or direct read finds current-state facts missing or stale in the completed research artifact, fold them into that research artifact and save it before continuing.",
+].join("\n");
+
 export function taskInstructions(row: SessionMirrorRow, options: { researchModel?: string | null } = {}) {
   const researchModel = resolveResearchModel(row, options.researchModel ?? null);
   return [
     TASK_CONTEXT_FIRST_ACTION,
     `RPI task: ${row.taskName} (slug ${row.taskSlug}). Task artifact directory: ${TASK_ROOT_DIR}/tasks/${row.taskSlug} (relative to the workspace root; a real directory, not a symlink).`,
     `Current phase: ${row.label ?? "none"}. Current skill command: ${row.skillId ? skillInfo(row.skillId)?.command ?? `/rpi-${row.skillId}` : "none"}. Workflow: ${row.workflowType}.`,
-    "After writing or editing any file in the task artifact directory, call rpi_artifact_save with its file name and include the returned permalink line in your final answer.",
+    "After writing or editing any file in the task artifact directory, call rpi_artifact_save with its file name and include the returned permalink line in your final answer. If the result lists writing_issues, fix every listed line and save again before replying.",
     "Artifact context rule: start from rpi_task_context.artifacts, which records the selected file, exact revision, hash, and reason. Read exact text revisions with rpi_artifact_read, following nextOffset until the required section or primary input is complete. Use rpi_artifacts_list only when the selected set is insufficient. Do not scan the task directory or read unrelated artifacts. Every artifact you write must carry a frontmatter `summary:` of two to four sentences stating what it establishes and what a later phase needs from it.",
     "Handoff rule: before a phase boundary or any final response that leaves work unfinished, create or replace handoff.md with the current objective, next action, selected artifact revisions, verified repository state, unresolved feedback, and remaining checks. Save it with rpi_artifact_save. Treat a fallback session summary as non-authoritative when rpi_task_context reports checkpoint.status=missing. Research sessions must not read a checkpoint reported as withheld.",
+    SESSION_RULES,
     `Research subagents model hint: ${researchModel}.`,
+    CHILD_THREAD_RECIPE,
   ].join("\n");
 }
 

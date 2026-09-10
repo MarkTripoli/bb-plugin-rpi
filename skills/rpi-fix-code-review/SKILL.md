@@ -7,50 +7,32 @@ After the task-context step, read the [RPI writing guide](../WRITING.md), resolv
 
 # Fix Code Review Findings
 
-Repair the reviewed change, verify the result, and always send it through another independent code review before pull request creation.
+Repair the reviewed change, verify, and send through another code review before PR creation.
 
-## 0. Load task context
+## Setup
 
-Call `rpi_task_context` before reading files. Resolve the explicit `@file` review artifact from the returned manifest and read it fully. If no file was supplied, use the newest live artifact with `type: code-review` and `status: findings` or `status: blocked`. If the choice is ambiguous, ask the user.
+Call `rpi_task_context`. Resolve `@file` review artifact from manifest; read fully. No file: use newest with `type: code-review`, `status: findings` or `blocked`. If ambiguous, ask. Read `references/code_review_fixes_template.md`, `code_review_fixes_answer.md`.
 
-Locate this skill through the skills tier listing, then read:
+## Validate
 
-- `references/code_review_fixes_template.md`
-- `references/code_review_fixes_answer.md`
+Compare artifact base/head SHAs with current state. Preserve unrelated changes. If base moved or edits invalidate scope, record drift; re-check findings.
 
-## 1. Validate the review
+Per Critical/Required finding: reproduce/prove failure, trace callers, mark `fixed`/`declined`/`blocked`. Decline only with concrete evidence.
 
-Compare the artifact's base and head SHAs with the current repository state. Preserve unrelated user changes. If the base moved or later edits invalidate the reviewed scope, record the drift and re-check each finding against current code before editing.
+Optional/Nit/FYI not mandatory. Address when in scope and reduces risk/complexity without displacing required work; else left advisory. Ask before deleting uncertain code.
 
-For every Critical or Required finding:
+## Fix
 
-1. Reproduce or prove the failure from current code.
-2. Trace all callers of the shared function or contract involved.
-3. Mark the finding `fixed`, `declined`, or `blocked`.
-4. Decline only with concrete repository or authoritative external evidence.
+Fix validated findings in shared location owning behavior. Reuse existing code/platform before adding helpers/dependencies. Do not broaden beyond review/requirements. Each non-trivial fix needs smallest regression check. Keep security, validation, accessibility, data-loss protections intact.
 
-Optional, Nit, and FYI advisories are not mandatory. Address one only when it is clearly within scope and reduces risk or complexity without displacing required work; otherwise record it as left advisory. Ask before deleting code whose reachability or ownership remains uncertain.
+## Verify
 
-## 2. Apply the smallest root-cause fixes
+Run focused tests, then required gates. Record commands/outcomes. Missing gate remains blocked; do not relabel it as clean.
 
-Fix validated findings in the shared location that owns the behavior. Reuse existing code and platform features before adding helpers or dependencies. Do not broaden the change beyond the review and requirements.
+## Save receipt
 
-Each non-trivial fix needs the smallest regression check that would fail without it. Keep security, validation, accessibility, and data-loss protections intact.
+Call `rpi_next_artifact_number`. Write `NN-code-review-fixes-<summary>.md` using template. Map Critical/Required ids to disposition/evidence. Record advisories separately. Call `rpi_artifact_save`.
 
-## 3. Verify
+## Review again
 
-Run focused tests while repairing findings, then run the repository's required completion gates. Record exact commands and outcomes. A missing required gate remains blocked; do not relabel it as clean.
-
-## 4. Save the repair receipt
-
-Call `rpi_next_artifact_number`, then write:
-
-```text
-NN-code-review-fixes-<2-4-word-kebab-summary>.md
-```
-
-Use `references/code_review_fixes_template.md`. Map every Critical or Required review id to its disposition and evidence, and record any advisory decisions separately. Call `rpi_artifact_save` immediately after writing.
-
-## 5. Review again
-
-Read `references/code_review_fixes_answer.md` and respond with it exactly. The final command must always be `/rpi-review-code`, even when all known findings were fixed. Only a fresh clean review may proceed to the pull request.
+Read, use `references/code_review_fixes_answer.md` exactly. Final command: `/rpi-review-code`, even when all findings fixed. Only fresh clean review proceeds to PR.

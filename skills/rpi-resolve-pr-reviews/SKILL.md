@@ -7,65 +7,35 @@ After the task-context step, read the [RPI writing guide](../WRITING.md), resolv
 
 # Resolve Pull Request Reviews
 
-Inspect the current branch's pull request or merge request, repair actionable feedback, reply to every handled thread, and record whether the change is approved. External replies and resolutions require the user's action-time confirmation.
+Inspect current branch's PR/MR, repair actionable feedback, reply to every handled thread, record approval state. External replies and resolutions require user's action-time confirmation.
 
-## 0. Load task context
+## Setup
 
-Call `rpi_task_context` before reading files. Use its task directory, environment, artifact manifest, provider, and model. Locate this skill through the skills tier listing, then read:
+Call `rpi_task_context`. Read `references/pr_review_template.md`, `pr_review_pending_answer.md`, `pr_review_approved_answer.md`.
 
-- `references/pr_review_template.md`
-- `references/pr_review_pending_answer.md`
-- `references/pr_review_approved_answer.md`
+## Identify target
 
-## 1. Identify the review target
+Prefer `ticketing.tool`/`vcs.platform` from `ai-utilities.json`; else detect GitHub/GitLab from remote. Use `gh`/`glab`. Verify CLI installed/authenticated. Find open PR for current branch; record URL, number, base SHA, head SHA. Stop if not exactly one target.
 
-Prefer `ticketing.tool` or `vcs.platform` from `ai-utilities.json` when present, then detect GitHub or GitLab from the repository remote. Use `gh` for GitHub and `glab` for GitLab. Verify the CLI is installed and authenticated.
+## Fetch state
 
-Find the open pull request for the current branch and record its URL, number, base SHA, and head SHA. Stop if the current branch does not identify exactly one open review target.
+Fetch submissions, unresolved threads, changes, approvals, checks. Do not treat green checks, no comments, or mergeability as an approval. Keep head SHA on conclusions. No threads + head approved: save approved artifact, finish.
 
-## 2. Fetch current review state
+## Triage
 
-Fetch all review submissions, unresolved resolvable threads, requested changes, approvals, and required checks. Do not treat green checks, no comments, or mergeability as an approval. Keep the reviewed head SHA attached to every conclusion.
+Classify threads: `fix`, `discuss`, `decline`, `clarify`. Verify `fix` items against code. Research conventions/sources before `decline`/`discuss`. Default `fix` when no evidence declines. Draft a complete reply per thread: result/evidence, no tooling mentions. Present the numbered triage, proposed edits, and exact replies. Wait for confirmation.
 
-If there are no unresolved threads and the current head has an approval, save an approved artifact and finish.
+## Apply
 
-## 3. Triage each unresolved thread
+After confirmation: smallest root-cause fixes, add regressions, run checks/gates, commit/push when authorized, reply with evidence/SHA, resolve after reply+action complete. Never resolve declined/discussed/clarified without confirmed disposition.
 
-Classify every thread as `fix`, `discuss`, `decline`, or `clarify`.
+## Save
 
-- Verify `fix` items against current code before editing.
-- Research repository conventions and authoritative sources before `decline` or `discuss`.
-- Default to `fix` when no evidence supports declining.
-- Draft a complete reply for every thread. Replies must state the result and evidence without mentioning automated tooling.
+Fetch state after push/replies. Call `rpi_next_artifact_number`. Write `NN-pr-review-<summary>.md` using template. Record ids, dispositions, replies, SHA, tests, threads, checks, approval. Call `rpi_artifact_save`.
 
-Present the numbered triage, proposed edits, and exact replies to the user. Wait for confirmation before changing code or sending external replies.
+## Next
 
-## 4. Apply the confirmed resolution
+- Head approved + no threads: use `references/pr_review_approved_answer.md`.
+- Else: use `pr_review_pending_answer.md`. Repeated command is human gate; no poll/auto-run.
 
-After confirmation:
-
-1. Make the smallest root-cause changes for every confirmed fix.
-2. Add focused regressions where behavior changed.
-3. Run focused checks and all repository-required gates.
-4. Commit and push the exact reviewed changes when the user authorized that action.
-5. Reply to every handled review thread with the final evidence and commit SHA.
-6. Resolve a thread only after its reply was sent and its action is complete.
-
-Never resolve a declined, discussed, or clarified thread without the user's confirmed disposition.
-
-## 5. Re-fetch and save the round
-
-Fetch the pull request state again after the push and replies. Call `rpi_next_artifact_number`, then write:
-
-```text
-NN-pr-review-<2-4-word-kebab-summary>.md
-```
-
-Use `references/pr_review_template.md`. Record comment ids, dispositions, replies, commit SHA, test results, remaining unresolved threads, checks, and approval state. Call `rpi_artifact_save` immediately after writing.
-
-## 6. Choose the next result
-
-- Current head approved and no unresolved threads: use `references/pr_review_approved_answer.md`.
-- Otherwise: use `references/pr_review_pending_answer.md`. The repeated command is a human gate. Do not poll or auto-run while waiting for an external reviewer.
-
-Respond with the selected template only and end with exactly one fenced `text` command.
+Use template only. End with one fenced `text` command.

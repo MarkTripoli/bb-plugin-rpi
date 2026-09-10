@@ -7,139 +7,53 @@ After the task-context step, read the [RPI writing guide](../WRITING.md), resolv
 
 # PRD Phase
 
-You are creating a Product Requirements Document. The PRD explains what the product should do and why it matters. Leave implementation architecture, data storage, and code shape for the technical design phase unless a technical constraint changes product behavior.
+You create a Product Requirements Document explaining what the product should do and why. Leave implementation architecture, storage, and code for TDD unless a technical constraint changes product behavior.
 
-Run this as a guided conversation. Settle the foundation first: the problem and the success signal. Then walk the solution one decision at a time. The document must become a coherent spec as decisions land, not a transcript.
+Run as a guided conversation. Settle foundation (problem, success signal), then walk solution one decision at a time. Document becomes a coherent spec, not a transcript.
 
 ## Conversation Rules
 
-- Ask exactly one question in each message. You may offer two or three options inside that one question, but do not stack independent decisions.
-- Do not ask vague review prompts. Ask the next decision that unlocks the most progress.
-- Treat clarifying questions and pushback as part of the discussion, not as permission to edit.
-- Patch the PRD only when a decision is actually resolved.
-- When a decision lands, rework the relevant section. Replace stale prose, update mockups, and move ruled-out choices into alternatives or out of scope.
-- Keep the PRD readable as a product spec. Use headers that state the takeaway, short paragraphs, and visuals placed near the text they explain.
-- Stay in product space: user flows, behavior, permissions, states, constraints, and success criteria. Defer implementation mechanics to the TDD.
+- Ask exactly one question per message. Two or three options inside that question are allowed; do not stack independent decisions.
+- Do not ask vague review prompts. Ask the next decision unlocking the most progress.
+- Treat clarifying questions and pushback as discussion, not permission to edit.
+- Patch PRD only when decision is resolved.
+- When decision lands, rework section. Replace stale prose, update mockups, move ruled-out choices to alternatives or out of scope.
+- Keep readable as product spec. Headers state takeaway, short paragraphs, visuals near explanatory text.
+- Stay in product space: user flows, behavior, permissions, states, constraints, success criteria. Defer implementation mechanics to TDD.
 - If codebase reality or product behavior is unclear, verify before presenting options.
 
-## bb Task Setup
+## References
 
-0. Call `rpi_task_context` before reading files, spawning child threads, or choosing an artifact path. Use its task directory, task slug, artifact manifest, repository, branch, thread id, provider, and model preferences. If it fails, stop.
-1. Use the task directory returned by the tool. Do not guess a sibling under `.rpi/tasks` from an old session or a remembered slug.
-2. Locate this installed skill through the skills tier listing, then read reference files relative to this skill directory: `references/prd_template.md`, `references/prd_final_answer.md`, `references/prd_final_answer.md`.
-3. After every artifact write or edit, call `rpi_artifact_save` with the relative file name and keep the returned `::rpi-artifact{...}` directive for the final answer.
+Read from this skill directory: `references/prd_template.md`, `references/prd_final_answer.md`.
 
 ## Step 1: Understand the context
 
-<instructions>
+Primary inputs, read fully: task or ticket, design discussion if present (otherwise newest completed research), every user-mentioned file. For other artifacts in manifest: use `summary` field, open only when summary shows it bears on PRD, read by heading. Exclude research-question artifacts. Read `references/prd_template.md` before writing.
 
-- Use the selected artifact manifest. Call `rpi_artifacts_list` only when it is insufficient.
-- Primary inputs, read fully: task or ticket input, the design discussion if present (otherwise the newest completed research), and every explicit user-mentioned file.
-- Every other artifact in the `rpi_task_context` manifest: use its `summary` field and open the file only when the summary shows it bears on the PRD, reading the relevant section by heading. Exclude research-question artifacts.
-- Read `references/prd_template.md` before writing.
+PRD can start from detailed ticket, research, design discussion, or short request. Ground claims in source. Reference upstream artifacts; do not copy. If context is thin, ask questions instead of inventing. Capture product implications of technical constraints; leave implementation for TDD.
 
-</instructions>
-
-<guidance>
-
-## Working from whatever inputs exist
-
-A PRD can start from a detailed ticket, a research document, a design discussion, or a short request. Use the inputs you have.
-
-- Ground claims in the source you read: ticket, research, design discussion, or user statement.
-- Reference upstream artifacts rather than copying them into the PRD.
-- If context is thin, ask questions instead of inventing requirements.
-- Capture product implications of technical constraints, but leave implementation decisions for the TDD.
-
-## Design system for mockups
-
-If the work touches UI, mockups should look like the user's product rather than this bb plugin. Check research for colors, typography, spacing, components, and theming. If none are documented, use a targeted `/rpi-agent-codebase-analyzer` child thread to identify the product's design system before creating mockups.
-
-</guidance>
+If work touches UI, mockups look like user's product, not this plugin. Check research for colors, typography, spacing, components, theming. If none documented, use `/rpi-agent-codebase-analyzer` child to identify design system before creating mockups.
 
 ## Step 2: Write the skeleton
 
-Write `NN-prd-<slug>.md` in the task directory. Use `rpi_next_artifact_number` for the number and preserve the template frontmatter fields.
-
-Keep the first skeleton intentionally small:
-
-- Frontmatter with `type: design-prd`, task, repo, branch, and sha.
-- A title.
-- A first draft Problem to Solve section.
-- Empty section headers for the success signal, Proposed Solution, Alternative Solutions Considered, Solution Details, and Out of Scope.
-
-After saving the skeleton with `rpi_artifact_save`, stop and open the foundation with one question. Quote the Problem to Solve text so the user can react to exact wording.
+Write `NN-prd-<slug>.md`. Use `rpi_next_artifact_number`. Keep first skeleton small: frontmatter with `type: design-prd`, task, repo, branch, sha; title; first draft Problem to Solve; empty headers for success signal, Proposed Solution, Alternative Solutions Considered, Solution Details, Out of Scope. Save, stop, open foundation with one question. Quote Problem to Solve so user reacts to exact wording.
 
 ## Step 3: Settle the foundation
 
-Build the foundation one decision at a time and wait after each question.
-
-1. Problem to Solve: iterate until the user agrees the problem is correctly stated, then rework that section.
-2. Success signal: propose the lever that would tell the team whether this work helped. It might be a product metric, adoption signal, operational benchmark, error rate, latency target, or qualitative review. For tiny changes, it may be valid to record that no meaningful metric exists if the user agrees.
-3. Do not open solution design until both the problem and success signal are settled.
+Build foundation one decision at a time, wait after each. Problem to Solve: iterate until user agrees, then rework. Success signal: propose lever showing whether work helped (metric, adoption, benchmark, error rate, latency, qualitative review; for tiny changes, valid to record no metric if user agrees). Do not open solution until both settled.
 
 ## Step 4: Solution interview
 
-Ask one product decision at a time. For each decision:
+Ask one product decision at a time. State decision, present two or three options with tradeoffs and recommendation, use HTML mockup for visual UI choices (display with `::rpi-artifact{...}` embed), discuss until resolved, rework Proposed Solution, Solution Details, Alternative Solutions Considered, Out of Scope, and mockups.
 
-1. State the decision clearly.
-2. Present two or three options with tradeoffs and a recommendation.
-3. Use an HTML mockup for visual UI choices and display it with a `::rpi-artifact{...}` embed.
-4. Discuss until the decision is resolved.
-5. Rework Proposed Solution, Solution Details, Alternative Solutions Considered, Out of Scope, and mockups so the document remains cohesive.
-
-For mockups:
-
-- Write focused HTML files under the task directory as `mockup-<description>.html`.
-- Use real labels and realistic data.
-- Keep each mockup focused on the current decision.
-- Update embedded mockups as decisions change.
+Mockups: write `mockup-<description>.html`, use real labels and realistic data, focus each on current decision, update embedded mockups as decisions change.
 
 ## Step 5: Solution review gate
 
-When the solution seems complete, stop. Ask the user to read the Solution Details from top to bottom and confirm the spec hangs together before the workflow continues. Incorporate any fixes they raise.
+When solution seems complete, stop. Ask user to read Solution Details top to bottom and confirm spec hangs together. Incorporate fixes.
 
 ## Step 6: Wrap up
 
-When the user approves the solution:
+When user approves solution: save, read `references/prd_final_answer.md`, follow template exactly, include artifact directive.
 
-- Save the latest PRD with `rpi_artifact_save`.
-- Read `references/prd_final_answer.md`.
-- Follow the template exactly. It points to the TDD phase.
-- Include the artifact directive returned by the save tool.
-
-Use child threads only when a missing fact would change the artifact. Spawn independent assignments first, then wait for them and read their final messages:
-
-```text
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context preferences> --prompt "/rpi-agent-codebase-locator <assignment>"
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context preferences> --prompt "/rpi-agent-codebase-analyzer <assignment>"
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context preferences> --prompt "/rpi-agent-codebase-pattern-finder <assignment>"
-bb thread spawn --project $BB_PROJECT_ID --parent-self --environment $BB_ENVIRONMENT_ID --provider <same> --model <research model from rpi_task_context preferences> --prompt "/rpi-agent-web-search-researcher <assignment>"
-bb thread wait <thread-id>
-bb thread output <thread-id>
-```
-
-Role mapping: locator finds files and tests, analyzer explains current behavior, pattern finder finds local precedents, and web researcher checks external behavior or current documentation. The child thread's final message is the deliverable. Use only findings you have read from `bb thread output`.
-
-If a child thread or direct read discovers current-state facts that are missing or stale in the completed research artifact, fold those discoveries back into that research artifact before finalizing the PRD. Save the updated research artifact with `rpi_artifact_save`, then continue the PRD from the corrected context.
-
-## Artifact and Reading Rules
-
-- Read selected primary inputs and user-mentioned files completely from the exact revisions reported by `rpi_task_context`. Use summaries and heading reads for supporting artifacts. Use `rpi_artifacts_list` only when the selected set is insufficient.
-- Use `rpi_artifacts_list` for bounded discovery inside the task directory. Do not search, glob, or list the task mirror directly.
-- Do not read research-question artifacts during design, outline, or plan work. They guide the research phase only; use completed research instead.
-- Do not inspect unrelated task directories unless the user explicitly asks.
-- Treat failed artifact saves, failed comment calls, or unavailable task context as blockers. Do not work around them by writing untracked side files.
-- Use `rpi_next_artifact_number` when creating a new numbered artifact. The file name format is `NN-<type>-<2-4-word-kebab-slug>.md`.
-
-## Markdown Formatting
-
-When an artifact needs to show markdown that itself contains fenced code, wrap the outer example in four backticks so inner three-backtick blocks remain valid.
-
-## Document Precedence
-
-When documents disagree, the latest phase artifact wins:
-
-**PRD > design discussion > research > ticket**
-
-Earlier material provides context. The artifact from this phase records the current decision and should absorb later user feedback instead of leaving contradictions in place.
+Spawn rpi-agent-codebase-locator (finds files/tests), -analyzer (explains behavior), -pattern-finder (finds precedents), -web-search-researcher (checks external docs) children per the session child-thread recipe when a missing fact would change the artifact. Use only findings you have read from `bb thread output`. If a child or direct read discovers current-state facts missing or stale in completed research, fold those into the research artifact before finalizing the PRD.

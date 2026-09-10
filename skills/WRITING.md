@@ -1,43 +1,60 @@
 # RPI writing guide
 
-Apply this guide to artifacts, revisions, and child-thread reports. The active skill still controls scope, required sections, evidence, approvals, and the exact final-answer format.
+Applies to every artifact, revision, child-thread report, and final reply for the rest of the session. The active skill still owns scope, required sections, evidence, approvals, and the exact final-answer format. When a rule here would delete a required item, the skill wins.
 
-## State the useful fact first
+Every sentence earns its place by carrying one of: a fact, a reason, a constraint, an uncertainty, evidence, or a next action. Delete the rest.
 
-- Start with the finding, decision, or changed behavior. Skip introductory promises and closing recaps.
-- Use familiar words and direct verbs. Name the actor and action: "The worker retries failed uploads." Replace vague praise such as "robust" or "seamless" with the behavior that earns it.
-- Keep necessary technical names exact. Explain an unfamiliar term once when the reader needs it. Avoid invented jargon and em dashes.
-- Give each paragraph one point, usually in one to three sentences. Use bullets for separate items, numbered steps for order, and tables for comparisons.
-- Make custom headings state a result: "Uploads resume from the last saved chunk." Preserve headings required by the template.
+## Shape
 
-## Show the part the reader needs to understand
+1. First line states the result, decision, or finding. No lead-in, no plan of what the document will do.
+2. One point per paragraph, one to three sentences. Bullets for separate items, numbered lists for order, tables for comparisons.
+3. Custom headings state the finding: "Uploads resume from the last saved chunk", not "Upload behavior". Template headings stay as written.
+4. Name the actor and the action: "The worker retries failed uploads." Replace praise words with the behavior that earns them.
+5. Say each fact once, where it belongs. Elsewhere, link to that section. A summary points at detail; it does not repeat it.
+6. Explain an unfamiliar term once, where the reader first needs it. Keep technical names exact. No em dashes.
+7. Show, do not narrate, when a shape carries the point: pseudocode for a branch, a call or file tree for ownership, Mermaid for messages and states, a small diff for a change, a focused mockup for a layout. Put the view beside the claim it supports. A clear sentence needs no diagram.
+8. Fill a required section with the smallest complete answer. An empty required section reads "None." Remove a section only when its template allows it.
+9. On revision, replace stale text and its visual. Keep required decision records and review receipts. The document is the current state, not a conversation log.
+10. Frontmatter `summary:` is two to four factual sentences: what this establishes and what a later phase needs from it. A final-answer `{summary}` is one or two sentences: result plus any material unresolved item. Command fences and artifact directives stay byte-exact.
 
-Use the smallest useful representation allowed by the phase:
+## Delete on sight
 
-| Reader needs to see | Use |
+`rpi_artifact_save` flags these and returns them as `writing_issues`; fix every line and save again.
+
+| Kind | Examples |
 |---|---|
-| A branch or algorithm | Pseudocode |
-| Call order or ownership | Call, component, or shallow file tree |
-| Messages, states, or data movement | Mermaid |
-| A change to an existing shape | Small diff |
-| A layout or interaction | Focused mockup |
+| Meta commentary | it is important to note, note that, as mentioned above, in this section, this document describes |
+| Recaps and transitions | in summary, in conclusion, overall, additionally, furthermore, moreover, finally |
+| Empty adverbs | basically, essentially, obviously, clearly, of course |
+| Wordy phrases | in order to, due to the fact that, the fact that, a number of, going forward |
+| Praise words | robust, seamless, comprehensive, holistic, streamlined, leverage, utilize |
+| Tour-guide voice | let's take a look, let us walk through |
 
-Put the view beside the claim it explains. Add prose for the reason, constraint, or consequence the view cannot show. A clear sentence needs no diagram. Research views describe observed behavior; proposed shapes belong in design or planning.
+Also delete: closing pleasantries, hedges that carry no real uncertainty, idioms and figurative phrases (write the literal action), and any sentence that restates the heading above it.
 
-## Say each thing once
+Keep a hedge that carries real uncertainty; deleting it fakes confidence. Keep citations, contracts, failure paths, decision rationale, and verification evidence even when they make the document longer. Length follows the evidence, never the other way around.
 
-- Explain a fact where it belongs. Elsewhere, link to that section instead of repeating its explanation. Keep summaries useful without duplicating the detail.
-- Fill required sections with the smallest complete answer. Keep required empty sections explicit, for example "None." Remove a section only when its template permits omission.
-- Preserve citations, contracts, failure paths, uncertainty, decision rationale, and verification evidence. Length follows the work; there is no whole-document word limit.
-- On revision, replace outdated text and update its visual. Retain required decision records and review receipts, but keep the main document current rather than appending conversation history.
-- Keep frontmatter summaries at two to four factual sentences for downstream sessions. Fill a final-answer `{summary}` with one or two sentences covering the result and any material unresolved item. Preserve the template's command fence and artifact directive exactly.
+## Replies and child reports
 
-## Edit before saving or replying
+- First line: what changed or what was found. Last line: the required command fence or the one next action.
+- Number multi-step work. One bounded action per step.
+- A second issue is a separate line at the end, not a tangent in the middle.
+- Errors read as cause and fix: "Fails at `auth.spec.ts:42`: expected 200, got 401. Missing auth header."
 
-Delete sentences that add no fact, reason, constraint, uncertainty, evidence, or next action. Replace vague claims with observable behavior. Check that cuts retained every required item and that observations remain distinct from proposals and unverified claims.
+## Before saving or replying
 
-For example, replace "This enhancement provides a more reliable upload experience through improved recovery capabilities" with:
+1. Delete the first sentence if it announces what follows.
+2. Delete the last sentence if it recaps or asks "anything else".
+3. Scan for the Delete-on-sight table. Rewrite each hit as the fact it was hiding, or drop it.
+4. Check every required section and every citation survived the cuts.
+5. Read only the first and last line. They must say what is true now and what happens next.
 
-> Failed uploads resume from the last saved chunk. Closing the app preserves progress; cancelling the upload deletes it.
+Example. Before:
 
-Use such specifics only when the source evidence or agreed design supports them.
+> This enhancement provides a more robust upload experience through comprehensive recovery capabilities.
+
+After:
+
+> Failed uploads resume from the last saved chunk. Closing the app preserves progress; cancelling deletes it.
+
+Write the second version only when the evidence or agreed design supports it.
