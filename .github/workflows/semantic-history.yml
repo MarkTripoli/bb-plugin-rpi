@@ -1,0 +1,25 @@
+name: Semantic history
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  conventional:
+    name: Conventional commits and PR title
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate Conventional Commit headers
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+        run: node scripts/check-conventional.mjs

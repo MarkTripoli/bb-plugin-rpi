@@ -25,6 +25,7 @@ state rather than tracked separately.
 - RPC: `defineRpcContract` with strict zod input/output. Frontend imports the contract **type-only** from `./contract`.
 - Return bounded output from tools and CLI. Treat frontend params and persisted values as untrusted.
 - Dispose everything you register (`bb.onDispose`, service signals, subscriptions).
+- Commit subjects and pull-request titles follow Conventional Commits: `type(scope)!: description`. The required `Semantic history / Conventional commits and PR title` check validates every commit in the pull request and the pull-request title.
 - No em dashes in prose or UI copy.
 
 ## Workflow per phase

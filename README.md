@@ -249,6 +249,7 @@ immediately launching a different skill than the suggested one.
 ```
 npm install
 npm test            # node:test on the pure modules + plugin harness tests
+npm run check:conventional # Conventional Commit subjects on this branch
 npx tsc --noEmit
 bb plugin build      # dist/server.js, dist/app.js, dist/app.css
 bb plugin dev        # rebuild + reload on every save
