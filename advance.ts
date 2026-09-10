@@ -17,11 +17,11 @@ import {
   withTaskLock,
 } from "./launch";
 import { getTask } from "./tasks";
-import { AUTO_ADVANCE, ITERATE_SKILL_BY_LABEL, autoAdvanceAccepts, autoAdvanceTransition, normalizePhaseLabel, skillInfo, type PhaseLabel } from "./transitions";
+import { AUTO_ADVANCE, ITERATE_SKILL_BY_LABEL, autoAdvanceAccepts, autoAdvanceTransition, completedTurnIsProcessed, completionActionsForSession, normalizePhaseLabel, skillInfo, type PhaseLabel } from "./transitions";
 import type { LaunchBindingMirror, SessionMirrorRow } from "./sessions";
 
 type Database = BetterSqlite3.Database;
-type AdvanceMode = "auto_advance" | "proceed";
+type AdvanceMode = "auto_advance" | "proceed" | "completion";
 
 export async function onCompletedTurn(
   bb: BbPluginApi,
@@ -182,7 +182,7 @@ type ResolvedManualLaunch = {
   displayPrompt: string;
   launchedBy: string;
   fromThreadId: string | null;
-  advance?: { session: SessionRow; nextStep: ValidNextStep };
+  advance?: { session: SessionRow; target: { skillId: string; commandLine: string } };
 };
 
 export async function prepareManualLaunch(
@@ -240,8 +240,8 @@ export async function submitManualLaunch(
 
     let attemptId: string | undefined;
     if (authorized.advance) {
-      const attempted = claimAdvanceAndAttempt(db, freshTask, authorized.advance.session, authorized.advance.nextStep, "proceed", validatedRequest);
-      if (!attempted) throw new LaunchRejectedError("stale_intent", "This Proceed action is stale. Reopen it from the source session.");
+      const attempted = claimAdvanceAndAttempt(db, freshTask, authorized.advance.session, authorized.advance.target, authorized.launchedBy === "completion" ? "completion" : "proceed", validatedRequest);
+      if (!attempted) throw new LaunchRejectedError("stale_intent", "This phase action is stale. Reopen it from the source session.");
       attemptId = attempted.attemptId;
     }
 
@@ -285,7 +285,13 @@ async function resolveManualIntent(bb: BbPluginApi, db: Database, intent: Manual
       displayPrompt: validation.nextStep.extraction.nextStepPrompt,
       launchedBy: "proceed",
       fromThreadId: session.threadId,
-      advance: { session, nextStep: validation.nextStep },
+      advance: {
+        session,
+        target: {
+          skillId: validation.nextStep.extraction.nextStepType,
+          commandLine: validation.nextStep.extraction.nextStepPrompt,
+        },
+      },
     };
   }
 
@@ -301,6 +307,27 @@ async function resolveManualIntent(bb: BbPluginApi, db: Database, intent: Manual
     } catch {
       throw new LaunchRejectedError("stale_intent", `Unknown RPI skill ${intent.skillId}.`);
     }
+  } else if (intent.kind === "completion") {
+    const session = readSessionForAdvance(db, intent.threadId);
+    if (!session) throw new LaunchRejectedError("stale_intent", `No RPI session found for thread ${intent.threadId}.`);
+    const task = manualTaskRecord(db, session.taskId);
+    const sourceError = await validateCompletionSource(bb, db, task, session);
+    if (sourceError) throw sourceError;
+    const projection = completionActionsForSession({ ...session, workflowType: task.workflowType }, { activeAttempt: false, successorThreadId: successorFor(db, session.threadId) });
+    const action = projection?.actions.find((candidate) =>
+      candidate.intent.kind === "completion" && candidate.intent.skillId === intent.skillId,
+    );
+    const info = skillInfo(intent.skillId);
+    if (!action || !info) throw new LaunchRejectedError("stale_intent", "This phase action is no longer available.");
+    resolved = {
+      task,
+      skillId: info.skillId,
+      commandLine: info.command,
+      displayPrompt: info.command,
+      launchedBy: "completion",
+      fromThreadId: session.threadId,
+      advance: { session, target: { skillId: info.skillId, commandLine: info.command } },
+    };
   } else {
     try {
       resolved = resolveIterateLaunch(db, new Map(), intent.threadId);
@@ -424,7 +451,10 @@ function advanceSession(
       if (!autoAdvanceAccepts(normalizePhaseLabel(fresh.label) as PhaseLabel, task.workflowType, nextStep.extraction.nextStepType)) return { threadId: existing };
       if (!task.autoAdvance || !task[transition.flag as keyof TaskRecord]) return { threadId: existing };
     }
-    const attempted = claimAdvanceAndAttempt(db, task, fresh, nextStep, mode);
+    const attempted = claimAdvanceAndAttempt(db, task, fresh, {
+      skillId: nextStep.extraction.nextStepType,
+      commandLine: nextStep.extraction.nextStepPrompt,
+    }, mode);
     if (!attempted) return { threadId: successorFor(db, fresh.threadId) };
     return launchPhase(bb, db, mirror, bindings, task, {
       skillId: nextStep.extraction.nextStepType,
@@ -446,20 +476,33 @@ async function validateAdvance(
   | { ok: true; nextStep: ValidNextStep; transition: ReturnType<typeof autoAdvanceTransition> }
   | { ok: false; error: LaunchRejectedError }
 > {
-  const existing = successorFor(db, session.threadId);
-  if (session.advancedAt !== null && existing) return { ok: false, error: new LaunchRejectedError("launch_blocked", "Session already advanced.") };
-  if (session.rpiStatus !== "ready_for_input") return { ok: false, error: new LaunchRejectedError("session_running", "session running") };
-  if (task.archived) return { ok: false, error: new LaunchRejectedError("task_archived", "Task is archived.") };
-  if (session.blockedReason) return { ok: false, error: new LaunchRejectedError("pending_interaction", "Session has pending interactions.") };
-  if (await hasPendingInteractions(bb, session.threadId)) return { ok: false, error: new LaunchRejectedError("pending_interaction", "Session has pending interactions.") };
-  if (!session.completedTurnKey) return { ok: false, error: new LaunchRejectedError("missing_completed_turn", "No completed turn is available.") };
+  const sourceError = await validateCompletionSource(bb, db, task, session, false);
+  if (sourceError) return { ok: false, error: sourceError };
   if (session.nextStepTurnKey !== session.completedTurnKey) return { ok: false, error: new LaunchRejectedError("stale_extraction", "stale extraction") };
   const nextStep = parseJson<NextStepSuggestions | null>(session.nextStepJson, null);
   if (nextStep?.extraction.type !== "next_step_found") return { ok: false, error: new LaunchRejectedError("invalid_next_step", "No next step is available.") };
   const label = normalizePhaseLabel(session.label) as PhaseLabel | null;
   const transition = label ? autoAdvanceTransition(label, task.workflowType) : undefined;
-  if (activeLaunchAttempt(db, task.id)) return { ok: false, error: new LaunchRejectedError("launch_blocked", "A launch attempt is already pending.") };
   return { ok: true, nextStep: nextStep as ValidNextStep, transition };
+}
+
+async function validateCompletionSource(
+  bb: BbPluginApi,
+  db: Database,
+  task: TaskRecord,
+  session: SessionRow,
+  requireProcessed = true,
+) {
+  const existing = successorFor(db, session.threadId);
+  if (existing) return new LaunchRejectedError("launch_blocked", "Session already advanced.");
+  if (session.rpiStatus !== "ready_for_input") return new LaunchRejectedError("session_running", "session running");
+  if (task.archived) return new LaunchRejectedError("task_archived", "Task is archived.");
+  if (session.blockedReason) return new LaunchRejectedError("pending_interaction", "Session has pending interactions.");
+  if (await hasPendingInteractions(bb, session.threadId)) return new LaunchRejectedError("pending_interaction", "Session has pending interactions.");
+  if (!session.completedTurnKey) return new LaunchRejectedError("missing_completed_turn", "No completed turn is available.");
+  if (requireProcessed && !completedTurnIsProcessed(session)) return new LaunchRejectedError("stale_extraction", "The completed turn is still being processed.");
+  if (activeLaunchAttempt(db, task.id)) return new LaunchRejectedError("launch_blocked", "A launch attempt is already pending.");
+  return null;
 }
 
 async function hasPendingInteractions(bb: BbPluginApi, threadId: string) {
@@ -473,7 +516,7 @@ function claimAdvanceAndAttempt(
   db: Database,
   task: TaskRecord,
   session: SessionRow,
-  nextStep: ValidNextStep,
+  target: { skillId: string; commandLine: string },
   mode: AdvanceMode,
   request?: ManualLaunchRequest,
 ) {
@@ -492,10 +535,10 @@ function claimAdvanceAndAttempt(
     insertAttempt(db, task, {
       id: attemptId,
       fromThreadId: session.threadId,
-      skillId: nextStep.extraction.nextStepType,
-      commandLine: nextStep.extraction.nextStepPrompt,
-      label: skillInfo(nextStep.extraction.nextStepType)?.label ?? null,
-      environmentRole: environmentRoleForAttempt(task, nextStep.extraction.nextStepType),
+      skillId: target.skillId,
+      commandLine: target.commandLine,
+      label: skillInfo(target.skillId)?.label ?? null,
+      environmentRole: environmentRoleForAttempt(task, target.skillId),
       launchedBy: mode,
       request,
     });

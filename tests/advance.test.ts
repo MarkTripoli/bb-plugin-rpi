@@ -50,8 +50,8 @@ function seed(db: Database.Database, label: string | null, nextStepType: string 
     INSERT INTO sessions (
       thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
       rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason, next_step_json,
-      completed_turn_key, next_step_turn_key, created_at, updated_at
-    ) VALUES ('thr_source', ?, ?, NULL, 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, ?, 'turn_1', 'turn_1', 1, 1)
+      completed_turn_key, next_step_turn_key, last_summarized_turn_key, created_at, updated_at
+    ) VALUES ('thr_source', ?, ?, NULL, 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, ?, 'turn_1', 'turn_1', 'turn_1', 1, 1)
   `).run(taskId, label, nextStepJson);
   return { taskId, session: mirrorSession(db, new Map<string, SessionMirrorRow>(), "thr_source")! };
 }
@@ -362,6 +362,74 @@ test("manual launch preparation resolves every intent without mutations or spawn
     assert.equal(prepared.sourceThreadId, "thr_source");
     assert.equal(prepared.displayPrompt, intent === "proceed" ? "/rpi-create-research" : "/rpi-iterate-research-questions");
     assert.equal(after, before);
+    assert.equal(spawns.length, 0);
+    assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts").get() as { count: number }).count, 0);
+    db.close();
+  }
+});
+
+test("completion preparation is read-only and submission claims the source with the catalog command", async () => {
+  const db = makeDb();
+  const { taskId } = seed(db, "implementation", null, { auto_advance: 0 });
+  const { bb, spawns } = fakeBb();
+  const bindings = createLaunchBindingMirror();
+  const intent = { kind: "completion", threadId: "thr_source", skillId: "review-code" } as const;
+  const before = (db.prepare("SELECT total_changes() AS count").get() as { count: number }).count;
+  const prepared = await prepareManualLaunch(bb as never, db, intent);
+  assert.equal(prepared.displayPrompt, "/rpi-review-code");
+  assert.equal((db.prepare("SELECT total_changes() AS count").get() as { count: number }).count, before);
+  assert.equal(spawns.length, 0);
+
+  const launched = await submitManualLaunch(bb as never, db, new Map(), bindings, intent, prepared.stateToken, manualRequest({
+    projectId: prepared.projectId,
+    environment: prepared.environment,
+  }));
+  assert.equal(launched.threadId, "thr_next_1");
+  assert.equal(spawns.length, 1);
+  assert.deepEqual(db.prepare("SELECT from_thread_id AS fromThreadId, skill_id AS skillId, command_line AS commandLine, launched_by AS launchedBy FROM launch_attempts WHERE task_id = ?").get(taskId), {
+    fromThreadId: "thr_source",
+    skillId: "review-code",
+    commandLine: "/rpi-review-code",
+    launchedBy: "completion",
+  });
+  assert.equal((db.prepare("SELECT advanced_at AS advancedAt FROM sessions WHERE thread_id = 'thr_source'").get() as { advancedAt: number | null }).advancedAt !== null, true);
+  db.close();
+});
+
+test("completion submissions are single-winner and revalidate interactions and catalog state", async () => {
+  {
+    const db = makeDb();
+    seed(db, "implementation", null, { auto_advance: 0, base_environment_id: "env_base" });
+    const { bb, spawns } = fakeBb();
+    const bindings = createLaunchBindingMirror();
+    const intent = { kind: "completion", threadId: "thr_source", skillId: "describe-pr" } as const;
+    const prepared = await prepareManualLaunch(bb as never, db, intent);
+    const request = manualRequest({ projectId: prepared.projectId, environment: prepared.environment });
+    const settled = await Promise.allSettled([
+      submitManualLaunch(bb as never, db, new Map(), bindings, intent, prepared.stateToken, request),
+      submitManualLaunch(bb as never, db, new Map(), bindings, intent, prepared.stateToken, request),
+    ]);
+    assert.equal(settled.filter((result) => result.status === "fulfilled").length, 1);
+    assert.equal(spawns.length, 1);
+    assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts WHERE from_thread_id = 'thr_source'").get() as { count: number }).count, 1);
+    db.close();
+  }
+
+  {
+    const db = makeDb();
+    seed(db, "implementation", null, { auto_advance: 0 });
+    const options: { pendingInteraction?: boolean } = { pendingInteraction: false };
+    const { bb, spawns } = fakeBb(options);
+    const intent = { kind: "completion", threadId: "thr_source", skillId: "review-code" } as const;
+    const prepared = await prepareManualLaunch(bb as never, db, intent);
+    options.pendingInteraction = true;
+    await assert.rejects(
+      submitManualLaunch(bb as never, db, new Map(), createLaunchBindingMirror(), intent, prepared.stateToken, manualRequest({
+        projectId: prepared.projectId,
+        environment: prepared.environment,
+      })),
+      /pending interactions/,
+    );
     assert.equal(spawns.length, 0);
     assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts").get() as { count: number }).count, 0);
     db.close();

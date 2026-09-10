@@ -21,7 +21,6 @@ import type {
   ContextWarningRule,
   LaunchAttemptRecord,
   ListModelsOutput,
-  NextStepSuggestionsRecord,
   ManualLaunchIntent,
   PreparedManualLaunch,
   Prefs,
@@ -37,7 +36,7 @@ import type {
   CommentThreadRecord,
 } from "../contract";
 import { modelDisplay, modelOptionValue, parseModelOptionValue } from "../models";
-import { AUTO_ADVANCE, BOARD_COLUMNS, FIRST_SKILL_BY_WORKFLOW, SKILL_BY_ID, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS, shouldShowComposerBanner, suggestedNextForSession, type SuggestedNext } from "../transitions";
+import { AUTO_ADVANCE, BOARD_COLUMNS, FIRST_SKILL_BY_WORKFLOW, SKILL_BY_ID, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS, completionActionsForSession } from "../transitions";
 import { ARTIFACT_COMMENTS_WIDTH_RANGE, ARTIFACT_LIST_WIDTH_RANGE, ARTIFACT_PANEL_STACK_BREAKPOINT, artifactLayoutMode, clampWidth } from "../artifact-layout";
 import {
   PHASE_DESCRIPTIONS,
@@ -707,24 +706,7 @@ export function RpiNotificationBridge() {
   return null;
 }
 
-function nextStep(session: Pick<SessionView, "nextStepJson">) {
-  if (!session.nextStepJson) return null;
-  try {
-    const parsed = JSON.parse(session.nextStepJson) as NextStepSuggestionsRecord;
-    return parsed.extraction.type === "next_step_found" ? parsed.extraction : null;
-  } catch {
-    return null;
-  }
-}
-
-// Decision logic (precondition gating, extraction parsing, comparison against the workflow's
-// canonical next skill) lives in transitions.ts (suggestedNextForSession), covered by
-// tests/transitions.test.ts; this is just the UI's call site.
-function suggestedNextFor(session: Pick<SessionView, "rpiStatus" | "blockedReason" | "completedTurnKey" | "lastSummarizedTurnKey" | "label" | "workflowType" | "nextStepJson">): SuggestedNext | null {
-  return suggestedNextForSession(session);
-}
-
-// Shared session-state fetch (session row, per-task UI state, pending-launch-attempt guard) for
+// Shared session-state fetch (session row, per-task UI state, launch attempts) for
 // the thread-header cluster and the composer banner (phase 10 header/composer split): both need
 // the same three RPC round trips and the same two realtime channels, so the fetch lives here once
 // instead of being duplicated in each component. `threadId` is null for composer scopes that are
@@ -734,28 +716,23 @@ function useRpiSessionState(threadId: string | null) {
   const rpc = useRpc<RpcContract>();
   const [session, setSession] = useState<SessionView | null>(null);
   const [uiState, setUiState] = useState<TaskUiState>({});
-  const [hasPendingLaunchAttempt, setHasPendingLaunchAttempt] = useState(false);
+  const [launchAttempts, setLaunchAttempts] = useState<LaunchAttemptRecord[]>([]);
 
   const refetch = () => {
     if (!threadId) {
       setSession(null);
       setUiState({});
-      setHasPendingLaunchAttempt(false);
+      setLaunchAttempts([]);
       return;
     }
     rpc.call("getSession", { threadId }).then(({ session: next }) => {
       setSession(next);
       if (next) {
         rpc.call("getTaskUiState", { taskId: next.taskId }).then(setUiState);
-        // Duplicate-launch guard for the Suggested-next button: disable it while a launch_attempt
-        // for this task is still pending/uncertain/retrying, same statuses launchPhase's own
-        // activeLaunchAttempt check treats as "already launching".
-        rpc.call("listLaunchAttempts", { taskId: next.taskId }).then(({ attempts }) =>
-          setHasPendingLaunchAttempt(attempts.some((attempt) => attempt.status === "pending" || attempt.status === "uncertain" || attempt.status === "retrying")),
-        );
+        rpc.call("listLaunchAttempts", { taskId: next.taskId }).then(({ attempts }) => setLaunchAttempts(attempts));
       } else {
         setUiState({});
-        setHasPendingLaunchAttempt(false);
+        setLaunchAttempts([]);
       }
     });
   };
@@ -767,7 +744,7 @@ function useRpiSessionState(threadId: string | null) {
   useRealtime("rpi:sessions", refetch);
   useRealtime("rpi:ui-state", refetch);
 
-  return { session, uiState, setUiState, hasPendingLaunchAttempt, refetch };
+  return { session, uiState, setUiState, launchAttempts, refetch };
 }
 
 // Attention count chip: a small filled badge, not a bare dot, so "N sessions need you" reads at a
@@ -3684,12 +3661,6 @@ const RPI_THREAD_PANEL_LINKS: ReadonlyArray<{ id: Exclude<RpiThreadPanelView, "a
   { id: "settings", label: "Settings", description: "Choose the next model and auto-advance", icon: "Settings" },
 ];
 
-const RPI_WORKFLOW_ACTIONS = [
-  { skillId: "review-code", label: "Start code review loop", description: "Review the complete task diff and cycle through fixes until clean." },
-  { skillId: "describe-pr", label: "Create pull request", description: "Skip or leave the review loop and create or update the pull request." },
-  { skillId: "resolve-pr-reviews", label: "Resolve pull request reviews", description: "Re-check current review threads, fix feedback, and repeat until approved." },
-] as const;
-
 export function RpiThreadPanel({ threadId, params }: { threadId: string; params?: unknown }) {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
@@ -3728,11 +3699,6 @@ export function RpiThreadPanel({ threadId, params }: { threadId: string; params?
   useEffect(() => {
     setView(initial.view);
   }, [initial.view]);
-
-  const launchStep = (skillId: (typeof RPI_WORKFLOW_ACTIONS)[number]["skillId"]) => {
-    if (!session) return;
-    navigate.toPluginPanel("rpi", { subPath: buildManualLaunchRoute({ kind: "skill", taskId: session.taskId, skillId }) });
-  };
 
   if (loadError) return <div className="p-4 text-sm text-destructive">{loadError}</div>;
   if (session === undefined) return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
@@ -3779,23 +3745,6 @@ export function RpiThreadPanel({ threadId, params }: { threadId: string; params?
   return (
     <div className="h-full min-h-0 overflow-auto p-3">
       <div className="space-y-5">
-        <div className="space-y-1">
-          <h2 className="text-sm font-semibold text-foreground">Workflow actions</h2>
-          <p className="text-xs text-muted-foreground">Start a fresh session from any point in {task.name}. Review the prompt and settings before submitting.</p>
-        </div>
-        <div className="space-y-2">
-          {RPI_WORKFLOW_ACTIONS.map((action) => (
-            <button
-              key={action.skillId}
-              type="button"
-              onClick={() => launchStep(action.skillId)}
-              className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-left hover:bg-muted"
-            >
-              <span className="block text-sm font-medium text-foreground">{action.label}</span>
-              <span className="mt-0.5 block text-xs text-muted-foreground">{action.description}</span>
-            </button>
-          ))}
-        </div>
         <div className="space-y-2">
           <h2 className="text-sm font-semibold text-foreground">Task tools</h2>
           <div className="grid gap-2">
@@ -4837,9 +4786,9 @@ export function RpiDefaultsSettings() {
 // Thread-header contract (frontend-registration.md "A control in the thread header"): the row is
 // 48px chrome with 28px controls, and it wants ONE inline control with taller content in a
 // portalled popover. This renders exactly that: phase pill + status + context gauge + a single
-// `h-7` "⋯" button opening a portalled Popover (components/ui/popover.tsx) for optional review
-// phases plus Iterate/Fork/Interrupt. Proceed, Suggested next, and the context-high notice moved to RpiComposerBanner
-// (registered via app.composer.customize in app.tsx) since those need more room than a 28px
+// `h-7` "⋯" button opening a portalled Popover (components/ui/popover.tsx) for Iterate/Fork/Interrupt.
+// Completion actions and the context-high notice belong in RpiComposerBanner (registered via
+// app.composer.customize in app.tsx) since those need more room than a 28px
 // control has, per the same contract's "put taller content in a portalled popover" (a composer
 // banner, not the header, is where a wide button belongs).
 export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectId: string; isCompactViewport: boolean }) {
@@ -4859,10 +4808,6 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
     runIterate();
   };
   const { session } = useRpiSessionState(threadId);
-  const launchStep = (skillId: "review-code" | "describe-pr" | "resolve-pr-reviews") => {
-    if (!session) return;
-    navigate.toPluginPanel("rpi", { subPath: buildManualLaunchRoute({ kind: "skill", taskId: session.taskId, skillId }) });
-  };
   const runArchive = () => {
     if (!session) return;
     void rpc.call("archiveTask", { taskId: session.taskId }).then(() => navigate.toPluginPanel("rpi", { subPath: "" }));
@@ -4895,9 +4840,6 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
   }, [session, jumpHotkeyForArchive]);
 
   if (!session) return null;
-  const phase = session.label?.replace(/^rpi:/, "") ?? null;
-  const canReviewCode = phase === "freeform" || phase === "implementation" || phase === "code-review" || phase === "review-fixes";
-  const canResolvePrReviews = phase === "describe-pr" || phase === "pr-review";
 
   return (
     <TooltipProvider delayDuration={300}>
@@ -4919,21 +4861,6 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
           </button>
         </PopoverTrigger>
         <PopoverContent>
-          {canReviewCode ? (
-            <>
-              <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted" onClick={() => launchStep("review-code")}>
-                Review code
-              </button>
-              <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted" onClick={() => launchStep("describe-pr")}>
-                Create pull request
-              </button>
-            </>
-          ) : null}
-          {canResolvePrReviews ? (
-            <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted" onClick={() => launchStep("resolve-pr-reviews")}>
-              Resolve pull request reviews
-            </button>
-          ) : null}
           <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted" onClick={iterate}>
             Iterate
           </button>
@@ -4978,19 +4905,17 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
 }
 
 // Registered as the "next-step" banner in app.composer.customize's `rpi-session` customization
-// (app.tsx), scope "thread" only. Carries the affordances that moved out of the 28px header
-// control: the context-high notice, Proceed, and Suggested next, none of which fit a 28px control
-// per the thread-header contract. Renders null for every other composer scope kind and for a
-// non-RPI thread (`getSession` returns null), and hides entirely for a quiet session (no
-// extraction, no suggestion, no context warning) via the pure `shouldShowComposerBanner`
-// (transitions.ts) so a session with nothing to say shows no banner at all.
+// (app.tsx), scope "thread" only. Carries completion actions, the context-high notice, and the
+// next-session model picker. Renders null for every other composer scope kind and for a non-RPI
+// thread (`getSession` returns null), and hides entirely when neither completion actions nor the
+// independent context warning applies.
 export function RpiComposerBanner() {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
   const { values: settings } = useSettings();
   const view = useComposerView();
   const threadId = view.scope.kind === "thread" ? view.scope.threadId : null;
-  const { session, uiState, setUiState, hasPendingLaunchAttempt } = useRpiSessionState(threadId);
+  const { session, uiState, setUiState, launchAttempts } = useRpiSessionState(threadId);
   const [pendingIterateConfirm, setPendingIterateConfirm] = useState(false);
   // The session view (getSession) does not carry the task's providerId/model/reasoningLevel, so
   // the compact model control below fetches the task itself; "tasks" is the same realtime channel
@@ -5033,12 +4958,21 @@ export function RpiComposerBanner() {
 
   if (!threadId || !session) return null;
 
-  const extracted = nextStep(session);
-  const suggested = suggestedNextFor(session);
   const gauge = contextGaugeText(session.contextUsage, session.contextWarnThreshold);
   const contextWarningDismissed = Boolean(uiState.contextWarningDismissed?.[threadId]);
   const contextWarn = Boolean(gauge?.warn);
-  if (!shouldShowComposerBanner({ extracted, suggested, contextWarn, dismissed: contextWarningDismissed })) return null;
+  const taskAttempts = launchAttempts.filter((attempt) => attempt.taskId === session.taskId);
+  const activeAttempt = taskAttempts.find((attempt) =>
+    attempt.status === "pending" || attempt.status === "uncertain" || attempt.status === "retrying",
+  ) ?? null;
+  const successorThreadId = taskAttempts.find((attempt) =>
+    attempt.fromThreadId === threadId && attempt.status === "spawned" && attempt.threadId,
+  )?.threadId ?? null;
+  const completion = completionActionsForSession(session, {
+    activeAttempt: Boolean(activeAttempt),
+    successorThreadId,
+  });
+  if (!completion && (!contextWarn || contextWarningDismissed)) return null;
 
   const runIterate = () => navigate.toPluginPanel("rpi", { subPath: buildManualLaunchRoute({ kind: "iterate", threadId }) });
   const iterate = () => {
@@ -5051,7 +4985,63 @@ export function RpiComposerBanner() {
 
   return (
     <TooltipProvider delayDuration={300}>
-    <div className="flex w-full flex-wrap items-center justify-end gap-2">
+    <div className="flex w-full min-w-0 flex-wrap items-center gap-2">
+      {completion ? (
+        <div
+          role="group"
+          aria-label="Phase complete"
+          className="flex min-w-0 flex-1 flex-wrap items-center gap-2"
+        >
+          <span className="shrink-0 text-xs font-semibold text-foreground">Phase complete</span>
+          {completion.state === "replaced" && completion.successorThreadId ? (
+            <Button
+              type="button"
+              variant="outline"
+              className="h-7 shrink-0 px-2 text-xs"
+              onClick={() => navigate.toThread(completion.successorThreadId!)}
+            >
+              Open successor session
+            </Button>
+          ) : (
+            <>
+              {completion.actions.map((action) => (
+                <Button
+                  key={action.id}
+                  type="button"
+                  variant={action.emphasis === "primary" ? "default" : "outline"}
+                  className="h-7 max-w-full px-2 text-xs"
+                  disabled={completion.state === "blocked"}
+                  aria-label={action.id === "agent-suggestion" ? "Agent suggestion" : action.label}
+                  onClick={() => {
+                    if (action.intent.kind === "iterate") {
+                      iterate();
+                      return;
+                    }
+                    navigate.toPluginPanel("rpi", { subPath: buildManualLaunchRoute(action.intent) });
+                  }}
+                >
+                  <span className="truncate">{action.id === "agent-suggestion" ? "Agent suggestion" : action.label}</span>
+                </Button>
+              ))}
+              {completion.state === "blocked" && activeAttempt ? (
+                <span role="status" className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  <span className="truncate">Launch {activeAttempt.status}: {activeAttempt.id}</span>
+                  {activeAttempt.status === "uncertain" || activeAttempt.status === "retrying" ? (
+                    <Button
+                      type="button"
+                      variant="link"
+                      className="h-auto shrink-0 p-0 text-xs"
+                      onClick={() => navigate.toPluginPanel("rpi", { subPath: `tasks/${session.taskId}` })}
+                    >
+                      Open recovery
+                    </Button>
+                  ) : null}
+                </span>
+              ) : null}
+            </>
+          )}
+        </div>
+      ) : null}
       {contextWarn && !contextWarningDismissed ? (
         <span className="inline-flex h-7 items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-2 text-xs text-warning">
           Context high
@@ -5065,33 +5055,6 @@ export function RpiComposerBanner() {
           >
             <Icon name="X" className="size-3" />
           </button>
-        </span>
-      ) : null}
-      <Button
-        type="button"
-        variant={extracted ? "default" : "outline"}
-        className="h-7 px-2 text-xs"
-        disabled={!extracted}
-        onClick={() => navigate.toPluginPanel("rpi", { subPath: buildManualLaunchRoute({ kind: "proceed", threadId }) })}
-      >
-        {extracted?.nextStepSummary ?? "Proceed"}
-      </Button>
-      {suggested ? (
-        <span className="flex items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            className="h-7 px-2 text-xs"
-            disabled={hasPendingLaunchAttempt}
-            onClick={() => navigate.toPluginPanel("rpi", { subPath: buildManualLaunchRoute({ kind: "skill", taskId: session.taskId, skillId: suggested.skillId! }) })}
-          >
-            Suggested next: {suggested.buttonText}
-          </Button>
-          {suggested.mismatch ? (
-            <span className="text-xs text-muted-foreground">
-              Agent suggested {suggested.extractedSkillId}; workflow expects {suggested.skillId}
-            </span>
-          ) : null}
         </span>
       ) : null}
       {bannerTask ? (
@@ -5332,7 +5295,7 @@ function ManualLaunchComposerPage({ intent }: { intent: ManualLaunchIntent }) {
   }, [route, rpc]);
 
   const goBack = () => {
-    if (intent.kind === "proceed" || intent.kind === "iterate") {
+    if (intent.kind === "proceed" || intent.kind === "completion" || intent.kind === "iterate") {
       navigate.toThread(intent.threadId);
       return;
     }

@@ -46,13 +46,9 @@ test("manual quick actions use the reviewable composer boundary", () => {
     "Start fresh",
     "New chat",
     "Draft Launch",
-    "Start code review loop",
-    "Review code",
-    "Create pull request",
-    "Resolve pull request reviews",
+    "Phase complete",
+    "Agent suggestion",
     "Iterate in fresh session",
-    "Proceed",
-    "Suggested next:",
   ]) {
     assert.equal(content.includes(label), true, `missing manual action ${label}`);
   }
@@ -65,4 +61,27 @@ test("manual quick actions use the reviewable composer boundary", () => {
   assert.match(content, /<NewThreadComposer/);
   assert.equal((content.match(/rpc\.call\("submitManualLaunch"/g) ?? []).length, 1);
   assert.match(content, /catch \(error\) \{\s*reportLaunchError\(error\);\s*throw error;/);
+});
+
+test("phase completion owns continuation actions", () => {
+  assert.match(content, /completionActionsForSession\(session/);
+  assert.match(content, /buildManualLaunchRoute\(action\.intent\)/);
+  assert.match(content, /intent\.kind === "completion"/);
+
+  const headerStart = content.indexOf("export function RpiThreadHeaderAction");
+  const bannerStart = content.indexOf("export function RpiComposerBanner", headerStart);
+  assert.ok(headerStart >= 0 && bannerStart > headerStart, "could not locate thread-header section");
+  const header = content.slice(headerStart, bannerStart);
+  for (const label of ["Review code", "Create pull request", "Resolve pull request reviews"]) {
+    assert.equal(header.includes(label), false, `header still owns ${label}`);
+  }
+
+  const panelStart = content.indexOf("export function RpiThreadPanel");
+  const artifactDirectiveStart = content.indexOf("export function RpiArtifactDirective", panelStart);
+  assert.ok(panelStart >= 0 && artifactDirectiveStart > panelStart, "could not locate thread-panel section");
+  const panel = content.slice(panelStart, artifactDirectiveStart);
+  assert.equal(panel.includes("Workflow actions"), false);
+  for (const label of ["Review code", "Create pull request", "Resolve pull request reviews"]) {
+    assert.equal(panel.includes(label), false, `side panel still owns ${label}`);
+  }
 });
