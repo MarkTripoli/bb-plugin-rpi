@@ -59,7 +59,7 @@ function listFiles(dir: string): string[] {
   });
 }
 
-// Phase 22 compressed every SKILL.md to about half its words (32k to 16.5k total). These caps
+// Phase 25 compressed every SKILL.md to about half its words (32k to 16.5k total). These caps
 // hold the gain; raise a number only with a phase doc that says why.
 const SKILL_WORD_BUDGET = 850;
 const SKILLS_TOTAL_WORD_BUDGET = 18000;

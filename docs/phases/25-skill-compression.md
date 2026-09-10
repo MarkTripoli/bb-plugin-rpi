@@ -1,4 +1,4 @@
-# Phase 22: Skill compression
+# Phase 25: Skill compression
 
 All 33 `SKILL.md` files went from 32,459 words to 16,562 (49% cut) with the same rules. Shared operational rules moved from ten pasted copies into the session prompt. A word budget test holds the gain.
 
@@ -33,3 +33,7 @@ Largest files after: create-tdd 791, iterate-tdd 768, implement-plan 721, create
 - No live run yet. The first RPI session on each phase is the real test; watch for a skill that asks for something the session prompt now owns, or a gate that no longer fires.
 - `references/` templates (6,089 words) were left alone. Their placeholder text is what agents fill, so compressing them is a different exercise from this one.
 - The 850-word cap has 60 words of headroom on create-tdd. Raise it only with a phase doc.
+
+## Rebase onto main
+
+Main merged bounded artifact access (`rpi_artifact_read`, `rpi_artifacts_list`, `handoff.md`, phases 19 to 23) while this work was in flight. The compressed skills were rebased on top: every `ls -La` listing became `rpi_artifacts_list`, "read fully" became `rpi_artifact_read` on the exact selected revision, implementers read only the assigned phase, and research skills do not read `task.md`, `ticket.md`, or a withheld checkpoint. `SESSION_RULES` carries the discovery rule; main's artifact-context and handoff rules stay as written.

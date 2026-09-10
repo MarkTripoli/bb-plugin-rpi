@@ -1,4 +1,4 @@
-# Phase 21: Writing enforcement at the save chokepoint
+# Phase 24: Writing enforcement at the save chokepoint
 
 Generated artifacts stayed verbose after phase 18 because the guide was advice with no check behind it. This phase rewrites the guide as hard rules and adds one mechanical check where every artifact already passes: `rpi_artifact_save`.
 
