@@ -33,8 +33,11 @@ import {
   iterateInFreshSession,
   latestLaunchAttemptLabel,
   launchSkill,
+  manualLaunchRejection,
   onCompletedTurn,
+  prepareManualLaunch,
   proceed,
+  submitManualLaunch,
 } from "./advance";
 import {
   forkSession,
@@ -620,6 +623,19 @@ export default async function plugin(bb: BbPluginApi) {
     launchDraft: async ({ taskId }) => {
       return launchDraft(bb, db, sessionMirror, launchBindings, taskId);
     },
+	    prepareManualLaunch: async ({ intent }) => {
+	      return prepareManualLaunch(bb, db, intent);
+	    },
+	    submitManualLaunch: async ({ intent, stateToken, request }) => {
+	      try {
+	        const result = await submitManualLaunch(bb, db, sessionMirror, launchBindings, intent, stateToken, request);
+	        return { status: "launched" as const, threadId: result.threadId };
+	      } catch (error) {
+	        const rejection = manualLaunchRejection(error);
+	        if (!rejection) throw error;
+	        return { status: "rejected" as const, rejection };
+	      }
+	    },
 	    proceed: async ({ threadId }) => {
 	      return proceed(bb, db, sessionMirror, launchBindings, threadId);
 	    },

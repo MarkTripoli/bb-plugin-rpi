@@ -24,4 +24,6 @@ test("app exposes one consolidated RPI thread panel action", () => {
   for (const skillId of ["review-code", "describe-pr", "resolve-pr-reviews"]) {
     assert.match(uiSource, new RegExp(`skillId: "${skillId}"`));
   }
+  assert.match(uiSource, /buildManualLaunchRoute\(\{ kind: "skill", taskId: session\.taskId, skillId \}\)/);
+  assert.doesNotMatch(uiSource, /rpc\.call\("launchSkill"/);
 });

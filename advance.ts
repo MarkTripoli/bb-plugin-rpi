@@ -1,10 +1,21 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type * as BetterSqlite3 from "better-sqlite3";
 import { parseJson, readRow, writeRow } from "./db";
-import type { SessionRow, TaskRecord } from "./contract";
+import { manualLaunchRequestSchema, type ManualLaunchIntent, type ManualLaunchRequest, type PreparedManualLaunch, type SessionRow, type TaskRecord } from "./contract";
 import type { NextStepSuggestions } from "./extraction";
-import { activeLaunchAttempt, environmentRoleForAttempt, insertAttempt, LaunchRejectedError, launchPhase, withTaskLock } from "./launch";
+import {
+  activeLaunchAttempt,
+  environmentRoleForAttempt,
+  insertAttempt,
+  LaunchRejectedError,
+  launchPhase,
+  resolveDraftLaunch,
+  resolveSkillLaunch,
+  selectEnvironment,
+  taskExecutionSeeds,
+  withTaskLock,
+} from "./launch";
 import { getTask } from "./tasks";
 import { AUTO_ADVANCE, ITERATE_SKILL_BY_LABEL, autoAdvanceAccepts, autoAdvanceTransition, normalizePhaseLabel, skillInfo, type PhaseLabel } from "./transitions";
 import type { LaunchBindingMirror, SessionMirrorRow } from "./sessions";
@@ -56,8 +67,6 @@ export async function launchSkill(
   skillId: string,
   commandLine?: string | null,
 ) {
-  const info = skillInfo(skillId);
-  if (!info) throw new Error(`Unknown skill ${skillId}`);
   // Same per-task mutex as proceed/auto-advance/retry (Phase 5, launch.ts withTaskLock): keeps
   // this call's read-check-then-insert of the task's launch_attempts state from interleaving with
   // another in-flight call for the same task (retry/adopt/proceed already run under this lock;
@@ -67,11 +76,12 @@ export async function launchSkill(
   // resolved to spawned/failed.
   return withTaskLock(taskId, async () => {
     const task = taskRecord(db, taskId);
+    const resolved = resolveSkillLaunch(task, skillId, commandLine);
     const result = await launchPhase(bb, db, mirror, bindings, task, {
-      skillId,
-      commandLine: commandLine ?? info.command,
-      launchedBy: "user",
-      fromThreadId: null,
+      skillId: resolved.skillId,
+      commandLine: resolved.commandLine,
+      launchedBy: resolved.launchedBy,
+      fromThreadId: resolved.fromThreadId,
     });
     writeRow(db, "UPDATE tasks SET is_draft = 0, updated_at = ? WHERE id = ?", Date.now(), taskId);
     return finishLaunchSkill(bb, taskId, result);
@@ -90,6 +100,17 @@ export async function iterateInFreshSession(
   bindings: LaunchBindingMirror,
   threadId: string,
 ) {
+  const resolved = resolveIterateLaunch(db, mirror, threadId);
+  return launchPhase(bb, db, mirror, bindings, resolved.task, {
+    skillId: resolved.skillId,
+    commandLine: resolved.commandLine,
+    prompt: resolved.prompt,
+    launchedBy: resolved.launchedBy,
+    fromThreadId: resolved.fromThreadId,
+  });
+}
+
+function resolveIterateLaunch(db: Database, mirror: Map<string, SessionMirrorRow>, threadId: string) {
   const session = mirror.get(threadId) ?? readRow<SessionRow & { taskSlug: string; taskName: string; workflowType: string }>(
     db,
     `
@@ -116,19 +137,26 @@ export async function iterateInFreshSession(
   // launchPhase already supports skillId: null with a prompt (see launchDraft) and always prepends
   // TASK_CONTEXT_FIRST_ACTION, so the artifact directory instruction still carries over.
   if (!skillId) {
-    return launchPhase(bb, db, mirror, bindings, task, {
+    return {
+      task,
       skillId: null,
+      commandLine: null,
       prompt: UNLABELED_ITERATE_PROMPT,
+      displayPrompt: UNLABELED_ITERATE_PROMPT,
       launchedBy: "iterate",
       fromThreadId: threadId,
-    });
+    };
   }
-  return launchPhase(bb, db, mirror, bindings, task, {
+  const commandLine = skillInfo(skillId)!.command;
+  return {
+    task,
     skillId,
-    commandLine: skillInfo(skillId)!.command,
+    commandLine,
+    prompt: undefined,
+    displayPrompt: commandLine,
     launchedBy: "iterate",
     fromThreadId: threadId,
-  });
+  };
 }
 
 export const UNLABELED_ITERATE_PROMPT =
@@ -140,6 +168,235 @@ export const UNLABELED_ITERATE_PROMPT =
 export function iterateSkillForLabel(label: PhaseLabel | null) {
   const skillId = label ? ITERATE_SKILL_BY_LABEL[label] ?? null : null;
   return skillId && skillInfo(skillId) ? skillId : null;
+}
+
+type ValidNextStep = NextStepSuggestions & {
+  extraction: { type: "next_step_found"; nextStepType: string; nextStepPrompt: string };
+};
+
+type ResolvedManualLaunch = {
+  task: TaskRecord;
+  skillId: string | null;
+  commandLine: string | null;
+  prompt?: string;
+  displayPrompt: string;
+  launchedBy: string;
+  fromThreadId: string | null;
+  advance?: { session: SessionRow; nextStep: ValidNextStep };
+};
+
+export async function prepareManualLaunch(
+  bb: BbPluginApi,
+  db: Database,
+  intent: ManualLaunchIntent,
+): Promise<PreparedManualLaunch> {
+  const resolved = await resolveManualIntent(bb, db, intent);
+  const selected = await selectEnvironment(
+    bb,
+    resolved.task,
+    resolved.skillId,
+    environmentRoleForAttempt(resolved.task, resolved.skillId),
+  );
+  return {
+    intent,
+    stateToken: manualLaunchStateToken(db, intent, resolved),
+    taskId: resolved.task.id,
+    sourceThreadId: resolved.fromThreadId,
+    displayPrompt: resolved.displayPrompt,
+    projectId: resolved.task.projectId,
+    environment: selected.environment,
+    ...taskExecutionSeeds(resolved.task),
+    draftKey: draftKeyForIntent(intent),
+    fixedWorkspaceNotice: fixedWorkspaceNotice(selected.environment),
+  };
+}
+
+export async function submitManualLaunch(
+  bb: BbPluginApi,
+  db: Database,
+  mirror: Map<string, SessionMirrorRow>,
+  bindings: LaunchBindingMirror,
+  intent: ManualLaunchIntent,
+  stateToken: string,
+  request: ManualLaunchRequest,
+) {
+  const validatedRequest = manualLaunchRequestSchema.parse(request);
+  const taskId = taskIdForManualIntent(db, intent);
+  return withTaskLock(taskId, async () => {
+    const resolved = await resolveManualIntent(bb, db, intent);
+    const selected = await selectEnvironment(
+      bb,
+      resolved.task,
+      resolved.skillId,
+      environmentRoleForAttempt(resolved.task, resolved.skillId),
+    );
+    const freshTask = manualTaskRecord(db, resolved.task.id);
+    if (freshTask.archived) throw new LaunchRejectedError("task_archived", "Task is archived.");
+    const authorized = { ...resolved, task: freshTask };
+    assertManualTaskContext(freshTask, selected.environment, validatedRequest);
+    if (stateToken !== manualLaunchStateToken(db, intent, authorized)) {
+      throw new LaunchRejectedError("stale_intent", "This prepared launch is stale. Prepare it again before submitting.");
+    }
+
+    let attemptId: string | undefined;
+    if (authorized.advance) {
+      const attempted = claimAdvanceAndAttempt(db, freshTask, authorized.advance.session, authorized.advance.nextStep, "proceed", validatedRequest);
+      if (!attempted) throw new LaunchRejectedError("stale_intent", "This Proceed action is stale. Reopen it from the source session.");
+      attemptId = attempted.attemptId;
+    }
+
+    const result = await launchPhase(bb, db, mirror, bindings, freshTask, {
+      skillId: authorized.skillId,
+      commandLine: authorized.commandLine,
+      prompt: authorized.prompt,
+      request: validatedRequest,
+      launchedBy: authorized.launchedBy,
+      fromThreadId: authorized.fromThreadId,
+      attemptId,
+      selectedEnvironment: selected,
+    });
+    if (freshTask.isDraft) {
+      writeRow(db, "UPDATE tasks SET is_draft = 0, updated_at = ? WHERE id = ?", Date.now(), freshTask.id);
+      bb.realtime.publish("tasks", { taskId: freshTask.id });
+    }
+    return result;
+  });
+}
+
+export function manualLaunchRejection(error: unknown) {
+  if (!(error instanceof LaunchRejectedError)) return null;
+  const code = error.code === "project_mismatch" || error.code === "workspace_mismatch"
+    ? error.code
+    : "stale_intent" as const;
+  return { code, message: error.message };
+}
+
+async function resolveManualIntent(bb: BbPluginApi, db: Database, intent: ManualLaunchIntent): Promise<ResolvedManualLaunch> {
+  if (intent.kind === "proceed") {
+    const session = readSessionForAdvance(db, intent.threadId);
+    if (!session) throw new LaunchRejectedError("stale_intent", `No RPI session found for thread ${intent.threadId}.`);
+    const task = manualTaskRecord(db, session.taskId);
+    const validation = await validateAdvance(bb, db, task, session, "proceed");
+    if (!validation.ok) throw validation.error;
+    return {
+      task,
+      skillId: validation.nextStep.extraction.nextStepType,
+      commandLine: validation.nextStep.extraction.nextStepPrompt,
+      displayPrompt: validation.nextStep.extraction.nextStepPrompt,
+      launchedBy: "proceed",
+      fromThreadId: session.threadId,
+      advance: { session, nextStep: validation.nextStep },
+    };
+  }
+
+  let resolved: ResolvedManualLaunch;
+  if (intent.kind === "draft") {
+    const task = manualTaskRecord(db, intent.taskId);
+    if (!task.isDraft) throw new LaunchRejectedError("stale_intent", "This draft has already been launched.");
+    resolved = resolveDraftLaunch(task);
+  } else if (intent.kind === "skill") {
+    const task = manualTaskRecord(db, intent.taskId);
+    try {
+      resolved = resolveSkillLaunch(task, intent.skillId);
+    } catch {
+      throw new LaunchRejectedError("stale_intent", `Unknown RPI skill ${intent.skillId}.`);
+    }
+  } else {
+    try {
+      resolved = resolveIterateLaunch(db, new Map(), intent.threadId);
+    } catch {
+      throw new LaunchRejectedError("stale_intent", `No RPI session found for thread ${intent.threadId}.`);
+    }
+    const source = readSessionForAdvance(db, intent.threadId);
+    if (!source) throw new LaunchRejectedError("stale_intent", `No RPI session found for thread ${intent.threadId}.`);
+    if (successorFor(db, source.threadId)) {
+      throw new LaunchRejectedError("stale_intent", "This Iterate action is stale because the source session already has a successor.");
+    }
+    if (source.blockedReason || await hasPendingInteractions(bb, source.threadId)) {
+      throw new LaunchRejectedError("pending_interaction", "The source session has pending interactions.");
+    }
+  }
+
+  if (resolved.task.archived) throw new LaunchRejectedError("task_archived", "Task is archived.");
+  if (activeLaunchAttempt(db, resolved.task.id)) {
+    throw new LaunchRejectedError("launch_blocked", "A launch attempt is already pending.");
+  }
+  return resolved;
+}
+
+function taskIdForManualIntent(db: Database, intent: ManualLaunchIntent) {
+  if (intent.kind === "draft" || intent.kind === "skill") return intent.taskId;
+  const session = readRow<{ taskId: string }>(db, "SELECT task_id AS taskId FROM sessions WHERE thread_id = ?", intent.threadId);
+  if (!session) throw new LaunchRejectedError("stale_intent", `No RPI session found for thread ${intent.threadId}.`);
+  return session.taskId;
+}
+
+function manualTaskRecord(db: Database, taskId: string) {
+  const result = getTask(db, taskId);
+  if (!result) throw new LaunchRejectedError("stale_intent", "This RPI task no longer exists. Reopen the action from the task list.");
+  return result.task;
+}
+
+function manualLaunchStateToken(db: Database, intent: ManualLaunchIntent, resolved: ResolvedManualLaunch) {
+  const source = resolved.fromThreadId ? readSessionForAdvance(db, resolved.fromThreadId) : null;
+  const latestAttempt = readRow<{
+    rowId: number;
+    id: string;
+    status: string;
+    threadId: string | null;
+    retryMarker: string | null;
+  }>(
+    db,
+    `SELECT rowid AS rowId, id, status, thread_id AS threadId, retry_marker AS retryMarker
+    FROM launch_attempts
+    WHERE task_id = ?
+    ORDER BY created_at DESC, rowid DESC
+    LIMIT 1`,
+    resolved.task.id,
+  );
+  return createHash("sha256")
+    .update(JSON.stringify({ intent, task: resolved.task, source, latestAttempt: latestAttempt ?? null }))
+    .digest("hex");
+}
+
+function draftKeyForIntent(intent: ManualLaunchIntent) {
+  if (intent.kind === "draft") return `rpi:manual:draft:${intent.taskId}`;
+  if (intent.kind === "skill") return `rpi:manual:skill:${intent.taskId}:${intent.skillId}`;
+  return `rpi:manual:${intent.kind}:${intent.threadId}`;
+}
+
+function fixedWorkspaceNotice(environment: ManualLaunchRequest["environment"]) {
+  if (environment.type !== "host" || environment.workspace.type !== "unmanaged" || environment.workspace.path === null) return null;
+  return `This launch stays in the task workspace at ${environment.workspace.path}. The composer may normalize an unmanaged path, but submission keeps the task workspace fixed.`;
+}
+
+function assertManualTaskContext(
+  task: TaskRecord,
+  environment: ManualLaunchRequest["environment"],
+  request: ManualLaunchRequest,
+) {
+  if (request.projectId !== task.projectId) {
+    throw new LaunchRejectedError("project_mismatch", "This RPI task belongs to a different project. Restore the task project and submit again.");
+  }
+  if (!sameManualEnvironment(environment, request.environment)) {
+    throw new LaunchRejectedError("workspace_mismatch", "This RPI task has a fixed workspace. Restore the task host and workspace and submit again.");
+  }
+}
+
+function sameManualEnvironment(expected: ManualLaunchRequest["environment"], actual: ManualLaunchRequest["environment"]) {
+  if (expected.type !== actual.type) return false;
+  if (expected.type === "reuse") return actual.type === "reuse" && expected.environmentId === actual.environmentId;
+  if (expected.type === "project-default") return actual.type === "project-default";
+  if (actual.type !== "host" || (expected.hostId ?? null) !== (actual.hostId ?? null)) return false;
+  if (expected.workspace.type !== actual.workspace.type) return false;
+  if (expected.workspace.type === "personal") return actual.workspace.type === "personal";
+  if (expected.workspace.type === "managed-worktree") {
+    return actual.workspace.type === "managed-worktree" && JSON.stringify(expected.workspace.baseBranch) === JSON.stringify(actual.workspace.baseBranch);
+  }
+  if (actual.workspace.type !== "unmanaged") return false;
+  const pathMatches = expected.workspace.path === actual.workspace.path
+    || (expected.workspace.path !== null && actual.workspace.path === null);
+  return pathMatches && JSON.stringify(expected.workspace.branch ?? null) === JSON.stringify(actual.workspace.branch ?? null);
 }
 
 function advanceSession(
@@ -186,7 +443,7 @@ async function validateAdvance(
   session: SessionRow,
   mode: AdvanceMode,
 ): Promise<
-  | { ok: true; nextStep: NextStepSuggestions & { extraction: { type: "next_step_found"; nextStepType: string; nextStepPrompt: string } }; transition: ReturnType<typeof autoAdvanceTransition> }
+  | { ok: true; nextStep: ValidNextStep; transition: ReturnType<typeof autoAdvanceTransition> }
   | { ok: false; error: LaunchRejectedError }
 > {
   const existing = successorFor(db, session.threadId);
@@ -202,7 +459,7 @@ async function validateAdvance(
   const label = normalizePhaseLabel(session.label) as PhaseLabel | null;
   const transition = label ? autoAdvanceTransition(label, task.workflowType) : undefined;
   if (activeLaunchAttempt(db, task.id)) return { ok: false, error: new LaunchRejectedError("launch_blocked", "A launch attempt is already pending.") };
-  return { ok: true, nextStep: nextStep as NextStepSuggestions & { extraction: { type: "next_step_found"; nextStepType: string; nextStepPrompt: string } }, transition };
+  return { ok: true, nextStep: nextStep as ValidNextStep, transition };
 }
 
 async function hasPendingInteractions(bb: BbPluginApi, threadId: string) {
@@ -216,8 +473,9 @@ function claimAdvanceAndAttempt(
   db: Database,
   task: TaskRecord,
   session: SessionRow,
-  nextStep: NextStepSuggestions & { extraction: { type: "next_step_found"; nextStepType: string; nextStepPrompt: string } },
+  nextStep: ValidNextStep,
   mode: AdvanceMode,
+  request?: ManualLaunchRequest,
 ) {
   const timestamp = Date.now();
   return db.transaction(() => {
@@ -239,6 +497,7 @@ function claimAdvanceAndAttempt(
       label: skillInfo(nextStep.extraction.nextStepType)?.label ?? null,
       environmentRole: environmentRoleForAttempt(task, nextStep.extraction.nextStepType),
       launchedBy: mode,
+      request,
     });
     if (mode === "auto_advance" && session.completedTurnKey) {
       writeRow(

@@ -45,6 +45,7 @@
     "pretest": "npm run typecheck",
     "typecheck": "tsc --noEmit",
     "test": "node --test --import tsx",
+    "check:conventional": "node scripts/check-conventional.mjs",
     "check:pack": "tsx scripts/check-pack.ts",
     "check:features": "tsx scripts/check-features.ts"
   },

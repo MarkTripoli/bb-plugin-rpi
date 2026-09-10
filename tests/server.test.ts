@@ -307,6 +307,138 @@ test("RPI launch RPC and CLI paths are enabled", async () => {
   await harness.lifecycle.dispose();
 });
 
+test("manual launch RPC prepares read-only state, submits structured input, and returns typed relocation rejections", async (t) => {
+  const spawnInputs: Array<Record<string, unknown>> = [];
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "rpi",
+    sdk: {
+      subscribe: () => () => undefined,
+      projects: {
+        get: async ({ projectId }: { projectId: string }) => ({
+          id: projectId,
+          name: "Proj",
+          kind: "standard" as const,
+          gitRemoteUrl: null,
+          createdAt: 1,
+          updatedAt: 1,
+          sources: [{ id: "src_1", projectId, hostId: "host_seed", path: "/repo", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 }],
+        }),
+      },
+      threads: {
+        spawn: async (input) => {
+          spawnInputs.push(input as unknown as Record<string, unknown>);
+          return makeThreadResponse({ id: `thr_manual_${spawnInputs.length}`, environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
+        },
+        get: async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" }),
+        interactions: { list: async () => [] },
+      },
+    },
+  });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const created = await harness.behavior.callRpc("createTask", {
+    request: {
+      text: "prompt",
+      projectId: "proj_1",
+      workflowType: "freeform",
+      worktreeTiming: "never",
+      permissionMode: "accept_edits",
+      autoAdvance: false,
+      providerId: "pi",
+      model: "task-model",
+      reasoningLevel: "low",
+      serviceTier: "default",
+    },
+    name: "Task",
+    draft: true,
+  }) as { taskId: string };
+  const intent = { kind: "skill" as const, taskId: created.taskId, skillId: "create-research" };
+  const prepared = await harness.behavior.callRpc("prepareManualLaunch", { intent }) as {
+    stateToken: string;
+    projectId: string;
+    environment: { type: "host"; hostId: string; workspace: { type: "unmanaged"; path: string | null } };
+    displayPrompt: string;
+  };
+  assert.equal(prepared.displayPrompt, "/rpi-create-research");
+  assert.equal(spawnInputs.length, 0);
+  assert.equal((bb.storage.database().prepare("SELECT COUNT(*) AS count FROM launch_attempts").get() as { count: number }).count, 0);
+
+  const request = {
+    projectId: prepared.projectId,
+    providerId: "codex",
+    model: "session-model",
+    reasoningLevel: "high" as const,
+    permissionMode: "full" as const,
+    serviceTier: "fast" as const,
+    executionInputSources: { providerId: "explicit" as const, model: "explicit" as const, reasoningLevel: "explicit" as const, permissionMode: "explicit" as const, serviceTier: "explicit" as const },
+    environment: { ...prepared.environment, workspace: { ...prepared.environment.workspace, path: null } },
+    input: [{ type: "text" as const, text: "edited in the composer", mentions: [] }],
+  };
+  const submitted = await harness.behavior.callRpc("submitManualLaunch", { intent, stateToken: prepared.stateToken, request }) as { status: string; threadId?: string };
+  assert.deepEqual(submitted, { status: "launched", threadId: "thr_manual_1" });
+  assert.equal(spawnInputs.length, 1);
+  assert.equal(spawnInputs[0]!.providerId, "codex");
+  assert.equal(spawnInputs[0]!.model, "session-model");
+  assert.equal(spawnInputs[0]!.reasoningLevel, "high");
+  assert.equal(spawnInputs[0]!.permissionMode, "full");
+  assert.deepEqual(spawnInputs[0]!.environment, prepared.environment, "the task path stays canonical after composer normalization");
+  assert.deepEqual((spawnInputs[0]!.input as unknown[]).slice(1, -1), request.input);
+  assert.deepEqual(bb.storage.database().prepare("SELECT provider_id, model, reasoning_level, service_tier, permission_mode FROM tasks WHERE id = ?").get(created.taskId), {
+    provider_id: "pi",
+    model: "task-model",
+    reasoning_level: "low",
+    service_tier: "default",
+    permission_mode: "accept_edits",
+  });
+
+  const other = await harness.behavior.callRpc("createTask", {
+    request: { text: "prompt", projectId: "proj_1", workflowType: "freeform", worktreeTiming: "never", permissionMode: "default", autoAdvance: false },
+    name: "Other",
+    draft: true,
+  }) as { taskId: string };
+  const otherIntent = { kind: "skill" as const, taskId: other.taskId, skillId: "create-research" };
+  const otherPrepared = await harness.behavior.callRpc("prepareManualLaunch", { intent: otherIntent }) as { stateToken: string };
+  const rejected = await harness.behavior.callRpc("submitManualLaunch", {
+    intent: otherIntent,
+    stateToken: otherPrepared.stateToken,
+    request: { ...request, projectId: "proj_other" },
+  }) as { status: string; rejection?: { code: string; message: string } };
+  assert.equal(rejected.status, "rejected");
+  assert.equal(rejected.rejection?.code, "project_mismatch");
+  assert.match(rejected.rejection?.message ?? "", /different project/);
+  assert.equal(spawnInputs.length, 1);
+  assert.equal((bb.storage.database().prepare("SELECT COUNT(*) AS count FROM launch_attempts WHERE task_id = ?").get(other.taskId) as { count: number }).count, 0);
+
+  await assert.rejects(harness.behavior.callRpc("prepareManualLaunch", {
+    intent: { kind: "skill", taskId: other.taskId, skillId: "create-research", extra: true },
+  }));
+
+  for (const kind of ["draft", "skill"] as const) {
+    const deleted = await harness.behavior.callRpc("createTask", {
+      request: { text: "prompt", projectId: "proj_1", workflowType: "freeform", worktreeTiming: "never", permissionMode: "default", autoAdvance: false },
+      name: `Deleted ${kind}`,
+      draft: true,
+    }) as { taskId: string };
+    const deletedIntent = kind === "draft"
+      ? { kind, taskId: deleted.taskId }
+      : { kind, taskId: deleted.taskId, skillId: "create-research" };
+    const deletedPrepared = await harness.behavior.callRpc("prepareManualLaunch", { intent: deletedIntent }) as {
+      stateToken: string;
+      projectId: string;
+      environment: typeof request.environment;
+    };
+    await harness.behavior.callRpc("deleteTask", { taskId: deleted.taskId });
+    const deletedResult = await harness.behavior.callRpc("submitManualLaunch", {
+      intent: deletedIntent,
+      stateToken: deletedPrepared.stateToken,
+      request: { ...request, projectId: deletedPrepared.projectId, environment: deletedPrepared.environment },
+    }) as { status: string; rejection?: { code: string } };
+    assert.equal(deletedResult.status, "rejected");
+    assert.equal(deletedResult.rejection?.code, "stale_intent");
+  }
+  assert.equal(spawnInputs.length, 1);
+});
+
 test("artifact context tools select a bounded manifest and page exact revisions", async () => {
   const thread = makeThreadResponse({ id: "thr_context", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
   const { bb, harness } = createFakePluginHost({
