@@ -2,9 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
+import { MANUAL_LAUNCH_REQUEST_BYTES_LIMIT, manualLaunchRequestSchema, type ManualLaunchRequest } from "../contract";
 import { MIGRATIONS } from "../db";
-import { createDraftTask } from "../tasks";
-import { launchDraft, launchPhase, LaunchRejectedError, listLaunchAdoptionCandidates, promoteStalePendingLaunchAttempts, resolveLaunchAttempt } from "../launch";
+import { createDraftTask, getTask } from "../tasks";
+import { launchDraft, launchPhase, LaunchRejectedError, listLaunchAdoptionCandidates, listLaunchAttempts, promoteStalePendingLaunchAttempts, resolveLaunchAttempt } from "../launch";
 import { START_LINKED_TICKET_ACTION, TASK_CONTEXT_FIRST_ACTION } from "../instructions";
 import { bindPendingLaunch, createLaunchBindingMirror, registerPendingLaunch, type SessionMirrorRow } from "../sessions";
 
@@ -34,6 +35,38 @@ function seedTask(db: Database.Database, workflowType: "freeform" | "rpi" = "fre
 function stubDefaultSource() {
   return { get: async () => ({ id: "proj_1", name: "Proj", kind: "standard" as const, gitRemoteUrl: null, createdAt: 1, updatedAt: 1, sources: [{ id: "src_1", projectId: "proj_1", hostId: "host_seed", path: "/repo", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 }] }) };
 }
+
+function manualRequest(input: ManualLaunchRequest["input"] = [{ type: "text", text: "edited prompt", mentions: [] }]): ManualLaunchRequest {
+  return {
+    projectId: "composer_project",
+    providerId: "codex",
+    model: "gpt-test",
+    reasoningLevel: "high",
+    permissionMode: "full",
+    serviceTier: "fast",
+    executionInputSources: {
+      providerId: "explicit",
+      model: "explicit",
+      reasoningLevel: "explicit",
+      permissionMode: "explicit",
+      serviceTier: "client-preference",
+    },
+    environment: { type: "reuse", environmentId: "composer_env" },
+    input,
+    sendAt: 123_456,
+  };
+}
+
+test("manual launch request validation is strict and bounded", () => {
+  const request = manualRequest([{ type: "text", text: "@source", mentions: [{ start: 0, end: 7, resource: { kind: "thread", label: "source", threadId: "thr_source" } }] }]);
+  assert.equal(manualLaunchRequestSchema.safeParse(request).success, true);
+  assert.equal(manualLaunchRequestSchema.safeParse({ ...request, extra: true }).success, false);
+  assert.equal(manualLaunchRequestSchema.safeParse(manualRequest([{ type: "text", text: "short", mentions: [{ start: 0, end: 6, resource: { kind: "thread", label: "source", threadId: "thr_source" } }] }])).success, false);
+
+  const oversized = manualRequest(Array.from({ length: 64 }, (_, index) => ({ type: "image" as const, url: `${index}${"x".repeat(8190)}` })));
+  assert.ok(new TextEncoder().encode(JSON.stringify(oversized)).byteLength > MANUAL_LAUNCH_REQUEST_BYTES_LIMIT);
+  assert.equal(manualLaunchRequestSchema.safeParse(oversized).success, false);
+});
 
 test("a failed attempt not yet retried can be retried; an already-retried failed attempt cannot", async () => {
   const db = makeDb();
@@ -120,6 +153,117 @@ test("launchPhase prompts start with marker then task context first-action line"
   const lines = prompt.split("\n");
   assert.equal(lines[0], TASK_CONTEXT_FIRST_ACTION);
   assert.match(lines[lines.length - 1]!, /^<!-- rpi:launch:/);
+  db.close();
+});
+
+test("structured launches preserve composer input and execution choices through retry", async () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  db.prepare("UPDATE tasks SET provider_id = 'pi', model = 'task-model', reasoning_level = 'low', service_tier = 'default', permission_mode = 'accept_edits' WHERE id = ?").run(taskId);
+  const task = getTask(db, taskId)!.task;
+  const request = manualRequest([
+    {
+      type: "text",
+      text: "@source edited prompt",
+      mentions: [{ start: 0, end: 7, resource: { kind: "thread", label: "source", projectId: "proj_1", threadId: "thr_source" } }],
+    },
+    { type: "localFile", path: "attachments/spec.pdf", name: "spec.pdf", mimeType: "application/pdf", sizeBytes: 1024 },
+  ]);
+  const spawnInputs: Array<Record<string, unknown>> = [];
+  const bb = {
+    realtime: { publish: () => undefined },
+    sdk: {
+      projects: stubDefaultSource(),
+      threads: {
+        spawn: async (input: Record<string, unknown>) => {
+          spawnInputs.push(input);
+          if (spawnInputs.length === 1) throw new Error("spawn response lost");
+          return makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
+        },
+        get: async () => makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" }),
+      },
+    },
+    log: { warn: () => undefined },
+  };
+
+  await assert.rejects(
+    launchPhase(bb as never, db, new Map(), createLaunchBindingMirror(), task, {
+      skillId: "create-research",
+      launchedBy: "user",
+      fromThreadId: "thr_source",
+      request,
+    }),
+    /spawn response lost/,
+  );
+  const firstAttempt = db.prepare("SELECT id, request_json AS requestJson, status FROM launch_attempts WHERE task_id = ?").get(taskId) as { id: string; requestJson: string; status: string };
+  assert.equal(firstAttempt.status, "uncertain");
+  assert.deepEqual(JSON.parse(firstAttempt.requestJson), request);
+
+  await resolveLaunchAttempt(bb as never, db, new Map(), createLaunchBindingMirror(), firstAttempt.id, { type: "retry" });
+  assert.equal(spawnInputs.length, 2);
+  for (const spawnInput of spawnInputs) {
+    assert.equal(spawnInput.projectId, "proj_1");
+    assert.deepEqual(spawnInput.environment, { type: "host", hostId: "host_seed", workspace: { type: "unmanaged", path: "/repo" } });
+    assert.equal(spawnInput.providerId, request.providerId);
+    assert.equal(spawnInput.model, request.model);
+    assert.equal(spawnInput.reasoningLevel, request.reasoningLevel);
+    assert.equal(spawnInput.permissionMode, request.permissionMode);
+    assert.equal(spawnInput.serviceTier, request.serviceTier);
+    assert.deepEqual(spawnInput.executionInputSources, request.executionInputSources);
+    assert.equal(spawnInput.sendAt, request.sendAt);
+    assert.equal("prompt" in spawnInput, false);
+    const input = spawnInput.input as ManualLaunchRequest["input"];
+    assert.deepEqual(input.slice(1, -1), request.input);
+    assert.deepEqual(input[0], { type: "text", text: TASK_CONTEXT_FIRST_ACTION, mentions: [], visibility: "agent-only" });
+    assert.match((input.at(-1) as { text: string }).text, /Task artifact directory: \.rpi\/tasks\/task[\s\S]+<!-- rpi:launch:/);
+  }
+  assert.notEqual((spawnInputs[0]!.input as Array<{ text?: string }>).at(-1)?.text, (spawnInputs[1]!.input as Array<{ text?: string }>).at(-1)?.text);
+
+  const attempts = db.prepare("SELECT id, status, retried_from AS retriedFrom, request_json AS requestJson FROM launch_attempts").all() as Array<{ id: string; status: string; retriedFrom: string | null; requestJson: string }>;
+  assert.equal(attempts.find((attempt) => attempt.id === firstAttempt.id)?.status, "failed");
+  assert.equal(attempts.find((attempt) => attempt.retriedFrom === firstAttempt.id)?.status, "spawned");
+  for (const attempt of attempts) assert.deepEqual(JSON.parse(attempt.requestJson), request);
+  assert.ok(listLaunchAttempts(db, taskId).every((attempt) => !("requestJson" in attempt)));
+  assert.deepEqual(db.prepare("SELECT provider_id, model, reasoning_level, service_tier, permission_mode FROM tasks WHERE id = ?").get(taskId), {
+    provider_id: "pi",
+    model: "task-model",
+    reasoning_level: "low",
+    service_tier: "default",
+    permission_mode: "accept_edits",
+  });
+  db.close();
+});
+
+test("retry rejects corrupt stored structured requests instead of using task defaults", async () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  db.prepare("INSERT INTO launch_attempts (id, task_id, from_thread_id, skill_id, command_line, label, environment_role, launched_by, status, thread_id, request_json, created_at) VALUES ('attempt_1', ?, NULL, 'create-research', '/rpi-create-research', 'research', 'base', 'user', 'uncertain', NULL, '{bad json', 1)").run(taskId);
+  let spawns = 0;
+  const bb = { sdk: { threads: { spawn: async () => { spawns += 1; } } } };
+  await assert.rejects(
+    resolveLaunchAttempt(bb as never, db, new Map(), createLaunchBindingMirror(), "attempt_1", { type: "retry" }),
+    /invalid JSON/,
+  );
+  assert.equal(spawns, 0);
+  assert.deepEqual(db.prepare("SELECT status, retry_marker AS retryMarker FROM launch_attempts WHERE id = 'attempt_1'").get(), { status: "uncertain", retryMarker: null });
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts").get() as { count: number }).count, 1);
+  db.close();
+});
+
+test("invalid structured requests fail before a launch attempt is inserted", async () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  const task = getTask(db, taskId)!.task;
+  const request = manualRequest([{ type: "text", text: "x".repeat(10_001), mentions: [] }]) as ManualLaunchRequest;
+  await assert.rejects(
+    launchPhase({} as never, db, new Map(), createLaunchBindingMirror(), task, {
+      skillId: null,
+      launchedBy: "user",
+      fromThreadId: null,
+      request,
+    }),
+  );
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts").get() as { count: number }).count, 0);
   db.close();
 });
 

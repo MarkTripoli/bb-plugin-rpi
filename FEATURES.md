@@ -1,7 +1,7 @@
 # FEATURES.md - what the plugin does
 
 This is a feature ledger for the plugin as shipped, verified against the code in this
-repository as of phase 15, not aspirational. `status` is one of:
+repository as of phase 21, not aspirational. `status` is one of:
 
 - **full** - shipped, works as described, no named gap.
 - **partial** - shipped, with a named gap or a deliberate deviation.
@@ -11,8 +11,8 @@ repository as of phase 15, not aspirational. `status` is one of:
 `npm run check:features` (`scripts/features-count.ts`, covered by `tests/features.test.ts`)
 mechanically counts every `status`-column cell in this file's one table and asserts the total
 matches what's printed here, so this paragraph cannot silently drift from the table: **93
-status-bearing rows, 1 of them mixed (the palette row counts toward both N/A and full): 62
-full, 13 partial, 7 omitted, 12 N/A**.
+status-bearing rows, 1 of them mixed (the palette row counts toward both N/A and full): 61
+full, 14 partial, 7 omitted, 12 N/A**.
 
 ## Features
 
@@ -44,7 +44,7 @@ full, 13 partial, 7 omitted, 12 N/A**.
 | Auto-advance table (all flags) | code-review → `aa_implementation_to_pr` → fix-code-review when findings remain or describe-pr when clean; review-fixes → review-code | full | `transitions.ts`, `advance.ts` | Review is entered manually. Once entered, the existing flag can drive review and fix rounds until clean. Missing extraction never guesses the branch. |
 | Auto-advance table (all flags) | describe-pr → resolve-pr-reviews and pr-review → resolve-pr-reviews are human gates | full | `transitions.ts` | External approval and new comments are re-fetched only when the user starts a round; the plugin does not poll or auto-reply. |
 | Executor & recovery notes | Executor idempotency via CAS (`advanced_at`) plus a minimal `launch_attempts` row | full (by design, decision §2.4) | `advance.ts`, `launch.ts` | Executor runs only after a completed turn (never a `user_question` idle). |
-| Executor & recovery notes | Recover-launch for `uncertain` spawns: Adopt / Retry / Dismiss row on the Sessions tab | full | `launch.ts`, `ui/rpi.tsx` `RecoverLaunchRow` | No time-based auto-release of a stuck attempt (bb has no spawn idempotency key). |
+| Executor & recovery notes | Recover-launch for `uncertain` spawns: Adopt / Retry / Dismiss row on the Sessions tab | full | `launch.ts`, `ui/rpi.tsx` `RecoverLaunchRow` | Retry reuses the validated structured request and one-session execution settings stored with the attempt. There is no time-based auto-release of a stuck attempt because bb has no spawn idempotency key. |
 | Artifacts | Numbered task artifacts, frontmatter type, grouped viewer (Preview/Raw/versions/soft-delete/restore); SQLite is the source of truth, mirrored to `.rpi/tasks/<slug>/` | full | `artifacts.ts`, `mirror.ts`, `ui/rpi.tsx` `ArtifactsPanel` | |
 | Artifacts | `rpi_task_context`, `rpi_artifact_save`, `rpi_next_artifact_number` tools, scoped to task threads only | full | `tools.ts` | |
 | Artifacts | Free-form files, binary uploads, `.trash/` soft delete | full | `mirror.ts`, `artifacts.ts` | |
@@ -56,7 +56,7 @@ full, 13 partial, 7 omitted, 12 N/A**.
 | Comments | Patch-anchored diff comments; Changes ALL / TO REVIEW tracking | omitted | - | bb's environment diff panel is reused as-is and has no plugin comment/annotation slot; would need an upstream SDK extension. |
 | Context management | Fresh session per phase, artifacts as the only carry-over: `rpi_task_context` hydrates a fresh session; skills instruct not reading other artifacts during research | full | `tools.ts`, `skills/rpi-*` | |
 | Context management | Context gauge `usedTokens/contextWindow (pct)` in the footer, from `bb.sdk.threads.timeline({summaryOnly:"true"}).contextWindowUsage`; shown on session rows and the thread header | full | `server.ts` `readContextUsage`/`sessionView`, `ui/rpi.tsx` `ContextGauge` | Percent, not the exact token pair, is the default display; both numbers are in the tooltip. Null (shown as no gauge) when bb has not reported usage yet, not a fabricated 0%. |
-| Context management | Configurable warning threshold (global default plus glob-matched per-model rules against `<providerId>/<model>`, seeded with lower defaults for small/fast models) banner offering "Iterate in a fresh session", dismiss stored per-thread in `task_ui_state.contextWarningDismissed` | full | `context-threshold.ts` `contextThresholdFor`, `server.ts` `sessionView`/`cachedSessionView`, `ui/rpi.tsx` `RpiComposerBanner`, `RpiDefaultsSettings` | Global default 60%, builtin per-model rules at 50-70%; editable in Settings > Defaults > Context warning. Wired to the existing `iterateInFreshSession` RPC. |
+| Context management | Configurable warning threshold (global default plus glob-matched per-model rules against `<providerId>/<model>`, seeded with lower defaults for small/fast models) banner offering "Iterate in a fresh session", dismiss stored per-thread in `task_ui_state.contextWarningDismissed` | full | `context-threshold.ts` `contextThresholdFor`, `server.ts` `sessionView`/`cachedSessionView`, `ui/rpi.tsx` `RpiComposerBanner`, `RpiDefaultsSettings` | Global default 60%, builtin per-model rules at 50-70%; editable in Settings > Defaults > Context warning. Iterate opens the prepared composer and waits for submission. |
 | Context management | `summaryHistory` (last 600 chars per idle) plus deterministic `next_step_json` extraction; no separate finish tool | full | `advance.ts`, `extraction.ts` | Deterministic parsing already yields both a summary and next-step suggestions without a second reporting channel. |
 | Context management | Context shards (cross-session extracted facts, evidence, per-user enable/disable/dismiss) | omitted | - | Would need an LLM extraction pass and a durable-facts store; bb's Memory plugin already covers the user-preference half. |
 | Context management | Handoff artifacts by convention (`handoff.md`), no special-casing needed (plain artifact) | full | `skills/rpi-*` | |
@@ -101,7 +101,7 @@ full, 13 partial, 7 omitted, 12 N/A**.
 | Hotkeys | `⏎` focus input, `esc` blur | N/A | - | bb's own composer. |
 | Hotkeys | Dedicated hotkeys help overlay | omitted | - | No dedicated help overlay; hotkeys are documented in `README.md`. |
 | UI surfaces | Task list/board, drafts | full | `app.tsx`, `ui/rpi.tsx` `RpiPanel` | `navPanel` titled "RPI". |
-| UI surfaces | New task composer (permissions, auto-advance, host, project/dir, worktree timing, workflow type, workflow strip) | full | `ui/rpi.tsx` `NewTaskPage` | |
+| UI surfaces | New task composer plus reviewable manual launch composer for Draft Launch, New chat, Start fresh, Iterate, Proceed, Suggested next, workflow, review, and pull-request actions | partial | `ui/rpi.tsx` `NewTaskPage`/`ManualLaunchComposerPage`, `manual-launch.ts` | Manual launch settings apply to one session. Task project and workspace are validated on submit; unmanaged paths use the SDK's normalized display but the server restores the canonical task path. BB persists prompt text by `draftKey`, but its public embedded composer keeps execution and environment selections only in component-local state, so those selections reset to task seeds after Back and reopen. CLI launches and lifecycle auto-advance remain immediate. |
 | UI surfaces | Task detail tabs: Artifacts, Sessions, Workspace, Scratch, Auto-advance, Tips, plus **Minimap** (one chip per session, not per message) | full (superset) | `ui/rpi.tsx` `TaskDetailPage` | |
 | UI surfaces | One RPI thread panel hub: phase-independent code review, PR creation, PR review resolution, plus Artifacts, Workspace, Scratch pad, Tips, Minimap, model, and auto-advance | full (superset) | `app.tsx` `threadPanelAction`, `ui/rpi.tsx` `RpiThreadPanel` | Minimap renders one chip per **session** (`MinimapPanel`), not per message inside a session; this plugin has no per-message timeline to chip. |
 | UI surfaces | Diff/changes view | omitted | - | bb's environment diff panel is reused as-is (link out); no plugin comment/annotation slot exists to replicate a collaborative diff-comment surface. |

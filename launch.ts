@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type * as BetterSqlite3 from "better-sqlite3";
 import { TASK_ROOT_DIR } from "./constants";
-import type { TaskRecord } from "./contract";
+import { manualLaunchRequestSchema, reasoningLevelSchema, serviceTierSchema, type ManualLaunchRequest, type TaskRecord } from "./contract";
 import { nowMs, parseJson, readRow, readRows, writeRow } from "./db";
 import { getTask } from "./tasks";
 import { FIRST_SKILL_BY_WORKFLOW, skillInfo, type SkillId } from "./transitions";
@@ -41,6 +41,7 @@ export type LaunchAttemptRow = {
   createdAt: number;
   adoptionCandidates?: LaunchAdoptionCandidate[];
 };
+type StoredLaunchAttemptRow = LaunchAttemptRow & { requestJson: string | null };
 export type LaunchAdoptionCandidate = {
   threadId: string;
   title: string | null;
@@ -64,7 +65,10 @@ export class LaunchRejectedError extends Error {
       | "invalid_next_step"
       | "human_gate"
       | "launch_blocked"
-      | "no_source_host",
+      | "no_source_host"
+      | "stale_intent"
+      | "project_mismatch"
+      | "workspace_mismatch",
     message: string,
   ) {
     super(message);
@@ -118,7 +122,7 @@ export function activeLaunchAttempt(db: Database, taskId: string) {
 }
 
 function readLaunchAttempt(db: Database, id: string) {
-  return readRow<LaunchAttemptRow>(
+  return readRow<StoredLaunchAttemptRow>(
     db,
     `
     SELECT
@@ -134,6 +138,7 @@ function readLaunchAttempt(db: Database, id: string) {
       thread_id AS threadId,
       retried_from AS retriedFrom,
       retry_marker AS retryMarker,
+      request_json AS requestJson,
       created_at AS createdAt
     FROM launch_attempts
     WHERE id = ?
@@ -162,6 +167,7 @@ export function insertAttempt(
     environmentRole: "base" | "worktree";
     launchedBy: string;
     retriedFrom?: string | null;
+    request?: ManualLaunchRequest;
   },
 ) {
   const id = input.id ?? randomUUID();
@@ -170,8 +176,8 @@ export function insertAttempt(
     `
     INSERT INTO launch_attempts (
       id, task_id, from_thread_id, skill_id, command_line, label,
-      environment_role, launched_by, status, thread_id, retried_from, retry_marker, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, NULL, ?)
+      environment_role, launched_by, status, thread_id, retried_from, retry_marker, request_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, NULL, ?, ?)
     `,
     id,
     task.id,
@@ -182,6 +188,7 @@ export function insertAttempt(
     input.environmentRole,
     input.launchedBy,
     input.retriedFrom ?? null,
+    input.request ? JSON.stringify(input.request) : null,
     nowMs(),
   );
   return id;
@@ -231,12 +238,14 @@ function sdkPermissionMode(mode: TaskRecord["permissionMode"]): "accept-edits" |
   return undefined;
 }
 
-function optionalExecution(task: TaskRecord) {
+export function taskExecutionSeeds(task: TaskRecord) {
+  const reasoningLevel = reasoningLevelSchema.safeParse(task.reasoningLevel);
+  const serviceTier = serviceTierSchema.safeParse(task.serviceTier);
   return {
     ...(task.providerId ? { providerId: task.providerId } : {}),
     ...(task.model ? { model: task.model } : {}),
-    ...(task.reasoningLevel ? { reasoningLevel: task.reasoningLevel as "none" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra" | "ultracode" } : {}),
-    ...(task.serviceTier ? { serviceTier: task.serviceTier as "default" | "fast" } : {}),
+    ...(reasoningLevel.success ? { reasoningLevel: reasoningLevel.data } : {}),
+    ...(serviceTier.success ? { serviceTier: serviceTier.data } : {}),
     ...(sdkPermissionMode(task.permissionMode) ? { permissionMode: sdkPermissionMode(task.permissionMode) } : {}),
   };
 }
@@ -259,6 +268,36 @@ function commandFor(skillId: string | null, commandLine?: string | null) {
   return info ? info.command : null;
 }
 
+export function resolveDraftLaunch(task: TaskRecord) {
+  const skillId = FIRST_SKILL_BY_WORKFLOW[task.workflowType] as SkillId | null;
+  const displayPrompt = skillId ? skillInfo(skillId)!.command : task.draftPrompt;
+  const launchText = `${displayPrompt}\n\n${START_LINKED_TICKET_ACTION}`;
+  return {
+    task,
+    skillId,
+    commandLine: launchText,
+    prompt: undefined,
+    displayPrompt,
+    launchedBy: "user",
+    fromThreadId: null,
+  };
+}
+
+export function resolveSkillLaunch(task: TaskRecord, skillId: string, commandLine?: string | null) {
+  const info = skillInfo(skillId);
+  if (!info) throw new Error(`Unknown skill ${skillId}`);
+  const resolvedCommand = commandLine?.trim() || info.command;
+  return {
+    task,
+    skillId: info.skillId,
+    commandLine: resolvedCommand,
+    prompt: undefined,
+    displayPrompt: resolvedCommand,
+    launchedBy: "user",
+    fromThreadId: null,
+  };
+}
+
 function shouldCreateWorktree(task: TaskRecord, skillId: string | null, disabled: boolean) {
   if (disabled || task.worktreeTiming === "never") return false;
   if (task.worktreeTiming === "now") return task.worktreeEnvironmentId === null;
@@ -266,7 +305,7 @@ function shouldCreateWorktree(task: TaskRecord, skillId: string | null, disabled
   return task.worktreeEnvironmentId === null && (label === "worktree-setup" || label === "implementation");
 }
 
-async function selectEnvironment(bb: BbPluginApi, task: TaskRecord, skillId: string | null, role: "base" | "worktree") {
+export async function selectEnvironment(bb: BbPluginApi, task: TaskRecord, skillId: string | null, role: "base" | "worktree") {
   if (role === "worktree") {
     const disabled = await workspaceDisabled(bb, task);
     if (disabled) throw new Error("Workspace config disables worktree launch.");
@@ -372,12 +411,48 @@ function continuationNote(db: Database, task: TaskRecord, fromThreadId: string |
   ].join("\n");
 }
 
-function promptFor(db: Database, task: TaskRecord, input: { skillId: string | null; prompt?: string; commandLine?: string | null; fromThreadId: string | null }) {
+export function visibleLaunchText(task: TaskRecord, input: { skillId: string | null; prompt?: string; commandLine?: string | null }) {
   const command = commandFor(input.skillId, input.commandLine);
-  const body = command ?? input.prompt ?? task.draftPrompt;
+  return command ?? input.prompt ?? task.draftPrompt;
+}
+
+function taskLaunchContext(db: Database, task: TaskRecord, input: { skillId: string | null; fromThreadId: string | null }) {
   const suffix = `Task artifact directory: ${TASK_ROOT_DIR}/tasks/${task.slug}`;
   const continuation = continuationNote(db, task, input.fromThreadId, input.skillId);
-  return `${body}\n\n${suffix}${continuation ? `\n\n${continuation}` : ""}`;
+  return `${suffix}${continuation ? `\n\n${continuation}` : ""}`;
+}
+
+function legacyPrompt(db: Database, task: TaskRecord, input: { skillId: string | null; prompt?: string; commandLine?: string | null; fromThreadId: string | null }, attemptId: string) {
+  return `${TASK_CONTEXT_FIRST_ACTION}\n${visibleLaunchText(task, input)}\n\n${taskLaunchContext(db, task, input)}\n\n${launchMarker(attemptId)}`;
+}
+
+function draftLaunchInstruction(commandLine: string | null) {
+  return commandLine?.endsWith(`\n\n${START_LINKED_TICKET_ACTION}`) ? START_LINKED_TICKET_ACTION : null;
+}
+
+function wrapManualInput(request: ManualLaunchRequest, context: string, attemptId: string, serverInstruction: string | null) {
+  return [
+    { type: "text" as const, text: TASK_CONTEXT_FIRST_ACTION, mentions: [], visibility: "agent-only" as const },
+    ...request.input,
+    {
+      type: "text" as const,
+      text: `${serverInstruction ? `${serverInstruction}\n\n` : ""}${context}\n\n${launchMarker(attemptId)}`,
+      mentions: [],
+      visibility: "agent-only" as const,
+    },
+  ];
+}
+
+function parseStoredRequest(requestJson: string): ManualLaunchRequest {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(requestJson);
+  } catch {
+    throw new Error("Stored launch request is invalid JSON.");
+  }
+  const result = manualLaunchRequestSchema.safeParse(parsed);
+  if (!result.success) throw new Error("Stored launch request does not match the manual launch contract.");
+  return result.data;
 }
 
 export function listLaunchAttempts(db: Database, taskId: string) {
@@ -445,10 +520,20 @@ export async function launchPhase(
   mirror: Map<string, SessionMirrorRow>,
   bindings: LaunchBindingMirror,
   task: TaskRecord,
-  input: { skillId: string | null; prompt?: string; commandLine?: string | null; launchedBy: string; fromThreadId: string | null; attemptId?: string },
+  input: {
+    skillId: string | null;
+    prompt?: string;
+    commandLine?: string | null;
+    request?: ManualLaunchRequest;
+    launchedBy: string;
+    fromThreadId: string | null;
+    attemptId?: string;
+    selectedEnvironment?: Awaited<ReturnType<typeof selectEnvironment>>;
+  },
 ) {
   canonicalSkill(input.skillId);
   if (task.archived) throw new Error("Task is archived.");
+  let request = input.request ? manualLaunchRequestSchema.parse(input.request) : undefined;
   const commandLine = commandFor(input.skillId, input.commandLine);
   const label = labelTitle(input.skillId);
   let environmentRole = environmentRoleForAttempt(task, input.skillId);
@@ -462,12 +547,14 @@ export async function launchPhase(
       label,
       environmentRole,
       launchedBy: input.launchedBy,
+      request,
     });
   })();
   if (input.attemptId) {
     const attempt = readLaunchAttempt(db, input.attemptId);
     if (!attempt) throw new Error(`No launch attempt found for id ${input.attemptId}`);
     environmentRole = attempt.environmentRole;
+    if (attempt.requestJson !== null) request = parseStoredRequest(attempt.requestJson);
   }
 
   registerPendingLaunch(bindings, {
@@ -480,7 +567,7 @@ export async function launchPhase(
   });
   let selected: Awaited<ReturnType<typeof selectEnvironment>>;
   try {
-    selected = await selectEnvironment(bb, task, input.skillId, environmentRole);
+    selected = input.selectedEnvironment ?? await selectEnvironment(bb, task, input.skillId, environmentRole);
   } catch (error) {
     failPreSpawnAttempt(db, attemptId, input.fromThreadId);
     clearPendingLaunch(bindings, attemptId);
@@ -488,21 +575,30 @@ export async function launchPhase(
     throw error;
   }
   try {
-    const thread = await bb.sdk.threads.spawn({
-      projectId: task.projectId,
-      environment: selected.environment,
-      prompt: `${TASK_CONTEXT_FIRST_ACTION}\n${promptFor(db, task, input)}\n\n${launchMarker(attemptId)}`,
-      title: `${labelTitle(input.skillId)}: ${task.name}`,
-      visibility: "visible",
-      executionInputSources: {
-        providerId: task.providerId ? "explicit" : undefined,
-        model: task.model ? "explicit" : undefined,
-        reasoningLevel: task.reasoningLevel ? "explicit" : undefined,
-        serviceTier: task.serviceTier ? "explicit" : undefined,
-        permissionMode: task.permissionMode && task.permissionMode !== "default" ? "explicit" : undefined,
-      },
-      ...optionalExecution(task),
-    });
+    const thread = await bb.sdk.threads.spawn(request
+      ? {
+          ...request,
+          projectId: task.projectId,
+          environment: selected.environment,
+          input: wrapManualInput(request, taskLaunchContext(db, task, input), attemptId, draftLaunchInstruction(commandLine)),
+          title: `${labelTitle(input.skillId)}: ${task.name}`,
+          visibility: "visible",
+        }
+      : {
+          projectId: task.projectId,
+          environment: selected.environment,
+          prompt: legacyPrompt(db, task, input, attemptId),
+          title: `${labelTitle(input.skillId)}: ${task.name}`,
+          visibility: "visible",
+          executionInputSources: {
+            providerId: task.providerId ? "explicit" : undefined,
+            model: task.model ? "explicit" : undefined,
+            reasoningLevel: task.reasoningLevel ? "explicit" : undefined,
+            serviceTier: task.serviceTier ? "explicit" : undefined,
+            permissionMode: task.permissionMode && task.permissionMode !== "default" ? "explicit" : undefined,
+          },
+          ...taskExecutionSeeds(task),
+        });
     notePendingLaunchThread(bindings, attemptId, thread.id);
     const bound = bindPendingLaunch(db, mirror, bindings, attemptId, thread.id);
     if (!bound) {
@@ -531,16 +627,13 @@ export async function launchPhase(
 
 export async function launchDraft(bb: BbPluginApi, db: Database, mirror: Map<string, SessionMirrorRow>, bindings: LaunchBindingMirror, taskId: string) {
   const task = readTaskOrThrow(db, taskId);
-  const firstSkill = FIRST_SKILL_BY_WORKFLOW[task.workflowType] as SkillId | null;
-  const firstPrompt = firstSkill
-    ? `${skillInfo(firstSkill)!.command}\n\n${START_LINKED_TICKET_ACTION}`
-    : `${task.draftPrompt}\n\n${START_LINKED_TICKET_ACTION}`;
+  const resolved = resolveDraftLaunch(task);
   const result = await launchPhase(bb, db, mirror, bindings, task, {
-    skillId: firstSkill,
-    commandLine: firstSkill ? firstPrompt : null,
-    prompt: firstSkill ? undefined : firstPrompt,
-    launchedBy: "user",
-    fromThreadId: null,
+    skillId: resolved.skillId,
+    commandLine: resolved.commandLine,
+    prompt: resolved.prompt,
+    launchedBy: resolved.launchedBy,
+    fromThreadId: resolved.fromThreadId,
   });
   writeRow(db, "UPDATE tasks SET is_draft = 0, updated_at = ? WHERE id = ?", nowMs(), taskId);
   bb.realtime.publish("tasks", { taskId });
@@ -727,6 +820,7 @@ export async function resolveLaunchAttempt(
       return { threadId: action.threadId };
     }
     const task = readTaskOrThrow(db, fresh.taskId);
+    const request = fresh.requestJson === null ? undefined : parseStoredRequest(fresh.requestJson);
     const retryMarker = randomUUID();
     const claimed = db.transaction(() => {
       const claim = writeRow(
@@ -745,6 +839,7 @@ export async function resolveLaunchAttempt(
         environmentRole: fresh.environmentRole,
         launchedBy: fresh.launchedBy,
         retriedFrom: id,
+        request,
       });
       writeRow(db, "UPDATE launch_attempts SET status = 'failed' WHERE id = ? AND status = 'retrying' AND retry_marker = ?", id, retryMarker);
       return true;
@@ -757,6 +852,7 @@ export async function resolveLaunchAttempt(
       launchedBy: fresh.launchedBy,
       fromThreadId: fresh.fromThreadId,
       attemptId: retryMarker,
+      request,
     });
   });
 }

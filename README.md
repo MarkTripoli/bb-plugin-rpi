@@ -48,6 +48,19 @@ work session. The thread side panel has one **RPI** action that keeps Artifacts,
 Workspace, Scratch, Minimap, Tips, model settings, code review, pull request
 creation, and pull request review resolution available from any task session.
 
+Manual quick actions open bb's new-thread composer with the intended prompt and
+wait for explicit submission. The draft can be edited and its model, reasoning,
+service tier, and permission mode apply to that session only. The task's project
+and workspace remain fixed; for unmanaged workspaces bb may display a normalized
+checkout while RPI restores the task's canonical path on submit. Retry reuses the
+validated request stored with the launch attempt. CLI launch commands and
+eligible lifecycle auto-advance remain immediate.
+
+BB's current embedded composer persists edited prompt text under the RPI draft
+key, but execution and environment selections are component-local. Leaving the
+composer and reopening it restores the text and reseeds those selections from
+the task defaults.
+
 When the first task session starts, it receives a best-effort instruction to
 move exactly one unambiguous linked ticket to the repository's existing active
 or in-progress state. It skips safely when no supported ticketing system or
@@ -118,8 +131,9 @@ A mini-class model frequently drops the final-answer template even when asked
 for it directly. When that happens the session still finishes correctly, it
 just extracts to `no_next_step` (see "A skill's Proceed button is disabled"
 below); the thread header then shows **Suggested next: `<button text>`**, the
-workflow's own canonical next skill for that phase, one click away through
-`launchSkill` (same per-task launch mutex as Proceed and auto-advance). This
+workflow's own canonical next skill for that phase, one click away through the
+reviewable launch composer. Submission uses the same per-task launch mutex as
+Proceed and auto-advance. This
 is the same affordance that appears when the model's extraction disagrees
 with what the workflow expects, and for a human-gated phase, which is manual
 regardless. Auto-advance itself is unaffected: it only ever fires on an exact
@@ -226,9 +240,9 @@ parse; the session still finished, it just has no machine-readable next step
 (`no_next_step`; mini-class models drop this template more often, see "Model
 guidance" above). The thread header shows a **Suggested next** button in that
 case (and whenever extraction disagrees with what the workflow expects)
-instead of leaving you to guess; it launches the workflow's own next skill in
-one click. `bb rpi launch-skill` is still available for launching a different
-skill than the suggested one.
+instead of leaving you to guess; it opens the workflow's own next skill in a
+reviewable launch draft. `bb rpi launch-skill` is still available for
+immediately launching a different skill than the suggested one.
 
 ## Development
 

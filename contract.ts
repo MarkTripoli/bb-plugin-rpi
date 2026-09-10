@@ -10,6 +10,206 @@ export const worktreeTimingSchema = z.enum(["now", "later", "never"]);
 export const permissionModeSchema = z.enum(["default", "accept_edits", "auto", "bypass"]);
 const ARTIFACT_TEXT_LIMIT = 10 * 1024 * 1024;
 
+const boundedId = z.string().min(1).max(256);
+const boundedLabel = z.string().min(1).max(512);
+const boundedModel = z.string().min(1).max(512);
+const boundedPath = z.string().min(1).max(4096);
+const boundedUrl = z.string().min(1).max(8192);
+const agentOnlyVisibilitySchema = z.literal("agent-only").optional();
+export const MANUAL_LAUNCH_TEXT_LIMIT = 10_000;
+export const MANUAL_LAUNCH_REQUEST_BYTES_LIMIT = 256 * 1024;
+
+export const reasoningLevelSchema = z.enum(["none", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"]);
+export const serviceTierSchema = z.enum(["default", "fast"]);
+export const sdkPermissionModeSchema = z.enum(["accept-edits", "auto", "full"]);
+const executionInputSourceSchema = z.enum(["client-preference", "explicit"]);
+
+export const executionInputSourcesSchema = z.object({
+  model: executionInputSourceSchema.optional(),
+  permissionMode: executionInputSourceSchema.optional(),
+  providerId: executionInputSourceSchema.optional(),
+  reasoningLevel: executionInputSourceSchema.optional(),
+  serviceTier: executionInputSourceSchema.optional(),
+}).strict();
+
+const threadMentionResourceSchema = z.object({
+  kind: z.literal("thread"),
+  label: boundedLabel,
+  projectId: boundedId.optional(),
+  threadId: boundedId,
+}).strict();
+const projectMentionResourceSchema = z.object({
+  kind: z.literal("project"),
+  label: boundedLabel,
+  projectId: boundedId,
+}).strict();
+const sectionMentionResourceSchema = z.object({
+  kind: z.literal("section"),
+  label: boundedLabel,
+  sectionId: boundedId,
+}).strict();
+const pathMentionResourceSchema = z.object({
+  entryKind: z.enum(["directory", "file"]),
+  kind: z.literal("path"),
+  label: boundedLabel,
+  path: boundedPath,
+  source: z.enum(["thread-storage", "workspace"]),
+}).strict();
+const commandMentionResourceSchema = z.object({
+  argumentHint: z.string().max(512).nullable(),
+  kind: z.literal("command"),
+  label: boundedLabel,
+  name: boundedId,
+  origin: z.enum(["builtin", "project", "user"]),
+  source: z.enum(["command", "skill"]),
+  trigger: z.literal("/"),
+}).strict();
+const pluginMentionResourceSchema = z.object({
+  icon: z.string().max(512).nullable().optional(),
+  itemId: boundedId,
+  kind: z.literal("plugin"),
+  label: boundedLabel,
+  pluginId: boundedId,
+}).strict();
+
+export const mentionResourceSchema = z.discriminatedUnion("kind", [
+  threadMentionResourceSchema,
+  projectMentionResourceSchema,
+  sectionMentionResourceSchema,
+  pathMentionResourceSchema,
+  commandMentionResourceSchema,
+  pluginMentionResourceSchema,
+]);
+
+const promptMentionSchema = z.object({
+  end: z.number().int().nonnegative(),
+  resource: mentionResourceSchema,
+  start: z.number().int().nonnegative(),
+}).strict();
+
+const textPromptInputSchema = z.object({
+  mentions: z.array(promptMentionSchema).max(64).default([]),
+  text: z.string().max(MANUAL_LAUNCH_TEXT_LIMIT),
+  type: z.literal("text"),
+  visibility: agentOnlyVisibilitySchema,
+}).strict().superRefine((input, ctx) => {
+  for (const [index, mention] of input.mentions.entries()) {
+    if (mention.start >= mention.end || mention.end > input.text.length) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Mention offsets must select a non-empty range within the text.",
+        path: ["mentions", index],
+      });
+    }
+  }
+});
+
+export const promptInputSchema = z.discriminatedUnion("type", [
+  textPromptInputSchema,
+  z.object({ type: z.literal("image"), url: boundedUrl, visibility: agentOnlyVisibilitySchema }).strict(),
+  z.object({ type: z.literal("localImage"), path: boundedPath, visibility: agentOnlyVisibilitySchema }).strict(),
+  z.object({
+    mimeType: z.string().min(1).max(255).optional(),
+    name: z.string().min(1).max(512).optional(),
+    path: boundedPath,
+    sizeBytes: z.number().int().nonnegative().max(25 * 1024 * 1024).optional(),
+    type: z.literal("localFile"),
+    visibility: agentOnlyVisibilitySchema,
+  }).strict(),
+]);
+
+const unmanagedBranchSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("existing"), name: boundedLabel }).strict(),
+  z.object({ baseBranch: boundedLabel, kind: z.literal("new") }).strict(),
+]);
+const baseBranchSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("named"), name: boundedLabel }).strict(),
+  z.object({ kind: z.literal("default") }).strict(),
+]);
+
+export const createThreadEnvironmentSchema = z.discriminatedUnion("type", [
+  z.object({ environmentId: boundedId, type: z.literal("reuse") }).strict(),
+  z.object({
+    hostId: boundedId.optional(),
+    type: z.literal("host"),
+    workspace: z.discriminatedUnion("type", [
+      z.object({ branch: unmanagedBranchSchema.optional(), path: boundedPath.nullable(), type: z.literal("unmanaged") }).strict(),
+      z.object({ baseBranch: baseBranchSchema, type: z.literal("managed-worktree") }).strict(),
+      z.object({ type: z.literal("personal") }).strict(),
+    ]),
+  }).strict(),
+  z.object({ type: z.literal("project-default") }).strict(),
+]);
+
+export const manualLaunchRequestSchema = z.object({
+  projectId: boundedId,
+  providerId: boundedId,
+  model: boundedModel,
+  reasoningLevel: reasoningLevelSchema,
+  permissionMode: sdkPermissionModeSchema,
+  serviceTier: serviceTierSchema.optional(),
+  executionInputSources: executionInputSourcesSchema,
+  environment: createThreadEnvironmentSchema,
+  input: z.array(promptInputSchema).min(1).max(64),
+  sendAt: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+}).strict().superRefine((request, ctx) => {
+  const totalText = request.input.reduce((total, input) => total + (input.type === "text" ? input.text.length : 0), 0);
+  if (totalText > MANUAL_LAUNCH_TEXT_LIMIT) {
+    ctx.addIssue({ code: "custom", message: `Editable text must not exceed ${MANUAL_LAUNCH_TEXT_LIMIT} characters.`, path: ["input"] });
+  }
+  if (new TextEncoder().encode(JSON.stringify(request)).byteLength > MANUAL_LAUNCH_REQUEST_BYTES_LIMIT) {
+    ctx.addIssue({ code: "custom", message: `Serialized request must not exceed ${MANUAL_LAUNCH_REQUEST_BYTES_LIMIT} bytes.` });
+  }
+});
+export type ManualLaunchRequest = z.infer<typeof manualLaunchRequestSchema>;
+
+export const manualLaunchIntentSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("draft"), taskId: boundedId }).strict(),
+  z.object({ kind: z.literal("skill"), taskId: boundedId, skillId: boundedId }).strict(),
+  z.object({ kind: z.literal("proceed"), threadId: boundedId }).strict(),
+  z.object({ kind: z.literal("iterate"), threadId: boundedId }).strict(),
+]);
+export type ManualLaunchIntent = z.infer<typeof manualLaunchIntentSchema>;
+
+export const manualLaunchRejectionCodeSchema = z.enum([
+  "stale_intent",
+  "project_mismatch",
+  "workspace_mismatch",
+]);
+export type ManualLaunchRejectionCode = z.infer<typeof manualLaunchRejectionCodeSchema>;
+
+export const prepareManualLaunchInputSchema = z.object({ intent: manualLaunchIntentSchema }).strict();
+export const prepareManualLaunchOutputSchema = z.object({
+  intent: manualLaunchIntentSchema,
+  stateToken: z.string().regex(/^[a-f0-9]{64}$/),
+  taskId: boundedId,
+  sourceThreadId: boundedId.nullable(),
+  displayPrompt: z.string().min(1).max(MANUAL_LAUNCH_TEXT_LIMIT),
+  projectId: boundedId,
+  environment: createThreadEnvironmentSchema,
+  providerId: boundedId.optional(),
+  model: boundedModel.optional(),
+  reasoningLevel: reasoningLevelSchema.optional(),
+  serviceTier: serviceTierSchema.optional(),
+  permissionMode: sdkPermissionModeSchema.optional(),
+  draftKey: z.string().min(1).max(1024),
+  fixedWorkspaceNotice: z.string().max(4608).nullable(),
+}).strict();
+export type PreparedManualLaunch = z.infer<typeof prepareManualLaunchOutputSchema>;
+
+export const submitManualLaunchInputSchema = z.object({
+  intent: manualLaunchIntentSchema,
+  stateToken: z.string().regex(/^[a-f0-9]{64}$/),
+  request: manualLaunchRequestSchema,
+}).strict();
+export const submitManualLaunchOutputSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("launched"), threadId: boundedId }).strict(),
+  z.object({
+    status: z.literal("rejected"),
+    rejection: z.object({ code: manualLaunchRejectionCodeSchema, message: z.string().min(1).max(2000) }).strict(),
+  }).strict(),
+]);
+
 export const taskRowSchema = z
   .object({
     id: z.string(),
@@ -677,6 +877,14 @@ export const rpcContract = defineRpcContract({
   launchDraft: {
     input: launchDraftInputSchema,
     output: z.object({ threadId: z.string() }).strict(),
+  },
+  prepareManualLaunch: {
+    input: prepareManualLaunchInputSchema,
+    output: prepareManualLaunchOutputSchema,
+  },
+  submitManualLaunch: {
+    input: submitManualLaunchInputSchema,
+    output: submitManualLaunchOutputSchema,
   },
   proceed: {
     input: proceedInputSchema,

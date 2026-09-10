@@ -2,6 +2,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "re
 import type { DragEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode, RefObject } from "react";
 import {
   Markdown,
+  experimental_NewThreadComposer as NewThreadComposer,
   experimental_SourceCode as SourceCode,
   experimental_useSidebarThreadActions,
   experimental_useSidebarThreads,
@@ -12,7 +13,7 @@ import {
   useRpc,
   useSettings,
 } from "@get-bb/plugin-sdk/app";
-import type { PluginSidebarThread, PluginThreadListProps } from "@get-bb/plugin-sdk/app";
+import type { NewThreadRequest, PluginSidebarThread, PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type {
   ArtifactRecord,
@@ -21,6 +22,8 @@ import type {
   LaunchAttemptRecord,
   ListModelsOutput,
   NextStepSuggestionsRecord,
+  ManualLaunchIntent,
+  PreparedManualLaunch,
   Prefs,
   RpcContract,
   SessionView,
@@ -55,6 +58,7 @@ import {
 import { markdownBlocks, markdownGroups } from "../blocks";
 import { ScratchPadSync } from "../scratch-pad-sync";
 import { parseRpiThreadPanelParams, type RpiThreadPanelView } from "../thread-panel";
+import { buildManualLaunchRoute, parseManualLaunchRoute } from "../manual-launch";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -81,6 +85,9 @@ const LAUNCH_ERROR_MESSAGES: Record<string, string> = {
   human_gate: "This transition requires your approval.",
   launch_blocked: "A launch is already in progress for this task.",
   no_source_host: "No host available. Set a project source or pick a host for this task.",
+  stale_intent: "This launch draft is stale. Go back and open it again.",
+  project_mismatch: "This task must stay in its original project.",
+  workspace_mismatch: "This task must stay in its original workspace.",
 };
 
 function reportLaunchError(error: unknown) {
@@ -300,32 +307,19 @@ const DISMISS_SESSION_COPY = {
 
 // Recovery for a failed or lost session, rendered where the session is surfaced (needs-you band
 // and sessions table) so the copy "start fresh or dismiss" always has the controls it names.
-// Start fresh launches a new session on the same phase (iterateInFreshSession, the RPC Iterate
-// already uses); the newer session supersedes this one, so it leaves the inbox by itself.
+// Start fresh opens a prepared Iterate draft for the same phase; after submission the newer
+// session supersedes this one, so it leaves the inbox by itself.
 // Dismiss archives the thread; listSessions drops archived-thread sessions.
 function SessionRecoveryActions({ threadId, onDismiss, className }: { threadId: string; onDismiss: (threadId: string) => void; className?: string }) {
-  const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
-  const [busy, setBusy] = useState(false);
-  const startFresh = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const result = await rpc.call("iterateInFreshSession", { threadId });
-      navigate.toThread(result.threadId);
-    } catch (error) {
-      reportLaunchError(error);
-    } finally {
-      setBusy(false);
-    }
-  };
+  const startFresh = () => navigate.toPluginPanel("rpi", { subPath: buildManualLaunchRoute({ kind: "iterate", threadId }) });
   return (
     <span className={cn("relative z-10 flex shrink-0 items-center gap-1", className)} onClick={stopRowClick}>
-      <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void startFresh()}>
-        <Icon name={busy ? "Spinner" : "RotateCcw"} className="size-3.5" />
+      <Button type="button" size="sm" variant="outline" onClick={startFresh}>
+        <Icon name="RotateCcw" className="size-3.5" />
         Start fresh
       </Button>
-      <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => onDismiss(threadId)}>
+      <Button type="button" size="sm" variant="ghost" onClick={() => onDismiss(threadId)}>
         Dismiss
       </Button>
     </span>
@@ -844,10 +838,10 @@ function TaskActionsMenu({ task, fromThreadId, onNavigate }: { task: Pick<TaskRe
       if (action === "chat") {
         const { sessions } = await rpc.call("listSessions", { taskId: task.id });
         const latest = sessions.find((session) => session.threadId === fromThreadId) ?? sessions.sort((a, b) => b.createdAt - a.createdAt)[0];
-        const result = latest
-          ? await rpc.call("iterateInFreshSession", { threadId: latest.threadId })
-          : await rpc.call("launchDraft", { taskId: task.id });
-        navigate.toThread(result.threadId);
+        const intent: ManualLaunchIntent = latest
+          ? { kind: "iterate", threadId: latest.threadId }
+          : { kind: "draft", taskId: task.id };
+        navigate.toPluginPanel("rpi", { subPath: buildManualLaunchRoute(intent) });
         onNavigate?.();
       } else if (action === "complete") {
         const result = await rpc.call("updateTask", { taskId: task.id, patch: { completed: !task.completed } });
@@ -3577,17 +3571,10 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
           {task.isDraft ? (
             <Button
               type="button"
-              onClick={async () => {
-                try {
-                  const result = await rpc.call("launchDraft", { taskId });
-                  navigate.toThread(result.threadId);
-                } catch (error) {
-                  reportLaunchError(error);
-                }
-              }}
+              onClick={() => navigate.toPluginPanel("rpi", { subPath: buildManualLaunchRoute({ kind: "draft", taskId }) })}
             >
               <Icon name="Play" className="size-4" />
-              Launch
+              Draft Launch
             </Button>
           ) : currentSession ? (
             <Button type="button" onClick={() => navigate.toThread(currentSession.threadId)}>
@@ -3711,7 +3698,6 @@ export function RpiThreadPanel({ threadId, params }: { threadId: string; params?
   const [session, setSession] = useState<SessionView | null | undefined>(undefined);
   const [task, setTask] = useState<TaskRecord | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [launching, setLaunching] = useState<(typeof RPI_WORKFLOW_ACTIONS)[number]["skillId"] | null>(null);
 
   const refetchTask = () => {
     if (!session) return;
@@ -3743,17 +3729,9 @@ export function RpiThreadPanel({ threadId, params }: { threadId: string; params?
     setView(initial.view);
   }, [initial.view]);
 
-  const launchStep = async (skillId: (typeof RPI_WORKFLOW_ACTIONS)[number]["skillId"]) => {
-    if (!session || launching) return;
-    setLaunching(skillId);
-    try {
-      const result = await rpc.call("launchSkill", { taskId: session.taskId, skillId });
-      navigate.toThread(result.threadId);
-    } catch (error) {
-      reportLaunchError(error);
-    } finally {
-      setLaunching(null);
-    }
+  const launchStep = (skillId: (typeof RPI_WORKFLOW_ACTIONS)[number]["skillId"]) => {
+    if (!session) return;
+    navigate.toPluginPanel("rpi", { subPath: buildManualLaunchRoute({ kind: "skill", taskId: session.taskId, skillId }) });
   };
 
   if (loadError) return <div className="p-4 text-sm text-destructive">{loadError}</div>;
@@ -3803,18 +3781,17 @@ export function RpiThreadPanel({ threadId, params }: { threadId: string; params?
       <div className="space-y-5">
         <div className="space-y-1">
           <h2 className="text-sm font-semibold text-foreground">Workflow actions</h2>
-          <p className="text-xs text-muted-foreground">Start a fresh session from any point in {task.name}. The task's selected model is used.</p>
+          <p className="text-xs text-muted-foreground">Start a fresh session from any point in {task.name}. Review the prompt and settings before submitting.</p>
         </div>
         <div className="space-y-2">
           {RPI_WORKFLOW_ACTIONS.map((action) => (
             <button
               key={action.skillId}
               type="button"
-              disabled={launching !== null}
-              onClick={() => void launchStep(action.skillId)}
-              className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-left hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={() => launchStep(action.skillId)}
+              className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-left hover:bg-muted"
             >
-              <span className="block text-sm font-medium text-foreground">{launching === action.skillId ? "Starting..." : action.label}</span>
+              <span className="block text-sm font-medium text-foreground">{action.label}</span>
               <span className="mt-0.5 block text-xs text-muted-foreground">{action.description}</span>
             </button>
           ))}
@@ -4871,32 +4848,20 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
   const { values: settings } = useSettings();
   // Which confirmation dialog (if any) is pending; a single discriminant covers both
   // destructive confirmations this component owns (item 8's `showIterateConfirmation` opt-out
-  // still short-circuits straight to the RPC call, unchanged from the window.confirm version).
+  // still short-circuits straight to the prepared composer route).
   const [pendingConfirm, setPendingConfirm] = useState<"iterate" | "archive" | null>(null);
-  const runIterate = async () => {
-    try {
-      const result = await rpc.call("iterateInFreshSession", { threadId });
-      navigate.toThread(result.threadId);
-    } catch (error) {
-      reportLaunchError(error);
-    }
-  };
+  const runIterate = () => navigate.toPluginPanel("rpi", { subPath: buildManualLaunchRoute({ kind: "iterate", threadId }) });
   const iterate = () => {
     if (settings?.showIterateConfirmation !== false) {
       setPendingConfirm("iterate");
       return;
     }
-    void runIterate();
+    runIterate();
   };
   const { session } = useRpiSessionState(threadId);
-  const launchStep = async (skillId: "review-code" | "describe-pr" | "resolve-pr-reviews") => {
+  const launchStep = (skillId: "review-code" | "describe-pr" | "resolve-pr-reviews") => {
     if (!session) return;
-    try {
-      const result = await rpc.call("launchSkill", { taskId: session.taskId, skillId });
-      navigate.toThread(result.threadId);
-    } catch (error) {
-      reportLaunchError(error);
-    }
+    navigate.toPluginPanel("rpi", { subPath: buildManualLaunchRoute({ kind: "skill", taskId: session.taskId, skillId }) });
   };
   const runArchive = () => {
     if (!session) return;
@@ -4956,16 +4921,16 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
         <PopoverContent>
           {canReviewCode ? (
             <>
-              <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted" onClick={() => void launchStep("review-code")}>
+              <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted" onClick={() => launchStep("review-code")}>
                 Review code
               </button>
-              <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted" onClick={() => void launchStep("describe-pr")}>
+              <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted" onClick={() => launchStep("describe-pr")}>
                 Create pull request
               </button>
             </>
           ) : null}
           {canResolvePrReviews ? (
-            <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted" onClick={() => void launchStep("resolve-pr-reviews")}>
+            <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted" onClick={() => launchStep("resolve-pr-reviews")}>
               Resolve pull request reviews
             </button>
           ) : null}
@@ -5075,20 +5040,13 @@ export function RpiComposerBanner() {
   const contextWarn = Boolean(gauge?.warn);
   if (!shouldShowComposerBanner({ extracted, suggested, contextWarn, dismissed: contextWarningDismissed })) return null;
 
-  const runIterate = async () => {
-    try {
-      const result = await rpc.call("iterateInFreshSession", { threadId });
-      navigate.toThread(result.threadId);
-    } catch (error) {
-      reportLaunchError(error);
-    }
-  };
+  const runIterate = () => navigate.toPluginPanel("rpi", { subPath: buildManualLaunchRoute({ kind: "iterate", threadId }) });
   const iterate = () => {
     if (settings?.showIterateConfirmation !== false) {
       setPendingIterateConfirm(true);
       return;
     }
-    void runIterate();
+    runIterate();
   };
 
   return (
@@ -5114,14 +5072,7 @@ export function RpiComposerBanner() {
         variant={extracted ? "default" : "outline"}
         className="h-7 px-2 text-xs"
         disabled={!extracted}
-        onClick={async () => {
-          try {
-            const result = await rpc.call("proceed", { threadId });
-            if (result.threadId) navigate.toThread(result.threadId);
-          } catch (error) {
-            reportLaunchError(error);
-          }
-        }}
+        onClick={() => navigate.toPluginPanel("rpi", { subPath: buildManualLaunchRoute({ kind: "proceed", threadId }) })}
       >
         {extracted?.nextStepSummary ?? "Proceed"}
       </Button>
@@ -5132,14 +5083,7 @@ export function RpiComposerBanner() {
             variant="outline"
             className="h-7 px-2 text-xs"
             disabled={hasPendingLaunchAttempt}
-            onClick={async () => {
-              try {
-                const result = await rpc.call("launchSkill", { taskId: session.taskId, skillId: suggested.skillId! });
-                navigate.toThread(result.threadId);
-              } catch (error) {
-                reportLaunchError(error);
-              }
-            }}
+            onClick={() => navigate.toPluginPanel("rpi", { subPath: buildManualLaunchRoute({ kind: "skill", taskId: session.taskId, skillId: suggested.skillId! }) })}
           >
             Suggested next: {suggested.buttonText}
           </Button>
@@ -5366,7 +5310,96 @@ function TasksSectionHeader({
   );
 }
 
-export function RpiPanel({ subPath }: { subPath: string }) {
+function ManualLaunchComposerPage({ intent }: { intent: ManualLaunchIntent }) {
+  const rpc = useRpc<RpcContract>();
+  const navigate = useBbNavigate();
+  const [prepared, setPrepared] = useState<PreparedManualLaunch | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const route = buildManualLaunchRoute(intent);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPrepared(null);
+    setLoadError(null);
+    rpc.call("prepareManualLaunch", { intent }).then((result) => {
+      if (!cancelled) setPrepared(result);
+    }).catch((error: unknown) => {
+      if (!cancelled) setLoadError((error instanceof Error ? error.message : "Could not prepare this launch.").slice(0, 1_000));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [route, rpc]);
+
+  const goBack = () => {
+    if (intent.kind === "proceed" || intent.kind === "iterate") {
+      navigate.toThread(intent.threadId);
+      return;
+    }
+    navigate.toPluginPanel("rpi", { subPath: `tasks/${intent.taskId}` });
+  };
+
+  const submit = async (request: NewThreadRequest) => {
+    if (!prepared) return;
+    try {
+      const result = await rpc.call("submitManualLaunch", {
+        intent: prepared.intent,
+        stateToken: prepared.stateToken,
+        request,
+      });
+      if (result.status === "rejected") {
+        throw Object.assign(new Error(result.rejection.message), { code: result.rejection.code });
+      }
+      navigate.toThread(result.threadId);
+    } catch (error) {
+      reportLaunchError(error);
+      throw error;
+    }
+  };
+
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-4 p-4">
+      <Button type="button" variant="ghost" className="w-fit" onClick={goBack}>
+        <Icon name="ChevronLeft" className="size-4" />
+        Back
+      </Button>
+      <main className="flex min-h-0 flex-1 flex-col rounded-2xl border border-border bg-background/80 p-4">
+        {loadError ? (
+          <div className="rounded-md border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive" role="alert">
+            {loadError}
+          </div>
+        ) : !prepared ? (
+          <div className="p-4 text-sm text-muted-foreground">Preparing launch...</div>
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col gap-3">
+            {prepared.fixedWorkspaceNotice ? (
+              <p className="rounded-md border border-border bg-card p-3 text-sm text-muted-foreground">
+                {prepared.fixedWorkspaceNotice}
+              </p>
+            ) : null}
+            <NewThreadComposer
+              className="min-h-0 w-full flex-1"
+              defaultProjectId={prepared.projectId}
+              defaultProviderId={prepared.providerId}
+              defaultModel={prepared.model}
+              defaultReasoningLevel={prepared.reasoningLevel}
+              defaultServiceTier={prepared.serviceTier}
+              defaultPermissionMode={prepared.permissionMode}
+              defaultEnvironment={prepared.environment}
+              initialPrompt={prepared.displayPrompt}
+              draftKey={prepared.draftKey}
+              focusRequest={1}
+              layout="contained"
+              onSubmit={submit}
+            />
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+
+function RpiTaskPanel({ subPath }: { subPath: string }) {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
   const [tasks, setTasks] = useState<TaskRow[]>([]);
@@ -5576,4 +5609,20 @@ export function RpiPanel({ subPath }: { subPath: string }) {
     </div>
     </TooltipProvider>
   );
+}
+
+export function RpiPanel({ subPath }: { subPath: string }) {
+  if (subPath === "compose" || subPath.startsWith("compose/")) {
+    const intent = parseManualLaunchRoute(subPath);
+    return intent ? (
+      <ManualLaunchComposerPage intent={intent} />
+    ) : (
+      <div className="p-4">
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive" role="alert">
+          Invalid manual launch route.
+        </div>
+      </div>
+    );
+  }
+  return <RpiTaskPanel subPath={subPath} />;
 }

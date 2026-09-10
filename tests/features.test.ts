@@ -14,13 +14,13 @@ test("FEATURES.md recount sentence matches the mechanical count (cannot drift)",
   // match `npm run check:features`'s output, so the two can never silently drift apart.
   assert.equal(counts.rows, 93);
   assert.equal(counts.mixedRows, 1);
-  assert.equal(counts.full, 62);
-  assert.equal(counts.partial, 13);
+  assert.equal(counts.full, 61);
+  assert.equal(counts.partial, 14);
   assert.equal(counts.omitted, 7);
   assert.equal(counts["N/A"], 12);
   assert.match(
     markdown,
-    /\*\*93\nstatus-bearing rows, 1 of them mixed \(the palette row counts toward both N\/A and full\): 62\nfull, 13 partial, 7 omitted, 12 N\/A\*\*/,
+    /\*\*93\nstatus-bearing rows, 1 of them mixed \(the palette row counts toward both N\/A and full\): 61\nfull, 14 partial, 7 omitted, 12 N\/A\*\*/,
     "FEATURES.md summary sentence must state the script's exact counts",
   );
 });

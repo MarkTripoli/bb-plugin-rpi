@@ -40,3 +40,29 @@ test("every uppercase-tracked line is the one permitted table-header style", () 
   }
   assert.deepEqual(offenders, []);
 });
+
+test("manual quick actions use the reviewable composer boundary", () => {
+  for (const label of [
+    "Start fresh",
+    "New chat",
+    "Draft Launch",
+    "Start code review loop",
+    "Review code",
+    "Create pull request",
+    "Resolve pull request reviews",
+    "Iterate in fresh session",
+    "Proceed",
+    "Suggested next:",
+  ]) {
+    assert.equal(content.includes(label), true, `missing manual action ${label}`);
+  }
+
+  assert.equal((content.match(/rpc\.call\("launchDraft"/g) ?? []).length, 1, "only New task Create and start may call launchDraft");
+  for (const method of ["launchSkill", "proceed", "iterateInFreshSession"]) {
+    assert.equal(content.includes(`rpc.call("${method}"`), false, `${method} bypasses the prepared composer`);
+  }
+  assert.match(content, /experimental_NewThreadComposer as NewThreadComposer/);
+  assert.match(content, /<NewThreadComposer/);
+  assert.equal((content.match(/rpc\.call\("submitManualLaunch"/g) ?? []).length, 1);
+  assert.match(content, /catch \(error\) \{\s*reportLaunchError\(error\);\s*throw error;/);
+});

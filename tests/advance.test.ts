@@ -2,12 +2,21 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import { iterateSkillForLabel, latestLaunchAttemptLabel, onCompletedTurn } from "../advance";
+import {
+  iterateSkillForLabel,
+  latestLaunchAttemptLabel,
+  onCompletedTurn,
+  prepareManualLaunch,
+  submitManualLaunch,
+} from "../advance";
+import { MANUAL_LAUNCH_TEXT_LIMIT, prepareManualLaunchOutputSchema, type ManualLaunchRequest } from "../contract";
 import { MIGRATIONS, stringifyJson } from "../db";
 import { createDraftTask } from "../tasks";
 import { proceed } from "../advance";
 import { createLaunchBindingMirror, mirrorSession, type SessionMirrorRow } from "../sessions";
 import { DEFAULT_NOTIFICATION_PREFS, recoverReadyAfterFailedAdvance } from "../notify";
+import { resolveLaunchAttempt } from "../launch";
+import { START_LINKED_TICKET_ACTION } from "../instructions";
 
 function makeDb() {
   const db = new Database(":memory:");
@@ -47,7 +56,7 @@ function seed(db: Database.Database, label: string | null, nextStepType: string 
   return { taskId, session: mirrorSession(db, new Map<string, SessionMirrorRow>(), "thr_source")! };
 }
 
-function fakeBb() {
+function fakeBb(options: { pendingInteraction?: boolean; spawnError?: Error; onProjectGet?: () => void } = {}) {
   let count = 0;
   const spawns: unknown[] = [];
   return {
@@ -56,12 +65,16 @@ function fakeBb() {
       realtime: { publish: () => undefined },
       log: { warn: () => undefined },
       sdk: {
-      projects: { get: async ({ projectId }: { projectId: string }) => ({ id: projectId, name: "Proj", kind: "standard" as const, gitRemoteUrl: null, createdAt: 1, updatedAt: 1, sources: [{ id: "src_1", projectId, hostId: "host_seed", path: "/repo", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 }] }) },
+      projects: { get: async ({ projectId }: { projectId: string }) => {
+        options.onProjectGet?.();
+        return { id: projectId, name: "Proj", kind: "standard" as const, gitRemoteUrl: null, createdAt: 1, updatedAt: 1, sources: [{ id: "src_1", projectId, hostId: "host_seed", path: "/repo", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 }] };
+      } },
       threads: {
-        interactions: { list: async () => [] },
+        interactions: { list: async () => options.pendingInteraction ? [{ status: "pending" }] : [] },
         spawn: async (input: unknown) => {
             count += 1;
             spawns.push(input);
+            if (options.spawnError) throw options.spawnError;
             return makeThreadResponse({ id: `thr_next_${count}`, environmentId: "env_base", projectId: "proj_1", originPluginId: "rpi" });
           },
           get: async () => makeThreadResponse({ id: `thr_next_${count}`, environmentId: "env_base", projectId: "proj_1", originPluginId: "rpi" }),
@@ -69,6 +82,27 @@ function fakeBb() {
       },
     },
     spawns,
+  };
+}
+
+function manualRequest(patch: Partial<ManualLaunchRequest> = {}): ManualLaunchRequest {
+  return {
+    projectId: "proj_1",
+    providerId: "codex",
+    model: "gpt-test",
+    reasoningLevel: "high",
+    permissionMode: "accept-edits",
+    serviceTier: "fast",
+    executionInputSources: {
+      providerId: "explicit",
+      model: "explicit",
+      reasoningLevel: "explicit",
+      permissionMode: "explicit",
+      serviceTier: "explicit",
+    },
+    environment: { type: "host", hostId: "host_seed", workspace: { type: "unmanaged", path: "/repo" } },
+    input: [{ type: "text", text: "edited manual launch", mentions: [] }],
+    ...patch,
   };
 }
 
@@ -277,6 +311,359 @@ test("reload with pending attempt and stamped advance keeps launch blocked witho
   const attempt = db.prepare("SELECT status FROM launch_attempts WHERE id = 'attempt_old'").get() as { status: string };
   assert.equal(attempt.status, "uncertain");
   assert.equal(spawns.length, 0);
+  db.close();
+});
+
+test("manual launch preparation resolves every intent without mutations or spawns", async () => {
+  {
+    const db = makeDb();
+    const { bb, spawns } = fakeBb();
+    const taskId = createDraftTask(db, {
+      projectId: "proj_1",
+      prompt: "draft body",
+      name: "Draft",
+      workflowType: "rpi",
+      worktreeTiming: "never",
+      permissionMode: "accept_edits",
+      autoAdvance: false,
+      providerId: "codex",
+      model: "gpt-test",
+      reasoningLevel: "high",
+      serviceTier: "fast",
+    }).taskId;
+    const before = (db.prepare("SELECT total_changes() AS count").get() as { count: number }).count;
+    const draft = await prepareManualLaunch(bb as never, db, { kind: "draft", taskId });
+    const skill = await prepareManualLaunch(bb as never, db, { kind: "skill", taskId, skillId: "create-research" });
+    const after = (db.prepare("SELECT total_changes() AS count").get() as { count: number }).count;
+    assert.match(draft.displayPrompt, /^\/rpi-create-research-questions/);
+    assert.equal(skill.displayPrompt, "/rpi-create-research");
+    assert.equal(draft.projectId, "proj_1");
+    assert.deepEqual(draft.environment, manualRequest().environment);
+    assert.equal(draft.providerId, "codex");
+    assert.equal(draft.model, "gpt-test");
+    assert.equal(draft.reasoningLevel, "high");
+    assert.equal(draft.serviceTier, "fast");
+    assert.equal(draft.permissionMode, "accept-edits");
+    assert.match(draft.draftKey, new RegExp(taskId));
+    assert.match(draft.fixedWorkspaceNotice ?? "", /task workspace at \/repo/);
+    assert.equal(after, before);
+    assert.equal(spawns.length, 0);
+    assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts").get() as { count: number }).count, 0);
+    db.close();
+  }
+
+  for (const intent of ["proceed", "iterate"] as const) {
+    const db = makeDb();
+    const { bb, spawns } = fakeBb();
+    seed(db, "research-questions", "create-research");
+    const before = (db.prepare("SELECT total_changes() AS count").get() as { count: number }).count;
+    const prepared = await prepareManualLaunch(bb as never, db, { kind: intent, threadId: "thr_source" });
+    const after = (db.prepare("SELECT total_changes() AS count").get() as { count: number }).count;
+    assert.equal(prepared.sourceThreadId, "thr_source");
+    assert.equal(prepared.displayPrompt, intent === "proceed" ? "/rpi-create-research" : "/rpi-iterate-research-questions");
+    assert.equal(after, before);
+    assert.equal(spawns.length, 0);
+    assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts").get() as { count: number }).count, 0);
+    db.close();
+  }
+});
+
+test("manual draft preserves the 10,000-character editable limit and keeps linked-ticket instructions server-owned", async () => {
+  const db = makeDb();
+  const editableText = "x".repeat(MANUAL_LAUNCH_TEXT_LIMIT);
+  const taskId = createDraftTask(db, {
+    projectId: "proj_1",
+    prompt: editableText,
+    name: "Boundary draft",
+    workflowType: "freeform",
+    worktreeTiming: "never",
+    permissionMode: "default",
+    autoAdvance: false,
+    providerId: null,
+    model: null,
+    reasoningLevel: null,
+    serviceTier: null,
+  }).taskId;
+  const { bb, spawns } = fakeBb();
+  const intent = { kind: "draft", taskId } as const;
+  const prepared = await prepareManualLaunch(bb as never, db, intent);
+  assert.equal(prepared.displayPrompt, editableText);
+  assert.doesNotThrow(() => prepareManualLaunchOutputSchema.parse(prepared));
+
+  const request = manualRequest({ input: [{ type: "text", text: editableText, mentions: [] }] });
+  const launched = await submitManualLaunch(
+    bb as never,
+    db,
+    new Map(),
+    createLaunchBindingMirror(),
+    intent,
+    prepared.stateToken,
+    request,
+  );
+  assert.equal(launched.threadId, "thr_next_1");
+  const input = (spawns[0] as { input: Array<{ text?: string; visibility?: string }> }).input;
+  assert.equal(input[1]?.text, editableText);
+  assert.equal(input[1]?.visibility, undefined);
+  assert.ok(input.at(-1)?.text?.includes(START_LINKED_TICKET_ACTION));
+  assert.equal(input.at(-1)?.visibility, "agent-only");
+  db.close();
+});
+
+test("manual draft Retry restores its server-owned linked-ticket instruction", async () => {
+  const db = makeDb();
+  const taskId = createDraftTask(db, {
+    projectId: "proj_1",
+    prompt: "editable draft",
+    name: "Retry draft",
+    workflowType: "freeform",
+    worktreeTiming: "never",
+    permissionMode: "default",
+    autoAdvance: false,
+    providerId: null,
+    model: null,
+    reasoningLevel: null,
+    serviceTier: null,
+  }).taskId;
+  const options: { spawnError?: Error } = { spawnError: new Error("spawn response lost") };
+  const { bb, spawns } = fakeBb(options);
+  const bindings = createLaunchBindingMirror();
+  const intent = { kind: "draft", taskId } as const;
+  const prepared = await prepareManualLaunch(bb as never, db, intent);
+  await assert.rejects(
+    submitManualLaunch(bb as never, db, new Map(), bindings, intent, prepared.stateToken, manualRequest()),
+    /spawn response lost/,
+  );
+  const attempt = db.prepare("SELECT id FROM launch_attempts WHERE task_id = ?").get(taskId) as { id: string };
+  options.spawnError = undefined;
+  await resolveLaunchAttempt(bb as never, db, new Map(), bindings, attempt.id, { type: "retry" });
+  assert.equal(spawns.length, 2);
+  for (const spawn of spawns as Array<{ input: Array<{ text?: string; visibility?: string }> }>) {
+    const context = spawn.input.at(-1);
+    assert.ok(context?.text?.includes(START_LINKED_TICKET_ACTION));
+    assert.equal(context?.visibility, "agent-only");
+  }
+  db.close();
+});
+
+test("manual launch rejects stale or relocated context before creating an attempt", async () => {
+  {
+    const db = makeDb();
+    seed(db, "research-questions", "create-research");
+    const { bb } = fakeBb();
+    const prepared = await prepareManualLaunch(bb as never, db, { kind: "proceed", threadId: "thr_source" });
+    db.prepare("UPDATE sessions SET completed_turn_key = 'turn_new', next_step_turn_key = 'turn_old' WHERE thread_id = 'thr_source'").run();
+    await assert.rejects(
+      submitManualLaunch(bb as never, db, new Map(), createLaunchBindingMirror(), { kind: "proceed", threadId: "thr_source" }, prepared.stateToken, manualRequest()),
+      /stale extraction/,
+    );
+    assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts").get() as { count: number }).count, 0);
+    db.close();
+  }
+
+  {
+    const db = makeDb();
+    const taskId = createDraftTask(db, {
+      projectId: "proj_1", prompt: "prompt", name: "Task", workflowType: "freeform", worktreeTiming: "never",
+      permissionMode: "default", autoAdvance: false, providerId: null, model: null, reasoningLevel: null, serviceTier: null,
+    }).taskId;
+    const { bb } = fakeBb();
+    const prepared = await prepareManualLaunch(bb as never, db, { kind: "skill", taskId, skillId: "create-research" });
+    db.prepare("UPDATE tasks SET archived = 1 WHERE id = ?").run(taskId);
+    await assert.rejects(
+      submitManualLaunch(bb as never, db, new Map(), createLaunchBindingMirror(), { kind: "skill", taskId, skillId: "create-research" }, prepared.stateToken, manualRequest()),
+      /archived/,
+    );
+    assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts").get() as { count: number }).count, 0);
+    db.close();
+  }
+
+  {
+    const db = makeDb();
+    seed(db, "research", "create-design-discussion");
+    const options = { pendingInteraction: false };
+    const { bb } = fakeBb(options);
+    const prepared = await prepareManualLaunch(bb as never, db, { kind: "iterate", threadId: "thr_source" });
+    options.pendingInteraction = true;
+    await assert.rejects(
+      submitManualLaunch(bb as never, db, new Map(), createLaunchBindingMirror(), { kind: "iterate", threadId: "thr_source" }, prepared.stateToken, manualRequest()),
+      /pending interactions/,
+    );
+    assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts").get() as { count: number }).count, 0);
+    db.close();
+  }
+
+  for (const change of ["project", "workspace"] as const) {
+    const db = makeDb();
+    const taskId = createDraftTask(db, {
+      projectId: "proj_1", prompt: "prompt", name: "Task", workflowType: "freeform", worktreeTiming: "never",
+      permissionMode: "default", autoAdvance: false, providerId: null, model: null, reasoningLevel: null, serviceTier: null,
+    }).taskId;
+    const { bb } = fakeBb();
+    const intent = { kind: "skill", taskId, skillId: "create-research" } as const;
+    const prepared = await prepareManualLaunch(bb as never, db, intent);
+    if (change === "project") db.prepare("UPDATE tasks SET project_id = 'proj_other' WHERE id = ?").run(taskId);
+    else db.prepare("UPDATE tasks SET host_id = 'host_seed', default_directory = '/other' WHERE id = ?").run(taskId);
+    await assert.rejects(
+      submitManualLaunch(bb as never, db, new Map(), createLaunchBindingMirror(), intent, prepared.stateToken, manualRequest({
+        projectId: prepared.projectId,
+        environment: prepared.environment,
+      })),
+      /different project|fixed workspace/,
+    );
+    assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts").get() as { count: number }).count, 0);
+    db.close();
+  }
+});
+
+test("manual submit rejects a task mutated during awaited environment resolution", async () => {
+  const db = makeDb();
+  const taskId = createDraftTask(db, {
+    projectId: "proj_1", prompt: "prompt", name: "Task", workflowType: "freeform", worktreeTiming: "never",
+    permissionMode: "default", autoAdvance: false, providerId: null, model: null, reasoningLevel: null, serviceTier: null,
+  }).taskId;
+  const options: { onProjectGet?: () => void } = {};
+  const { bb, spawns } = fakeBb(options);
+  const intent = { kind: "skill", taskId, skillId: "create-research" } as const;
+  const prepared = await prepareManualLaunch(bb as never, db, intent);
+  let mutated = false;
+  options.onProjectGet = () => {
+    mutated = true;
+    options.onProjectGet = undefined;
+    db.prepare("UPDATE tasks SET host_id = 'host_other', default_directory = '/other' WHERE id = ?").run(taskId);
+  };
+
+  await assert.rejects(
+    submitManualLaunch(bb as never, db, new Map(), createLaunchBindingMirror(), intent, prepared.stateToken, manualRequest({
+      projectId: prepared.projectId,
+      environment: prepared.environment,
+    })),
+    /prepared launch is stale/,
+  );
+  assert.equal(mutated, true);
+  assert.equal(spawns.length, 0);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts WHERE task_id = ?").get(taskId) as { count: number }).count, 0);
+  db.close();
+});
+
+test("concurrent submissions from one prepared state create one successor each", async () => {
+  {
+    const db = makeDb();
+    const { taskId } = seed(db, "research-questions", "create-research", { base_environment_id: "env_base" });
+    const { bb, spawns } = fakeBb();
+    const bindings = createLaunchBindingMirror();
+    const intent = { kind: "proceed", threadId: "thr_source" } as const;
+    const prepared = await prepareManualLaunch(bb as never, db, intent);
+    const request = manualRequest({ projectId: prepared.projectId, environment: prepared.environment });
+    const settled = await Promise.allSettled([
+      submitManualLaunch(bb as never, db, new Map(), bindings, intent, prepared.stateToken, request),
+      submitManualLaunch(bb as never, db, new Map(), bindings, intent, prepared.stateToken, request),
+    ]);
+    assert.equal(settled.filter((result) => result.status === "fulfilled").length, 1);
+    assert.equal(spawns.length, 1);
+    assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts WHERE task_id = ?").get(taskId) as { count: number }).count, 1);
+    db.close();
+  }
+
+  {
+    const db = makeDb();
+    const taskId = createDraftTask(db, {
+      projectId: "proj_1", prompt: "prompt", name: "Task", workflowType: "freeform", worktreeTiming: "never",
+      permissionMode: "default", autoAdvance: false, providerId: null, model: null, reasoningLevel: null, serviceTier: null,
+    }).taskId;
+    db.prepare("UPDATE tasks SET base_environment_id = 'env_base' WHERE id = ?").run(taskId);
+    const { bb, spawns } = fakeBb();
+    const bindings = createLaunchBindingMirror();
+    const intent = { kind: "skill", taskId, skillId: "create-research" } as const;
+    const prepared = await prepareManualLaunch(bb as never, db, intent);
+    const request = manualRequest({ projectId: prepared.projectId, environment: prepared.environment });
+    const settled = await Promise.allSettled([
+      submitManualLaunch(bb as never, db, new Map(), bindings, intent, prepared.stateToken, request),
+      submitManualLaunch(bb as never, db, new Map(), bindings, intent, prepared.stateToken, request),
+    ]);
+    assert.equal(settled.filter((result) => result.status === "fulfilled").length, 1);
+    const rejected = settled.find((result) => result.status === "rejected");
+    assert.match(String(rejected && rejected.status === "rejected" ? rejected.reason : ""), /prepared launch is stale/);
+    assert.equal(spawns.length, 1);
+    assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts WHERE task_id = ?").get(taskId) as { count: number }).count, 1);
+    db.close();
+  }
+});
+
+test("a fresh preparation permits a second launch of the same skill", async () => {
+  const db = makeDb();
+  const taskId = createDraftTask(db, {
+    projectId: "proj_1", prompt: "prompt", name: "Task", workflowType: "freeform", worktreeTiming: "never",
+    permissionMode: "default", autoAdvance: false, providerId: null, model: null, reasoningLevel: null, serviceTier: null,
+  }).taskId;
+  const { bb, spawns } = fakeBb();
+  const bindings = createLaunchBindingMirror();
+  const intent = { kind: "skill", taskId, skillId: "create-research" } as const;
+
+  const first = await prepareManualLaunch(bb as never, db, intent);
+  await submitManualLaunch(bb as never, db, new Map(), bindings, intent, first.stateToken, manualRequest({
+    projectId: first.projectId,
+    environment: first.environment,
+  }));
+  const second = await prepareManualLaunch(bb as never, db, intent);
+  assert.notEqual(second.stateToken, first.stateToken);
+  await submitManualLaunch(bb as never, db, new Map(), bindings, intent, second.stateToken, manualRequest({
+    projectId: second.projectId,
+    environment: second.environment,
+  }));
+
+  assert.equal(spawns.length, 2);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts WHERE task_id = ? AND status = 'spawned'").get(taskId) as { count: number }).count, 2);
+  db.close();
+});
+
+test("a stale Iterate stays rejected after an intervening launch changes the latest attempt", async () => {
+  const db = makeDb();
+  const { taskId } = seed(db, "research", "create-design-discussion");
+  const { bb, spawns } = fakeBb();
+  const bindings = createLaunchBindingMirror();
+  const iterateIntent = { kind: "iterate", threadId: "thr_source" } as const;
+  const stale = await prepareManualLaunch(bb as never, db, iterateIntent);
+  await submitManualLaunch(bb as never, db, new Map(), bindings, iterateIntent, stale.stateToken, manualRequest({
+    projectId: stale.projectId,
+    environment: stale.environment,
+  }));
+
+  const skillIntent = { kind: "skill", taskId, skillId: "create-research" } as const;
+  const intervening = await prepareManualLaunch(bb as never, db, skillIntent);
+  await submitManualLaunch(bb as never, db, new Map(), bindings, skillIntent, intervening.stateToken, manualRequest({
+    projectId: intervening.projectId,
+    environment: intervening.environment,
+  }));
+
+  await assert.rejects(
+    submitManualLaunch(bb as never, db, new Map(), bindings, iterateIntent, stale.stateToken, manualRequest()),
+    /source session already has a successor/,
+  );
+  await assert.rejects(
+    prepareManualLaunch(bb as never, db, iterateIntent),
+    /source session already has a successor/,
+  );
+  assert.equal(spawns.length, 2);
+  db.close();
+});
+
+test("failed manual launch keeps the validated request on its recoverable attempt", async () => {
+  const db = makeDb();
+  const taskId = createDraftTask(db, {
+    projectId: "proj_1", prompt: "prompt", name: "Task", workflowType: "freeform", worktreeTiming: "never",
+    permissionMode: "default", autoAdvance: false, providerId: null, model: null, reasoningLevel: null, serviceTier: null,
+  }).taskId;
+  const request = manualRequest();
+  const { bb } = fakeBb({ spawnError: new Error("spawn response lost") });
+  const intent = { kind: "skill", taskId, skillId: "create-research" } as const;
+  const prepared = await prepareManualLaunch(bb as never, db, intent);
+  await assert.rejects(
+    submitManualLaunch(bb as never, db, new Map(), createLaunchBindingMirror(), intent, prepared.stateToken, request),
+    /spawn response lost/,
+  );
+  const attempt = db.prepare("SELECT status, request_json AS requestJson FROM launch_attempts WHERE task_id = ?").get(taskId) as { status: string; requestJson: string };
+  assert.equal(attempt.status, "uncertain");
+  assert.deepEqual(JSON.parse(attempt.requestJson), request);
   db.close();
 });
 
