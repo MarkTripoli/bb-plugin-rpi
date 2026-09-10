@@ -21,9 +21,11 @@ test("app exposes one consolidated RPI thread panel action", () => {
   assert.match(source, /component: RpiThreadPanel/);
   assert.equal(source.includes('actionId: "artifacts"'), false);
   assert.equal(source.includes('actionId: "scratch"'), false);
-  for (const skillId of ["review-code", "describe-pr", "resolve-pr-reviews"]) {
-    assert.match(uiSource, new RegExp(`skillId: "${skillId}"`));
+  assert.match(uiSource, /completionActionsForSession/);
+  assert.doesNotMatch(uiSource, /RPI_WORKFLOW_ACTIONS/);
+  assert.doesNotMatch(uiSource, /Workflow actions/);
+  for (const label of ["Review code", "Create pull request", "Resolve pull request reviews"]) {
+    assert.doesNotMatch(uiSource, new RegExp(`Workflow actions[\\s\\S]{0,400}${label}`));
   }
-  assert.match(uiSource, /buildManualLaunchRoute\(\{ kind: "skill", taskId: session\.taskId, skillId \}\)/);
   assert.doesNotMatch(uiSource, /rpc\.call\("launchSkill"/);
 });

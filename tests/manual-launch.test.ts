@@ -8,6 +8,7 @@ test("manual launch routes round-trip every supported intent", () => {
     { kind: "draft", taskId: "task_1" },
     { kind: "skill", taskId: "task_1", skillId: "review-code" },
     { kind: "proceed", threadId: "thread:1" },
+    { kind: "completion", threadId: "thread:1", skillId: "review-code" },
     { kind: "iterate", threadId: "thread.1" },
   ];
 
@@ -28,6 +29,9 @@ test("manual launch routes reject malformed and unbounded input", () => {
     "compose/skill/task/review-code/extra",
     "compose/skill/task/%2Freview-code",
     "compose/skill/task/unknown-skill",
+    "compose/completion/thread/unknown-skill",
+    "compose/completion/thread",
+    "compose/completion/thread/review-code/extra",
     "compose/proceed/thread/extra",
     "compose/iterate/thread%5Cother",
   ]) {
@@ -39,4 +43,5 @@ test("manual launch route builder rejects identifiers that cannot be routed", ()
   assert.throws(() => buildManualLaunchRoute({ kind: "draft", taskId: "task/other" }));
   assert.throws(() => buildManualLaunchRoute({ kind: "skill", taskId: "task", skillId: "" }));
   assert.throws(() => buildManualLaunchRoute({ kind: "skill", taskId: "task", skillId: "unknown-skill" }));
+  assert.throws(() => buildManualLaunchRoute({ kind: "completion", threadId: "thread", skillId: "unknown-skill" }));
 });

@@ -28,6 +28,10 @@ export function buildManualLaunchRoute(intent: ManualLaunchIntent): string {
     if (!Object.hasOwn(SKILL_BY_ID, intent.skillId)) throw new Error("Manual launch route contains an unknown skill.");
     return `compose/skill/${encodeSegment(intent.taskId)}/${encodeSegment(intent.skillId)}`;
   }
+  if (intent.kind === "completion") {
+    if (!Object.hasOwn(SKILL_BY_ID, intent.skillId)) throw new Error("Manual launch route contains an unknown skill.");
+    return `compose/completion/${encodeSegment(intent.threadId)}/${encodeSegment(intent.skillId)}`;
+  }
   return `compose/${intent.kind}/${encodeSegment(intent.threadId)}`;
 }
 
@@ -44,6 +48,11 @@ export function parseManualLaunchRoute(subPath: string): ManualLaunchIntent | nu
     const taskId = decodeSegment(segments[2]!);
     const skillId = decodeSegment(segments[3]!);
     return taskId && skillId && Object.hasOwn(SKILL_BY_ID, skillId) ? { kind: "skill", taskId, skillId } : null;
+  }
+  if (segments.length === 4 && segments[1] === "completion") {
+    const threadId = decodeSegment(segments[2]!);
+    const skillId = decodeSegment(segments[3]!);
+    return threadId && skillId && Object.hasOwn(SKILL_BY_ID, skillId) ? { kind: "completion", threadId, skillId } : null;
   }
   if (segments.length === 3 && (segments[1] === "proceed" || segments[1] === "iterate")) {
     const threadId = decodeSegment(segments[2]!);

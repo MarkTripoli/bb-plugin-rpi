@@ -8,6 +8,7 @@ import {
   WORKFLOW_GRAPHS,
   autoAdvanceAccepts,
   autoAdvanceTransition,
+  completionActionsForSession,
   computeSuggestedNext,
   deriveBoardColumn,
   parseNextStepExtraction,
@@ -164,4 +165,118 @@ test("suggestedNextForSession/suggestedNextHint compute the same result once pre
   const matchJson = JSON.stringify({ extraction: { type: "next_step_found", nextStepType: "create-research" } });
   assert.equal(suggestedNextForSession(baseSuggestedNextSession({ nextStepJson: matchJson })), null);
   assert.equal(suggestedNextHint(baseSuggestedNextSession({ nextStepJson: matchJson })), null);
+});
+
+function baseCompletionSession(overrides: Partial<SuggestedNextSessionFields & { threadId: string }> = {}) {
+  return {
+    threadId: "thr_source",
+    rpiStatus: "ready_for_input",
+    blockedReason: null,
+    completedTurnKey: "turn_1",
+    lastSummarizedTurnKey: "turn_1",
+    label: "research-questions",
+    workflowType: "rpi",
+    nextStepJson: JSON.stringify({ extraction: { type: "no_next_step" } }),
+    ...overrides,
+  };
+}
+
+test("completion catalog covers workflow-specific canonical transitions and iterate", () => {
+  const expected: Record<string, Record<string, string>> = {
+    rpi: {
+      "research-questions": "create-research",
+      research: "create-design-discussion",
+      design: "create-plan",
+      "design-prd": "create-tdd",
+      "design-tdd": "create-plan",
+      structure: "implement-outline",
+      plan: "setup-worktree",
+      "worktree-setup": "implement-plan",
+    },
+    outline_only: {
+      "research-questions": "create-research",
+      research: "create-structure-outline",
+      design: "create-plan",
+      "design-prd": "create-tdd",
+      "design-tdd": "create-plan",
+      structure: "implement-outline",
+      plan: "setup-worktree",
+      "worktree-setup": "implement-outline",
+    },
+    prd_tdd: {
+      "research-questions": "create-research",
+      research: "create-prd",
+      design: "create-plan",
+      "design-prd": "create-tdd",
+      "design-tdd": "create-plan",
+      structure: "implement-outline",
+      plan: "setup-worktree",
+      "worktree-setup": "implement-plan",
+    },
+  };
+  for (const [workflowType, rows] of Object.entries(expected)) {
+    for (const [label, skillId] of Object.entries(rows)) {
+      const result = completionActionsForSession(baseCompletionSession({ workflowType, label }));
+      assert.ok(result, `${workflowType}/${label}`);
+      assert.deepEqual(result.actions.map((action) => action.id), ["continue", "iterate"], `${workflowType}/${label}`);
+      assert.deepEqual(result.actions[0]?.intent, { kind: "completion", threadId: "thr_source", skillId });
+      assert.deepEqual(result.actions[1]?.intent, {
+        kind: "iterate",
+        threadId: "thr_source",
+      }, `${workflowType}/${label}`);
+    }
+  }
+  for (const workflowType of ["oneshot", "freeform"] as const) {
+    const result = completionActionsForSession(baseCompletionSession({ workflowType, label: null }));
+    assert.ok(result);
+    assert.deepEqual(result.actions.map((action) => action.id), ["review", "create-pr", "iterate"]);
+    assert.deepEqual(result.actions.map((action) => action.intent), [
+      { kind: "completion", threadId: "thr_source", skillId: "review-code" },
+      { kind: "completion", threadId: "thr_source", skillId: "describe-pr" },
+      { kind: "iterate", threadId: "thr_source" },
+    ]);
+  }
+});
+
+test("completion catalog preserves matching Proceed and adds a bounded agent suggestion", () => {
+  const matching = completionActionsForSession(baseCompletionSession({
+    label: "implementation",
+    nextStepJson: JSON.stringify({ extraction: { type: "next_step_found", nextStepType: "describe-pr", nextStepPrompt: "/rpi-describe-pr --draft" } }),
+  }));
+  assert.ok(matching);
+  assert.deepEqual(matching.actions.map((action) => action.id), ["review", "create-pr", "iterate"]);
+  assert.deepEqual(matching.actions[1]?.intent, { kind: "proceed", threadId: "thr_source" });
+
+  const conflicting = completionActionsForSession(baseCompletionSession({
+    nextStepJson: JSON.stringify({ extraction: { type: "next_step_found", nextStepType: "create-design-discussion", nextStepPrompt: "/rpi-create-design-discussion" } }),
+  }));
+  assert.ok(conflicting);
+  assert.equal(conflicting.actions.at(-1)?.id, "agent-suggestion");
+  assert.equal(conflicting.actions.at(-1)?.label, "Agent suggestion");
+  assert.deepEqual(conflicting.actions.at(-1)?.intent, { kind: "proceed", threadId: "thr_source" });
+
+  const malformed = completionActionsForSession(baseCompletionSession({
+    nextStepJson: JSON.stringify({ extraction: { type: "next_step_found", nextStepType: "create-design-discussion" } }),
+  }));
+  assert.ok(malformed);
+  assert.equal(malformed.actions.some((action) => action.id === "agent-suggestion"), false);
+});
+
+test("completion catalog hides unready sessions and reports active or replaced sources", () => {
+  for (const overrides of [
+    { rpiStatus: "running" },
+    { blockedReason: "question" },
+    { completedTurnKey: null },
+    { lastSummarizedTurnKey: "turn_old" },
+    { label: "review" },
+  ]) {
+    assert.equal(completionActionsForSession(baseCompletionSession(overrides)), null);
+  }
+
+  const blocked = completionActionsForSession(baseCompletionSession(), { activeAttempt: true, successorThreadId: null });
+  assert.equal(blocked?.state, "blocked");
+  assert.equal(blocked?.actions.length, 2);
+
+  const replaced = completionActionsForSession(baseCompletionSession(), { activeAttempt: false, successorThreadId: "thr_next" });
+  assert.deepEqual(replaced, { state: "replaced", actions: [], successorThreadId: "thr_next" });
 });

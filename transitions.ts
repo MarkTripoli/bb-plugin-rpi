@@ -1,3 +1,5 @@
+import type { ManualLaunchIntent } from "./contract";
+
 export const SKILLS = [
   ["/rpi-create-research-questions", "create-research-questions", "research-questions", "proceed to research questions"],
   ["/rpi-iterate-research-questions", "iterate-research-questions", "research-questions", "iterate research questions"],
@@ -254,6 +256,136 @@ export function parseNextStepExtraction(nextStepJson: string | null): SuggestedN
   }
 }
 
+type ParsedNextStep = {
+  nextStepType: string;
+  nextStepPrompt: string;
+};
+
+function parseNextStepDetails(nextStepJson: string | null): ParsedNextStep | null {
+  if (!nextStepJson) return null;
+  try {
+    const parsed = JSON.parse(nextStepJson) as { extraction?: { type?: string; nextStepType?: string; nextStepPrompt?: string } };
+    if (
+      parsed.extraction?.type !== "next_step_found"
+      || !parsed.extraction.nextStepType
+      || !parsed.extraction.nextStepPrompt
+    ) return null;
+    return {
+      nextStepType: parsed.extraction.nextStepType,
+      nextStepPrompt: parsed.extraction.nextStepPrompt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export type CompletionAction = {
+  id: "continue" | "review" | "fix-review" | "create-pr" | "resolve-pr" | "iterate" | "agent-suggestion";
+  label: string;
+  emphasis: "primary" | "secondary";
+  intent: ManualLaunchIntent;
+};
+
+export type CompletionActionsResult = {
+  state: "available" | "blocked" | "replaced";
+  actions: CompletionAction[];
+  successorThreadId: string | null;
+};
+
+type CompletionSessionFields = SuggestedNextSessionFields & { threadId: string };
+type CompletionCatalogEntry = Omit<CompletionAction, "intent"> & { skillId: SkillId | null };
+
+function titleCaseButtonText(buttonText: string) {
+  return buttonText.length > 0 ? `${buttonText[0]!.toUpperCase()}${buttonText.slice(1)}` : buttonText;
+}
+
+function completionCatalog(label: PhaseLabel | null, workflowType: string): CompletionCatalogEntry[] {
+  const iterate = label ? ITERATE_SKILL_BY_LABEL[label] : undefined;
+  const iterateEntry = {
+    id: "iterate" as const,
+    label: "Iterate",
+    emphasis: "secondary" as const,
+    skillId: iterate && skillInfo(iterate) ? iterate : null,
+  };
+
+  if (label === "implementation") {
+    return [
+      { id: "review", label: "Review code", emphasis: "primary", skillId: "review-code" },
+      { id: "create-pr", label: "Create pull request", emphasis: "secondary", skillId: "describe-pr" },
+      iterateEntry,
+    ];
+  }
+  if (label === "code-review") {
+    return [
+      { id: "fix-review", label: "Fix review findings", emphasis: "primary", skillId: "fix-code-review" },
+      { id: "create-pr", label: "Create pull request", emphasis: "secondary", skillId: "describe-pr" },
+      iterateEntry,
+    ];
+  }
+  if (label === "review-fixes") {
+    return [
+      { id: "review", label: "Review code", emphasis: "primary", skillId: "review-code" },
+      { id: "create-pr", label: "Create pull request", emphasis: "secondary", skillId: "describe-pr" },
+      iterateEntry,
+    ];
+  }
+  if (label === "describe-pr" || label === "pr-review") {
+    return [
+      { id: "resolve-pr", label: "Resolve pull request reviews", emphasis: "primary", skillId: "resolve-pr-reviews" },
+      iterateEntry,
+    ];
+  }
+  if ((workflowType === "oneshot" || workflowType === "freeform") && label === null) {
+    return [
+      { id: "review", label: "Review code", emphasis: "primary", skillId: "review-code" },
+      { id: "create-pr", label: "Create pull request", emphasis: "secondary", skillId: "describe-pr" },
+      iterateEntry,
+    ];
+  }
+
+  const transition = label ? autoAdvanceTransition(label, workflowType) : undefined;
+  const info = transition ? skillInfo(transition.next) : null;
+  if (!info) return [];
+  return [
+    { id: "continue", label: titleCaseButtonText(info.buttonText), emphasis: "primary", skillId: info.skillId },
+    iterateEntry,
+  ];
+}
+
+export function completionActionsForSession(
+  session: CompletionSessionFields,
+  options: { activeAttempt: boolean; successorThreadId: string | null } = { activeAttempt: false, successorThreadId: null },
+): CompletionActionsResult | null {
+  if (session.rpiStatus !== "ready_for_input" || session.blockedReason || !completedTurnIsProcessed(session)) return null;
+  const label = normalizePhaseLabel(session.label) as PhaseLabel | null;
+  const catalog = completionCatalog(label, session.workflowType);
+  if (catalog.length === 0) return null;
+  if (options.successorThreadId) return { state: "replaced", actions: [], successorThreadId: options.successorThreadId };
+
+  const extraction = parseNextStepDetails(session.nextStepJson);
+  const actions = catalog.map(({ skillId, ...descriptor }) => ({
+    ...descriptor,
+    intent: extraction?.nextStepType === skillId && skillId
+      ? { kind: "proceed" as const, threadId: session.threadId }
+      : descriptor.id === "iterate"
+        ? { kind: "iterate" as const, threadId: session.threadId }
+        : { kind: "completion" as const, threadId: session.threadId, skillId: skillId! },
+  }));
+  if (extraction && skillInfo(extraction.nextStepType) && !catalog.some((entry) => entry.skillId === extraction.nextStepType)) {
+    actions.push({
+      id: "agent-suggestion",
+      label: "Agent suggestion",
+      emphasis: "secondary",
+      intent: { kind: "proceed", threadId: session.threadId },
+    });
+  }
+  return {
+    state: options.activeAttempt ? "blocked" : "available",
+    actions,
+    successorThreadId: null,
+  };
+}
+
 export type SuggestedNextSessionFields = {
   rpiStatus: string;
   blockedReason: string | null;
@@ -264,6 +396,10 @@ export type SuggestedNextSessionFields = {
   nextStepJson: string | null;
 };
 
+export function completedTurnIsProcessed(session: Pick<SuggestedNextSessionFields, "completedTurnKey" | "lastSummarizedTurnKey">) {
+  return Boolean(session.completedTurnKey) && session.completedTurnKey === session.lastSummarizedTurnKey;
+}
+
 // Suggested-next precondition (plan §2.9): the session must be at rest, ready for input, nothing
 // blocking it, and its completed turn already fully processed (summarized), before
 // computeSuggestedNext's extraction-vs-workflow comparison means anything. A mid-processing or
@@ -272,7 +408,7 @@ export type SuggestedNextSessionFields = {
 export function suggestedNextForSession(session: SuggestedNextSessionFields): SuggestedNext | null {
   if (session.rpiStatus !== "ready_for_input") return null;
   if (session.blockedReason) return null;
-  if (!session.completedTurnKey || session.completedTurnKey !== session.lastSummarizedTurnKey) return null;
+  if (!completedTurnIsProcessed(session)) return null;
   const label = normalizePhaseLabel(session.label) as PhaseLabel | null;
   const result = computeSuggestedNext(label, session.workflowType, parseNextStepExtraction(session.nextStepJson));
   return result.visible ? result : null;
