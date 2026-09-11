@@ -20,6 +20,18 @@ export const MANUAL_LAUNCH_TEXT_LIMIT = 10_000;
 export const MANUAL_LAUNCH_REQUEST_BYTES_LIMIT = 256 * 1024;
 
 export const reasoningLevelSchema = z.enum(["none", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"]);
+
+// One-shot model choice made at launch time (launch prompt dialog). Omitted means "use the
+// task's defaults"; present means spawn with exactly these values without touching the task
+// record. reasoningLevel is optional so a provider that reports no levels can still be chosen.
+export const modelOverrideSchema = z
+  .object({
+    providerId: boundedModel,
+    model: boundedModel,
+    reasoningLevel: reasoningLevelSchema.optional(),
+  })
+  .strict();
+export type ModelOverride = z.infer<typeof modelOverrideSchema>;
 export const serviceTierSchema = z.enum(["default", "fast"]);
 export const sdkPermissionModeSchema = z.enum(["accept-edits", "auto", "full"]);
 const executionInputSourceSchema = z.enum(["client-preference", "explicit"]);
@@ -213,6 +225,7 @@ export const submitManualLaunchOutputSchema = z.discriminatedUnion("status", [
 
 export const launchCompletionInputSchema = z.object({
   intent: z.object({ kind: z.literal("completion"), threadId: boundedId, skillId: boundedId }).strict(),
+  modelOverride: modelOverrideSchema.optional(),
 }).strict();
 export const launchCompletionOutputSchema = z.object({ threadId: boundedId }).strict();
 
@@ -745,7 +758,7 @@ export const listTasksInputSchema = z
 export const getTaskInputSchema = z.object({ taskId: z.string().min(1) }).strict();
 export const archiveTaskInputSchema = z.object({ taskId: z.string().min(1) }).strict();
 export const launchDraftInputSchema = z.object({ taskId: z.string().min(1) }).strict();
-export const proceedInputSchema = z.object({ threadId: z.string().min(1) }).strict();
+export const proceedInputSchema = z.object({ threadId: z.string().min(1), modelOverride: modelOverrideSchema.optional() }).strict();
 export const launchSkillInputSchema = z.object({
   taskId: z.string().min(1),
   skillId: z.string().min(1),

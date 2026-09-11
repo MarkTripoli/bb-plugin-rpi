@@ -14,7 +14,9 @@
     },
     "server": "./server.ts",
     "app": "./app.tsx",
-    "skills": ["skills"]
+    "skills": [
+      "skills"
+    ]
   },
   "license": "MIT",
   "files": [
@@ -50,7 +52,7 @@
     "check:features": "tsx scripts/check-features.ts"
   },
   "devDependencies": {
-    "@get-bb/plugin-sdk": "0.4.34",
+    "@get-bb/plugin-sdk": "0.4.47",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",

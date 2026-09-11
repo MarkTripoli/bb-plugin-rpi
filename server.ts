@@ -637,16 +637,16 @@ export default async function plugin(bb: BbPluginApi) {
 	        return { status: "rejected" as const, rejection };
 	      }
 	    },
-	    proceed: async ({ threadId }) => {
-	      return proceed(bb, db, sessionMirror, launchBindings, threadId);
+	    proceed: async ({ threadId, modelOverride }) => {
+	      return proceed(bb, db, sessionMirror, launchBindings, threadId, modelOverride);
 	    },
 	    launchSkill: async ({ taskId, skillId, commandLine }) => {
 	      return launchSkill(bb, db, sessionMirror, launchBindings, taskId, skillId, commandLine ?? null);
 	    },
-	    iterateInFreshSession: async ({ threadId }) => {
-	      return iterateInFreshSession(bb, db, sessionMirror, launchBindings, threadId);
+	    iterateInFreshSession: async ({ threadId, modelOverride }) => {
+	      return iterateInFreshSession(bb, db, sessionMirror, launchBindings, threadId, modelOverride);
 	    },
-    launchCompletion: async ({ intent }) => launchCompletion(bb, db, sessionMirror, launchBindings, intent),
+    launchCompletion: async ({ intent, modelOverride }) => launchCompletion(bb, db, sessionMirror, launchBindings, intent, modelOverride),
     listSessions: async ({ taskId }) => ({
       sessions: listSessions(db, taskId ?? null).map((session) => cachedSessionView(db, threadInfoCache, session, contextWarningPrefs)),
     }),

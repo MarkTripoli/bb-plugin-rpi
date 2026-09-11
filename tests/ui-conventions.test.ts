@@ -57,7 +57,7 @@ test("manual quick actions use the reviewable composer boundary", () => {
   assert.equal((content.match(/rpc\.call\("prepareManualLaunch"/g) ?? []).length, 1, "only ManualLaunchComposerPage prepares a launch");
   assert.equal((content.match(/rpc\.call\("submitManualLaunch"/g) ?? []).length, 1, "only ManualLaunchComposerPage submits a launch");
   for (const method of ["proceed", "launchCompletion", "iterateInFreshSession"]) {
-    assert.equal((content.match(new RegExp(`rpc\\.call\\("${method}"`, "g")) ?? []).length, 1, `${method} is the one-click banner launch path`);
+    assert.equal((content.match(new RegExp(`rpc\\.call\\("${method}"`, "g")) ?? []).length, 1, `${method} is called once, from the banner's launch paths (direct one-click iterate, dialog for the rest)`);
   }
   assert.match(content, /experimental_NewThreadComposer as NewThreadComposer/);
   assert.match(content, /<NewThreadComposer/);
@@ -67,8 +67,8 @@ test("manual quick actions use the reviewable composer boundary", () => {
 test("phase completion owns continuation actions", () => {
   assert.match(content, /completionActionsForSession\(session/);
   assert.match(content, /buildManualLaunchRoute\(intent\)/);
-  assert.match(content, /intent\.kind === "completion"/);
-  assert.match(content, /rpc\.call\("launchCompletion"/);
+  assert.match(content, /pendingIntent\.kind === "completion"|pending\.intent\.kind === "completion"/);
+  assert.match(content, /modelOverride/);
 
   const headerStart = content.indexOf("export function RpiThreadHeaderAction");
   const bannerStart = content.indexOf("export function RpiComposerBanner", headerStart);
