@@ -280,7 +280,7 @@ function parseNextStepDetails(nextStepJson: string | null): ParsedNextStep | nul
 }
 
 export type CompletionAction = {
-  id: "continue" | "review" | "fix-review" | "create-pr" | "resolve-pr" | "iterate" | "agent-suggestion";
+  id: "continue" | "implement-phase" | "review" | "fix-review" | "create-pr" | "resolve-pr" | "iterate" | "agent-suggestion";
   label: string;
   emphasis: "primary" | "secondary";
   intent: ManualLaunchIntent;
@@ -293,13 +293,23 @@ export type CompletionActionsResult = {
 };
 
 type CompletionSessionFields = SuggestedNextSessionFields & { threadId: string };
-type CompletionCatalogEntry = Omit<CompletionAction, "intent"> & { skillId: SkillId | null };
+type CompletionCatalogEntry = Omit<CompletionAction, "intent"> & { skillId: SkillId | null; forceCompletion?: boolean };
+type PlanWorkflowType = "rpi" | "prd_tdd";
 
 function titleCaseButtonText(buttonText: string) {
   return buttonText.length > 0 ? `${buttonText[0]!.toUpperCase()}${buttonText.slice(1)}` : buttonText;
 }
 
-function completionCatalog(label: PhaseLabel | null, workflowType: string): CompletionCatalogEntry[] {
+export type PlanPhaseHint = {
+  phase: number;
+  title: string;
+};
+
+function completionCatalog(
+  label: PhaseLabel | null,
+  workflowType: string,
+  nextPlanPhase?: PlanPhaseHint | null,
+): CompletionCatalogEntry[] {
   const iterate = label ? ITERATE_SKILL_BY_LABEL[label] : undefined;
   const iterateEntry = {
     id: "iterate" as const,
@@ -309,9 +319,20 @@ function completionCatalog(label: PhaseLabel | null, workflowType: string): Comp
   };
 
   if (label === "implementation") {
+    const planPhased = (workflowType as PlanWorkflowType) === "rpi" || (workflowType as PlanWorkflowType) === "prd_tdd";
+    const implementPhase = planPhased && nextPlanPhase
+      ? [{
+          id: "implement-phase" as const,
+          label: `Implement Phase ${nextPlanPhase.phase}`,
+          emphasis: "primary" as const,
+          skillId: "implement-plan" as SkillId,
+          forceCompletion: true,
+        }]
+      : [];
     return [
-      { id: "review", label: "Review code", emphasis: "primary", skillId: "review-code" },
-      { id: "create-pr", label: "Create pull request", emphasis: "secondary", skillId: "describe-pr" },
+      ...implementPhase,
+      { id: "review", label: "Review code", emphasis: implementPhase.length > 0 ? "secondary" as const : "primary" as const, skillId: "review-code" },
+      { id: "create-pr", label: "Create pull request", emphasis: "secondary" as const, skillId: "describe-pr" },
       iterateEntry,
     ];
   }
@@ -354,18 +375,23 @@ function completionCatalog(label: PhaseLabel | null, workflowType: string): Comp
 
 export function completionActionsForSession(
   session: CompletionSessionFields,
-  options: { activeAttempt: boolean; successorThreadId: string | null } = { activeAttempt: false, successorThreadId: null },
+  options: {
+    activeAttempt?: boolean;
+    successorThreadId?: string | null;
+    nextPlanPhase?: PlanPhaseHint | null;
+  } = {},
 ): CompletionActionsResult | null {
+  const { activeAttempt = false, successorThreadId = null, nextPlanPhase = null } = options;
   if (session.rpiStatus !== "ready_for_input" || session.blockedReason || !completedTurnIsProcessed(session)) return null;
   const label = normalizePhaseLabel(session.label) as PhaseLabel | null;
-  const catalog = completionCatalog(label, session.workflowType);
+  const catalog = completionCatalog(label, session.workflowType, nextPlanPhase);
   if (catalog.length === 0) return null;
-  if (options.successorThreadId) return { state: "replaced", actions: [], successorThreadId: options.successorThreadId };
+  if (successorThreadId) return { state: "replaced", actions: [], successorThreadId };
 
   const extraction = parseNextStepDetails(session.nextStepJson);
-  const actions = catalog.map(({ skillId, ...descriptor }) => ({
+  const actions = catalog.map(({ skillId, forceCompletion, ...descriptor }) => ({
     ...descriptor,
-    intent: extraction?.nextStepType === skillId && skillId
+    intent: !forceCompletion && extraction?.nextStepType === skillId && skillId
       ? { kind: "proceed" as const, threadId: session.threadId }
       : descriptor.id === "iterate"
         ? { kind: "iterate" as const, threadId: session.threadId }
@@ -380,7 +406,7 @@ export function completionActionsForSession(
     });
   }
   return {
-    state: options.activeAttempt ? "blocked" : "available",
+    state: activeAttempt ? "blocked" : "available",
     actions,
     successorThreadId: null,
   };

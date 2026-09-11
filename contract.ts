@@ -211,6 +211,11 @@ export const submitManualLaunchOutputSchema = z.discriminatedUnion("status", [
   }).strict(),
 ]);
 
+export const launchCompletionInputSchema = z.object({
+  intent: z.object({ kind: z.literal("completion"), threadId: boundedId, skillId: boundedId }).strict(),
+}).strict();
+export const launchCompletionOutputSchema = z.object({ threadId: boundedId }).strict();
+
 export const taskRowSchema = z
   .object({
     id: z.string(),
@@ -886,6 +891,10 @@ export const rpcContract = defineRpcContract({
   submitManualLaunch: {
     input: submitManualLaunchInputSchema,
     output: submitManualLaunchOutputSchema,
+  },
+  launchCompletion: {
+    input: launchCompletionInputSchema,
+    output: launchCompletionOutputSchema,
   },
   proceed: {
     input: proceedInputSchema,

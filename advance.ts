@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type * as BetterSqlite3 from "better-sqlite3";
 import { parseJson, readRow, writeRow } from "./db";
+import { getArtifactVersion, listArtifacts } from "./artifacts";
+import { latestPlanArtifact, nextIncompletePlanPhase, type PlanPhaseHint } from "./plan-phases";
 import { manualLaunchRequestSchema, type ManualLaunchIntent, type ManualLaunchRequest, type PreparedManualLaunch, type SessionRow, type TaskRecord } from "./contract";
 import type { NextStepSuggestions } from "./extraction";
 import {
@@ -263,6 +265,46 @@ export async function submitManualLaunch(
   });
 }
 
+// One-click launch behind the phase-complete banner's actions (Implement Phase N, Review code,
+// Create pull request): same resolution and advance claim as submitManualLaunch, but the spawn
+// uses the task's own execution defaults instead of a composer-submitted request. Per-task lock
+// and launch-attempt guards are identical to the other launch entry points.
+export async function launchCompletion(
+  bb: BbPluginApi,
+  db: Database,
+  mirror: Map<string, SessionMirrorRow>,
+  bindings: LaunchBindingMirror,
+  intent: Extract<ManualLaunchIntent, { kind: "completion" }>,
+) {
+  const taskId = taskIdForManualIntent(db, intent);
+  return withTaskLock(taskId, async () => {
+    const resolved = await resolveManualIntent(bb, db, intent);
+    const freshTask = manualTaskRecord(db, resolved.task.id);
+    if (freshTask.archived) throw new LaunchRejectedError("task_archived", "Task is archived.");
+    const authorized = { ...resolved, task: freshTask };
+    let attemptId: string | undefined;
+    if (authorized.advance) {
+      const attempted = claimAdvanceAndAttempt(db, freshTask, authorized.advance.session, authorized.advance.target, "completion");
+      if (!attempted) throw new LaunchRejectedError("stale_intent", "This phase action is stale. Reopen it from the source session.");
+      attemptId = attempted.attemptId;
+    }
+    return launchPhase(bb, db, mirror, bindings, freshTask, {
+      skillId: authorized.skillId,
+      commandLine: authorized.commandLine,
+      prompt: authorized.prompt,
+      launchedBy: authorized.launchedBy,
+      fromThreadId: authorized.fromThreadId,
+      attemptId,
+    }).then((result) => {
+      if (freshTask.isDraft) {
+        writeRow(db, "UPDATE tasks SET is_draft = 0, updated_at = ? WHERE id = ?", Date.now(), freshTask.id);
+        bb.realtime.publish("tasks", { taskId: freshTask.id });
+      }
+      return result;
+    });
+  });
+}
+
 export function manualLaunchRejection(error: unknown) {
   if (!(error instanceof LaunchRejectedError)) return null;
   const code = error.code === "project_mismatch" || error.code === "workspace_mismatch"
@@ -313,7 +355,8 @@ async function resolveManualIntent(bb: BbPluginApi, db: Database, intent: Manual
     const task = manualTaskRecord(db, session.taskId);
     const sourceError = await validateCompletionSource(bb, db, task, session);
     if (sourceError) throw sourceError;
-    const projection = completionActionsForSession({ ...session, workflowType: task.workflowType }, { activeAttempt: false, successorThreadId: successorFor(db, session.threadId) });
+    const nextPlanPhase = taskNextPlanPhase(db, task.id);
+    const projection = completionActionsForSession({ ...session, workflowType: task.workflowType }, { activeAttempt: false, successorThreadId: successorFor(db, session.threadId), nextPlanPhase });
     const action = projection?.actions.find((candidate) =>
       candidate.intent.kind === "completion" && candidate.intent.skillId === intent.skillId,
     );
@@ -362,6 +405,21 @@ function manualTaskRecord(db: Database, taskId: string) {
   const result = getTask(db, taskId);
   if (!result) throw new LaunchRejectedError("stale_intent", "This RPI task no longer exists. Reopen the action from the task list.");
   return result.task;
+}
+
+// Server-side mirror of the banner's own derivation: reads the task's newest plan artifact and
+// parses its phase markers, so launchCompletion validates the same "Implement Phase N" action
+// the UI computed. Any read/parse failure degrades to null (no phase action), never throws.
+function taskNextPlanPhase(db: Database, taskId: string): PlanPhaseHint | null {
+  try {
+    const plan = latestPlanArtifact(listArtifacts(db, taskId));
+    if (!plan) return null;
+    const version = getArtifactVersion(db, taskId, plan.fileName);
+    if (!version) return null;
+    return nextIncompletePlanPhase(version.version.content.toString("utf8"));
+  } catch {
+    return null;
+  }
 }
 
 function manualLaunchStateToken(db: Database, intent: ManualLaunchIntent, resolved: ResolvedManualLaunch) {

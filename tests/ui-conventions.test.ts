@@ -54,19 +54,21 @@ test("manual quick actions use the reviewable composer boundary", () => {
   }
 
   assert.equal((content.match(/rpc\.call\("launchDraft"/g) ?? []).length, 1, "only New task Create and start may call launchDraft");
-  for (const method of ["launchSkill", "proceed", "iterateInFreshSession"]) {
-    assert.equal(content.includes(`rpc.call("${method}"`), false, `${method} bypasses the prepared composer`);
+  assert.equal((content.match(/rpc\.call\("prepareManualLaunch"/g) ?? []).length, 1, "only ManualLaunchComposerPage prepares a launch");
+  assert.equal((content.match(/rpc\.call\("submitManualLaunch"/g) ?? []).length, 1, "only ManualLaunchComposerPage submits a launch");
+  for (const method of ["proceed", "launchCompletion", "iterateInFreshSession"]) {
+    assert.equal((content.match(new RegExp(`rpc\\.call\\("${method}"`, "g")) ?? []).length, 1, `${method} is the one-click banner launch path`);
   }
   assert.match(content, /experimental_NewThreadComposer as NewThreadComposer/);
   assert.match(content, /<NewThreadComposer/);
-  assert.equal((content.match(/rpc\.call\("submitManualLaunch"/g) ?? []).length, 1);
   assert.match(content, /catch \(error\) \{\s*reportLaunchError\(error\);\s*throw error;/);
 });
 
 test("phase completion owns continuation actions", () => {
   assert.match(content, /completionActionsForSession\(session/);
-  assert.match(content, /buildManualLaunchRoute\(action\.intent\)/);
+  assert.match(content, /buildManualLaunchRoute\(intent\)/);
   assert.match(content, /intent\.kind === "completion"/);
+  assert.match(content, /rpc\.call\("launchCompletion"/);
 
   const headerStart = content.indexOf("export function RpiThreadHeaderAction");
   const bannerStart = content.indexOf("export function RpiComposerBanner", headerStart);

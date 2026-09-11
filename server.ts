@@ -32,6 +32,7 @@ import { normalizeModelCatalog, type RawProviderModelsResponse } from "./models"
 import {
   iterateInFreshSession,
   latestLaunchAttemptLabel,
+  launchCompletion,
   launchSkill,
   manualLaunchRejection,
   onCompletedTurn,
@@ -645,6 +646,7 @@ export default async function plugin(bb: BbPluginApi) {
 	    iterateInFreshSession: async ({ threadId }) => {
 	      return iterateInFreshSession(bb, db, sessionMirror, launchBindings, threadId);
 	    },
+    launchCompletion: async ({ intent }) => launchCompletion(bb, db, sessionMirror, launchBindings, intent),
     listSessions: async ({ taskId }) => ({
       sessions: listSessions(db, taskId ?? null).map((session) => cachedSessionView(db, threadInfoCache, session, contextWarningPrefs)),
     }),

@@ -36,7 +36,8 @@ import type {
   CommentThreadRecord,
 } from "../contract";
 import { modelDisplay, modelOptionValue, parseModelOptionValue } from "../models";
-import { AUTO_ADVANCE, BOARD_COLUMNS, FIRST_SKILL_BY_WORKFLOW, SKILL_BY_ID, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS, completionActionsForSession } from "../transitions";
+import { AUTO_ADVANCE, BOARD_COLUMNS, FIRST_SKILL_BY_WORKFLOW, SKILL_BY_ID, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS, completionActionsForSession, normalizePhaseLabel, type CompletionAction } from "../transitions";
+import { latestPlanArtifact, nextIncompletePlanPhase, type PlanPhaseHint } from "../plan-phases";
 import { ARTIFACT_COMMENTS_WIDTH_RANGE, ARTIFACT_LIST_WIDTH_RANGE, ARTIFACT_PANEL_STACK_BREAKPOINT, artifactLayoutMode, clampWidth } from "../artifact-layout";
 import {
   PHASE_DESCRIPTIONS,
@@ -4917,6 +4918,11 @@ export function RpiComposerBanner() {
   const threadId = view.scope.kind === "thread" ? view.scope.threadId : null;
   const { session, uiState, setUiState, launchAttempts } = useRpiSessionState(threadId);
   const [pendingIterateConfirm, setPendingIterateConfirm] = useState(false);
+  const [launchingActionId, setLaunchingActionId] = useState<string | null>(null);
+  // The task's next incomplete plan phase, derived from the newest plan artifact. Non-null only
+  // when the plan marks earlier phases complete with checked acceptance boxes, so the banner can
+  // offer "Implement Phase N" as a one-click continuation of /rpi-implement-plan.
+  const [nextPlanPhase, setNextPlanPhase] = useState<PlanPhaseHint | null>(null);
   // The session view (getSession) does not carry the task's providerId/model/reasoningLevel, so
   // the compact model control below fetches the task itself; "tasks" is the same realtime channel
   // updateTask publishes on, so a change from the task Settings tab shows up here too.
@@ -4947,6 +4953,30 @@ export function RpiComposerBanner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bannerTask?.hostId]);
 
+  const phaseLabel = session ? normalizePhaseLabel(session.label) : null;
+  const planPhaseWorkflow = session?.workflowType === "rpi" || session?.workflowType === "prd_tdd";
+  useEffect(() => {
+    setNextPlanPhase(null);
+    if (!threadId || !session || phaseLabel !== "implementation" || !planPhaseWorkflow) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { artifacts } = await rpc.call("listArtifacts", { taskId: session.taskId });
+        const plan = latestPlanArtifact(artifacts);
+        if (!plan || cancelled) return;
+        const { content } = await rpc.call("getArtifact", { taskId: session.taskId, fileName: plan.fileName });
+        if (cancelled || !content) return;
+        setNextPlanPhase(nextIncompletePlanPhase(content));
+      } catch {
+        if (!cancelled) setNextPlanPhase(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threadId, session?.taskId, phaseLabel, session?.workflowType, session?.rpiStatus, session?.completedTurnKey]);
+
   const saveBannerModel = async (next: ModelSelectValue) => {
     if (!bannerTask) return;
     const { task: updated } = await rpc.call("updateTask", {
@@ -4971,16 +5001,46 @@ export function RpiComposerBanner() {
   const completion = completionActionsForSession(session, {
     activeAttempt: Boolean(activeAttempt),
     successorThreadId,
+    nextPlanPhase,
   });
   if (!completion && (!contextWarn || contextWarningDismissed)) return null;
 
-  const runIterate = () => navigate.toPluginPanel("rpi", { subPath: buildManualLaunchRoute({ kind: "iterate", threadId }) });
+  const launchIterateDirect = async () => {
+    try {
+      const result = await rpc.call("iterateInFreshSession", { threadId });
+      navigate.toThread(result.threadId);
+    } catch (error) {
+      reportLaunchError(error);
+    }
+  };
   const iterate = () => {
     if (settings?.showIterateConfirmation !== false) {
       setPendingIterateConfirm(true);
       return;
     }
-    runIterate();
+    void launchIterateDirect();
+  };
+  const runAction = (action: CompletionAction) => {
+    if (action.intent.kind === "iterate") {
+      void launchIterateDirect();
+      return;
+    }
+    const intent = action.intent;
+    setLaunchingActionId(action.id);
+    void (async () => {
+      try {
+        const result = intent.kind === "proceed"
+          ? await rpc.call("proceed", { threadId: intent.threadId })
+          : intent.kind === "completion"
+            ? await rpc.call("launchCompletion", { intent })
+            : null;
+        if (result?.threadId) navigate.toThread(result.threadId);
+      } catch (error) {
+        reportLaunchError(error);
+      } finally {
+        setLaunchingActionId(null);
+      }
+    })();
   };
 
   return (
@@ -5010,17 +5070,13 @@ export function RpiComposerBanner() {
                   type="button"
                   variant={action.emphasis === "primary" ? "default" : "outline"}
                   className="h-7 max-w-full px-2 text-xs"
-                  disabled={completion.state === "blocked"}
+                  disabled={completion.state === "blocked" || launchingActionId !== null}
                   aria-label={action.id === "agent-suggestion" ? "Agent suggestion" : action.label}
-                  onClick={() => {
-                    if (action.intent.kind === "iterate") {
-                      iterate();
-                      return;
-                    }
-                    navigate.toPluginPanel("rpi", { subPath: buildManualLaunchRoute(action.intent) });
-                  }}
+                  onClick={() => runAction(action)}
                 >
-                  <span className="truncate">{action.id === "agent-suggestion" ? "Agent suggestion" : action.label}</span>
+                  <span className="truncate" title={action.id === "implement-phase" && nextPlanPhase?.title ? nextPlanPhase.title : undefined}>
+                    {action.id === "agent-suggestion" ? "Agent suggestion" : action.label}
+                  </span>
                 </Button>
               ))}
               {completion.state === "blocked" && activeAttempt ? (
@@ -5088,7 +5144,7 @@ export function RpiComposerBanner() {
         title="Start a fresh session?"
         description="The current session keeps running."
         confirmLabel="Iterate"
-        onConfirm={runIterate}
+        onConfirm={() => void launchIterateDirect()}
       />
     </div>
     </TooltipProvider>
