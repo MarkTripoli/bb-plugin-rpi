@@ -3,7 +3,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type * as BetterSqlite3 from "better-sqlite3";
 import { parseJson, readRow, writeRow } from "./db";
 import { getArtifactVersion, listArtifacts } from "./artifacts";
-import { latestPlanArtifact, nextIncompletePlanPhase, type PlanPhaseHint } from "./plan-phases";
+import { latestImplementationReceipt, latestPlanArtifact, nextImplementablePlanPhase, type PlanPhaseHint } from "./plan-phases";
 import { manualLaunchRequestSchema, type ManualLaunchIntent, type ManualLaunchRequest, type PreparedManualLaunch, type SessionRow, type TaskRecord } from "./contract";
 import type { NextStepSuggestions } from "./extraction";
 import {
@@ -412,11 +412,14 @@ function manualTaskRecord(db: Database, taskId: string) {
 // the UI computed. Any read/parse failure degrades to null (no phase action), never throws.
 function taskNextPlanPhase(db: Database, taskId: string): PlanPhaseHint | null {
   try {
-    const plan = latestPlanArtifact(listArtifacts(db, taskId));
+    const artifacts = listArtifacts(db, taskId);
+    const plan = latestPlanArtifact(artifacts);
     if (!plan) return null;
-    const version = getArtifactVersion(db, taskId, plan.fileName);
-    if (!version) return null;
-    return nextIncompletePlanPhase(version.version.content.toString("utf8"));
+    const planContent = getArtifactVersion(db, taskId, plan.fileName)?.version.content.toString("utf8") ?? null;
+    if (planContent === null) return null;
+    const receipt = latestImplementationReceipt(artifacts);
+    const receiptContent = receipt ? getArtifactVersion(db, taskId, receipt.fileName)?.version.content.toString("utf8") ?? null : null;
+    return nextImplementablePlanPhase(planContent, receiptContent);
   } catch {
     return null;
   }

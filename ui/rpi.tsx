@@ -37,7 +37,7 @@ import type {
 } from "../contract";
 import { modelDisplay, modelOptionValue, parseModelOptionValue } from "../models";
 import { AUTO_ADVANCE, BOARD_COLUMNS, FIRST_SKILL_BY_WORKFLOW, SKILL_BY_ID, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS, completionActionsForSession, normalizePhaseLabel, type CompletionAction } from "../transitions";
-import { latestPlanArtifact, nextIncompletePlanPhase, type PlanPhaseHint } from "../plan-phases";
+import { latestImplementationReceipt, latestPlanArtifact, nextImplementablePlanPhase, type PlanPhaseHint } from "../plan-phases";
 import { ARTIFACT_COMMENTS_WIDTH_RANGE, ARTIFACT_LIST_WIDTH_RANGE, ARTIFACT_PANEL_STACK_BREAKPOINT, artifactLayoutMode, clampWidth } from "../artifact-layout";
 import {
   PHASE_DESCRIPTIONS,
@@ -4966,7 +4966,12 @@ export function RpiComposerBanner() {
         if (!plan || cancelled) return;
         const { content } = await rpc.call("getArtifact", { taskId: session.taskId, fileName: plan.fileName });
         if (cancelled || !content) return;
-        setNextPlanPhase(nextIncompletePlanPhase(content));
+        const receipt = latestImplementationReceipt(artifacts);
+        const receiptContent = receipt
+          ? (await rpc.call("getArtifact", { taskId: session.taskId, fileName: receipt.fileName })).content
+          : null;
+        if (cancelled) return;
+        setNextPlanPhase(nextImplementablePlanPhase(content, receiptContent));
       } catch {
         if (!cancelled) setNextPlanPhase(null);
       }

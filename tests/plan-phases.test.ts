@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { latestPlanArtifact, nextIncompletePlanPhase, parsePlanPhases } from "../plan-phases";
+import {
+  latestImplementationReceipt,
+  latestPlanArtifact,
+  nextImplementablePlanPhase,
+  nextIncompletePlanPhase,
+  parsePlanPhases,
+  receiptPhaseRange,
+} from "../plan-phases";
 
 const PLAN = `---
 task: eng-demo
@@ -82,4 +89,60 @@ test("latestPlanArtifact picks the most recently updated plan artifact", () => {
   ];
   assert.equal(latestPlanArtifact(artifacts)?.fileName, "03-plan-c.md");
   assert.equal(latestPlanArtifact([{ fileName: "05-research-y.md", groupType: "research", updatedAt: 5 }]), null);
+});
+
+const RECEIPT = `---
+task: GHI-163
+type: implementation
+status: complete
+summary: "Records Phase 1; notes that Phase 2 must build on the verified worktree state."
+---
+
+# Phase 1 Implementation Receipt
+
+## Source
+
+- Task: GHI-163
+- Plan artifact: 04-plan-ui-enforcement.md
+- Phase range: Phase 1, items 1.1 through 1.4
+`;
+
+test("receiptPhaseRange reads only the receipt heading and phase-range line", () => {
+  assert.equal(receiptPhaseRange(RECEIPT), 1);
+  assert.equal(receiptPhaseRange("# Phase 3 Implementation Summary\n\n## Source\n- phase range: Phases 1-3\n"), 3);
+  assert.equal(receiptPhaseRange("no receipt markers"), null);
+  assert.equal(receiptPhaseRange("- phase range: items 1.1 through 1.4, no phase word"), null);
+});
+
+test("latestImplementationReceipt picks the newest implementation artifact by type", () => {
+  const artifacts = [
+    { fileName: "05-implementation-a.md", type: "implementation", updatedAt: 10 },
+    { fileName: "07-implementation-b.md", type: "implementation", updatedAt: 70 },
+    { fileName: "06-plan-c.md", type: "plan", updatedAt: 60 },
+    { fileName: "04-plan-d.md", type: "other", updatedAt: 40 },
+  ];
+  assert.equal(latestImplementationReceipt(artifacts)?.fileName, "07-implementation-b.md");
+  assert.equal(latestImplementationReceipt([{ fileName: "x.md", type: "plan", updatedAt: 5 }]), null);
+});
+
+const RECEIPT_PLAN = `## Phase 1: Scaffold
+
+- [ ] npm test
+
+## Phase 2: Wire server
+
+- [ ] npm test
+`;
+
+test("nextImplementablePlanPhase trusts the receipt range over unticked checkboxes", () => {
+  assert.deepEqual(nextImplementablePlanPhase(RECEIPT_PLAN, RECEIPT), { phase: 2, title: "Wire server" });
+  const noNext = RECEIPT_PLAN.replace("## Phase 2: Wire server\n\n- [ ] npm test\n", "");
+  assert.equal(nextImplementablePlanPhase(noNext, RECEIPT), null);
+});
+
+test("nextImplementablePlanPhase falls back to checked boxes when no receipt exists", () => {
+  const plan = `${RECEIPT_PLAN.replace("- [ ] npm test\n", "- [x] npm test\n")}`;
+  assert.deepEqual(nextImplementablePlanPhase(plan, null), { phase: 2, title: "Wire server" });
+  assert.equal(nextImplementablePlanPhase(RECEIPT_PLAN, null), null);
+  assert.equal(nextImplementablePlanPhase("no phases", null), null);
 });

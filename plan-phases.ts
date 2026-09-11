@@ -55,9 +55,37 @@ export function nextIncompletePlanPhase(content: string): PlanPhaseHint | null {
   return { phase: next.phase, title };
 }
 
-export function latestPlanArtifact<T extends { groupType: string; updatedAt: number; fileName: string }>(
-  artifacts: T[],
-): T | null {
+// The phase range a completed implementation receipt claims, parsed from its H1 heading
+// ("# Phase 1 Implementation Receipt") and its "Phase range:" source line only. Frontmatter
+// summaries and body prose deliberately mention later phases ("Phase 2 must build on..."),
+// so everything outside those two shapes is ignored; sub-item numbers like "items 1.1" are
+// skipped because they never follow the word "Phase" directly.
+export function receiptPhaseRange(content: string): number | null {
+  const body = content.replace(/^---\n[\s\S]*?\n---\n/, "");
+  let max: number | null = null;
+  const consider = (phase: number) => {
+    if (Number.isFinite(phase) && (max === null || phase > max)) max = phase;
+  };
+  for (const line of body.split("\n")) {
+    const heading = /^#\s+Phase\s+(\d+)(?![.\d])/.exec(line);
+    if (heading) consider(Number.parseInt(heading[1]!, 10));
+    const range = /^[-*]\s*[Pp]hase range:\s*(.*)$/.exec(line);
+    if (range) {
+      for (const match of range[1]!.matchAll(/Phase\s+(\d+)(?![.\d])/g)) {
+        consider(Number.parseInt(match[1]!, 10));
+      }
+    }
+  }
+  return max;
+}
+
+export type LatestPlanArtifactInput = {
+  groupType: string;
+  updatedAt: number;
+  fileName: string;
+};
+
+export function latestPlanArtifact<T extends LatestPlanArtifactInput>(artifacts: T[]): T | null {
   const plans = artifacts.filter((artifact) => artifact.groupType === "plan");
   if (plans.length === 0) return null;
   return plans.reduce((latest, artifact) => {
@@ -65,6 +93,44 @@ export function latestPlanArtifact<T extends { groupType: string; updatedAt: num
     if (artifact.updatedAt < latest.updatedAt) return latest;
     return parseArtifactNumber(artifact.fileName) > parseArtifactNumber(latest.fileName) ? artifact : latest;
   });
+}
+
+export type LatestReceiptArtifactInput = {
+  type: string;
+  updatedAt: number;
+  fileName: string;
+};
+
+export function latestImplementationReceipt<T extends LatestReceiptArtifactInput>(artifacts: T[]): T | null {
+  const receipts = artifacts.filter((artifact) => artifact.type === "implementation");
+  if (receipts.length === 0) return null;
+  return receipts.reduce((latest, artifact) => (artifact.updatedAt > latest.updatedAt ? artifact : latest));
+}
+
+// Launch target for the "Implement Phase N" banner action. The newest implementation receipt's
+// claimed phase range is authoritative when present (Phase N done, so offer N+1 when the plan
+// has it); otherwise the plan's own acceptance-checkbox markers decide, but only from Phase 2
+// upward: an unticked Phase 1 on a task whose implementation session just finished a turn is
+// indistinguishable from a plan whose boxes were never ticked, so it never launches a guess.
+export function nextImplementablePlanPhase(
+  planContent: string,
+  receiptContent: string | null,
+): PlanPhaseHint | null {
+  const phases = parsePlanPhases(planContent);
+  if (phases.length === 0) return null;
+  const receiptPhase = receiptContent === null ? null : receiptPhaseRange(receiptContent);
+  if (receiptPhase !== null) {
+    const next = phases.find((phase) => phase.phase === receiptPhase + 1);
+    if (next) return { phase: next.phase, title: displayTitle(next.title) };
+    return null;
+  }
+  const next = phases.find((phase) => !phase.complete);
+  if (!next || next.phase <= 1) return null;
+  return { phase: next.phase, title: displayTitle(next.title) };
+}
+
+function displayTitle(title: string): string {
+  return /^\[.*\]$/.test(title) ? "" : title;
 }
 
 function parseArtifactNumber(fileName: string): number {
