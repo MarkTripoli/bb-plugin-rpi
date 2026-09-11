@@ -3,7 +3,9 @@ import type { DragEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent, MouseEv
 import {
   Markdown,
   experimental_NewThreadComposer as NewThreadComposer,
+  experimental_ProviderModelPicker as ProviderModelPicker,
   experimental_SourceCode as SourceCode,
+  experimental_useProviders,
   experimental_useSidebarThreadActions,
   experimental_useSidebarThreads,
   useBbContext,
@@ -13,15 +15,15 @@ import {
   useRpc,
   useSettings,
 } from "@get-bb/plugin-sdk/app";
-import type { NewThreadRequest, PluginSidebarThread, PluginThreadListProps } from "@get-bb/plugin-sdk/app";
+import type { ExperimentalProviderModelPickerValue, NewThreadRequest, PluginSidebarThread, PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type {
   ArtifactRecord,
   ArtifactVersionRecord,
   ContextWarningRule,
   LaunchAttemptRecord,
-  ListModelsOutput,
   ManualLaunchIntent,
+  ModelOverride,
   PreparedManualLaunch,
   Prefs,
   RpcContract,
@@ -35,7 +37,6 @@ import type {
   WorkspaceViewRecord,
   CommentThreadRecord,
 } from "../contract";
-import { modelDisplay, modelOptionValue, parseModelOptionValue } from "../models";
 import { AUTO_ADVANCE, BOARD_COLUMNS, FIRST_SKILL_BY_WORKFLOW, SKILL_BY_ID, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS, completionActionsForSession, normalizePhaseLabel, type CompletionAction } from "../transitions";
 import { latestImplementationReceipt, latestPlanArtifact, nextImplementablePlanPhase, type PlanPhaseHint } from "../plan-phases";
 import { ARTIFACT_COMMENTS_WIDTH_RANGE, ARTIFACT_LIST_WIDTH_RANGE, ARTIFACT_PANEL_STACK_BREAKPOINT, artifactLayoutMode, clampWidth } from "../artifact-layout";
@@ -1057,146 +1058,103 @@ function ComposerToolbarSelect({
 }
 
 // Page-lifetime cache of the model catalog, keyed by hostId ("" for "no host chosen yet"), so the
-// New task form, a task's Settings tab, and the composer banner's model popover share one
-// listModels fetch instead of each re-fetching bb's provider catalog. Never invalidated; a stale
-// entry only matters if a provider is installed/removed mid-session, and a full page reload (or a
-// hostId change, which is a fresh cache key) already covers that.
-const modelCatalogCache = new Map<string, Promise<ListModelsOutput>>();
-const FAILED_MODEL_CATALOG: ListModelsOutput = { providers: [], models: [], error: { code: "failed", providerId: "" } };
-
-function fetchModelCatalog(rpc: ReturnType<typeof useRpc<RpcContract>>, hostId: string | null): Promise<ListModelsOutput> {
-  const key = hostId ?? "";
-  let cached = modelCatalogCache.get(key);
-  if (!cached) {
-    cached = rpc.call("listModels", { hostId: hostId ?? null }).catch(() => FAILED_MODEL_CATALOG);
-    modelCatalogCache.set(key, cached);
-  }
-  return cached;
-}
-
 type ModelSelectValue = { providerId: string | null; model: string | null; reasoningLevel: string | null };
 
-// Shared model + reasoning-effort picker fed by bb's own provider catalog (listModels), used by
-// the New task form, a task's Settings tab, the composer banner's model popover, and the defaults
-// settings page, so "which models exist" is answered in exactly one place per PRODUCT.md #3.
-function ModelSelect({
+// Shared model picker backed by bb's own host-owned experimental_ProviderModelPicker (the same
+// live catalog, search, provider tabs, and reasoning controls as bb's composers), used by the
+// New task form, a task's Settings tab, the composer banner, and the defaults settings page, so
+// "which models exist" is answered by the host in exactly one way per PRODUCT.md #3. The native
+// picker only speaks a concrete provider/model/reasoning value, so where "unset" is a real option
+// (fall back to project defaults) a checkbox carries it; when the stored value is incomplete the
+// picker is seeded from listModels' default entry.
+function RpiModelPicker({
   hostId,
   value,
   onChange,
-  allowDefault = true,
-  defaultOptionLabel = "Default (from settings)",
-  size = "md",
-  label,
+  allowDefault = false,
+  defaultLabel = "Use bb's default model",
+  align = "start",
 }: {
   hostId: string | null;
   value: ModelSelectValue;
   onChange: (next: ModelSelectValue) => void;
   allowDefault?: boolean;
-  defaultOptionLabel?: string;
-  size?: "md" | "sm";
-  label: string;
+  defaultLabel?: string;
+  align?: "start" | "center" | "end";
 }) {
   const rpc = useRpc<RpcContract>();
-  const [catalog, setCatalog] = useState<ListModelsOutput | null>(null);
-  const selectId = useId();
-  const reasoningId = useId();
+  const [pickerValue, setPickerValue] = useState<ExperimentalProviderModelPickerValue | null>(null);
+  const isDefault = allowDefault && !(value.providerId && value.model);
 
   useEffect(() => {
+    if (isDefault) return;
+    if (value.providerId && value.model && value.reasoningLevel) {
+      setPickerValue({ providerId: value.providerId, model: value.model, reasoningLevel: value.reasoningLevel as ExperimentalProviderModelPickerValue["reasoningLevel"] });
+      return;
+    }
+    setPickerValue(null);
     let cancelled = false;
-    setCatalog(null);
-    fetchModelCatalog(rpc, hostId).then((result) => {
-      if (!cancelled) setCatalog(result);
+    rpc.call("listModels", { hostId }).then((catalog) => {
+      if (cancelled) return;
+      const match = value.model
+        ? (catalog.models.find((entry) => entry.model === value.model && (!value.providerId || entry.providerId === value.providerId))
+          ?? catalog.models.find((entry) => entry.model === value.model))
+        : undefined;
+      const entry = match ?? catalog.models.find((candidate) => candidate.isDefault) ?? catalog.models[0] ?? null;
+      if (!entry) return;
+      setPickerValue({
+        providerId: entry.providerId,
+        model: match ? match.model : entry.model,
+        reasoningLevel: (value.reasoningLevel ?? entry.defaultReasoningEffort ?? "high") as ExperimentalProviderModelPickerValue["reasoningLevel"],
+      });
+    }).catch(() => {
+      if (!cancelled) setPickerValue(null);
     });
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hostId]);
+    // Reseed only when the stored selection's identity or the routing changes; reasoning-only
+    // updates flow through onChange and the picker's own controlled state.
+  }, [isDefault, value.providerId, value.model, hostId, rpc]);
 
-  const selectClass = cn(
-    "w-full rounded-md border border-border bg-background px-2 text-sm text-foreground",
-    size === "sm" ? "h-8" : "h-9",
-  );
-
-  if (!catalog) {
+  if (isDefault) {
     return (
-      <div className="space-y-1">
-        <label htmlFor={selectId} className="block text-xs text-muted-foreground">{label}</label>
-        <select id={selectId} disabled className={selectClass}>
-          <option>Loading models...</option>
-        </select>
-      </div>
+      <label className="flex w-fit cursor-pointer items-center gap-2 py-1 text-sm font-medium text-foreground">
+        <Checkbox checked onCheckedChange={(checked) => { if (checked !== true) onChange({ providerId: null, model: null, reasoningLevel: null }); }} />
+        {defaultLabel}
+      </label>
     );
   }
-
-  if (catalog.error && catalog.models.length === 0) {
-    return (
-      <div className="space-y-1">
-        <label className="block text-xs text-muted-foreground">{label}</label>
-        <p className="text-xs text-muted-foreground">Could not load models from bb ({catalog.error.code})</p>
-      </div>
-    );
-  }
-
-  // researchModel (RpiDefaultsSettings) has no providerId of its own; when the caller passes one
-  // in with providerId null, match by model id alone so a saved bare model string still shows as
-  // known instead of falling into the "not available" branch below.
-  const selectedModel = value.model
-    ? (catalog.models.find((entry) => entry.providerId === value.providerId && entry.model === value.model) ??
-      (value.providerId === null ? catalog.models.find((entry) => entry.model === value.model) : undefined) ??
-      null)
-    : null;
-  const knownValue = value.providerId === null && value.model === null ? true : selectedModel !== null;
-  const selectValue = selectedModel ? modelOptionValue(selectedModel.providerId, selectedModel.model) : modelOptionValue(value.providerId, value.model);
-
   return (
     <div className="space-y-1">
-      <label htmlFor={selectId} className="block text-xs text-muted-foreground">{label}</label>
-      <select
-        id={selectId}
-        value={knownValue ? selectValue : "__unavailable"}
-        onChange={(event) => {
-          const parsed = parseModelOptionValue(event.target.value);
-          onChange({ providerId: parsed.providerId, model: parsed.model, reasoningLevel: null });
-        }}
-        className={selectClass}
-      >
-        {allowDefault ? <option value="">{defaultOptionLabel}</option> : null}
-        {!knownValue ? (
-          <option value="__unavailable" disabled>
-            {`${modelOptionValue(value.providerId, value.model) || `${value.providerId ?? ""}/${value.model ?? ""}`} (not available)`}
-          </option>
-        ) : null}
-        {catalog.providers.map((provider) => {
-          const providerModels = catalog.models.filter((entry) => entry.providerId === provider.id);
-          if (providerModels.length === 0) return null;
-          return (
-            <optgroup key={provider.id} label={provider.displayName}>
-              {providerModels.map((entry) => (
-                <option key={`${entry.providerId}/${entry.model}`} value={modelOptionValue(entry.providerId, entry.model)}>
-                  {entry.displayName}{entry.isDefault ? " (default)" : ""}
-                </option>
-              ))}
-            </optgroup>
-          );
-        })}
-      </select>
-      {selectedModel && selectedModel.reasoningEfforts.length > 0 ? (
-        <select
-          id={reasoningId}
-          aria-label={`${label} reasoning effort`}
-          value={value.reasoningLevel ?? ""}
-          onChange={(event) => onChange({ ...value, reasoningLevel: event.target.value || null })}
-          className={selectClass}
-        >
-          <option value="">Default</option>
-          {selectedModel.reasoningEfforts.map((effort) => (
-            <option key={effort} value={effort}>{capitalize(effort)}</option>
-          ))}
-        </select>
+      {allowDefault ? (
+        <label className="flex w-fit cursor-pointer items-center gap-2 py-1 text-sm font-medium text-foreground">
+          <Checkbox checked={false} onCheckedChange={(checked) => { if (checked) onChange({ providerId: null, model: null, reasoningLevel: null }); }} />
+          {defaultLabel}
+        </label>
       ) : null}
+      {pickerValue ? (
+        <ProviderModelPicker
+          value={pickerValue}
+          onChange={(next) => {
+            setPickerValue(next);
+            onChange({ providerId: next.providerId, model: next.model, reasoningLevel: next.reasoningLevel });
+          }}
+          routing={hostId ? { kind: "host", hostId } : undefined}
+          align={align}
+        />
+      ) : (
+        <span className="text-xs text-muted-foreground">Loading models...</span>
+      )}
     </div>
   );
+}
+
+// Display text for a stored provider/model value, using the host's provider directory
+// (experimental_useProviders) for the provider name. Falls back to the raw "providerId/model".
+function modelLabel(providers: ReadonlyArray<{ id: string; displayName: string }>, providerId: string, model: string): string {
+  const provider = providers.find((entry) => entry.id === providerId);
+  return provider ? `${provider.displayName} · ${model}` : `${providerId}/${model}`;
 }
 
 const PHASE_TIPS: Record<string, string[]> = {
@@ -1524,7 +1482,7 @@ function NewTaskPage({
                 </label>
                 <span id={autoAdvanceHintId} className="block">Phases chain automatically; you approve before implementation and before the optional review or PR.</span>
               </div>
-              <ModelSelect
+              <RpiModelPicker
                 hostId={hostId || null}
                 value={{ providerId, model, reasoningLevel }}
                 onChange={(next) => {
@@ -1533,7 +1491,6 @@ function NewTaskPage({
                   setReasoningLevel(next.reasoningLevel);
                 }}
                 allowDefault
-                label="Model"
               />
               <span className="block text-xs text-muted-foreground">Applies to every session of this task. You can change it later in the task's Settings tab.</span>
             </div>
@@ -1663,10 +1620,6 @@ function RecoverLaunchRow({ attempt, onResolved }: { attempt: LaunchAttemptRecor
       )}
     </div>
   );
-}
-
-function truncateForBanner(text: string): string {
-  return text.length > 22 ? `${text.slice(0, 22)}…` : text;
 }
 
 function capitalize(text: string): string {
@@ -1879,18 +1832,6 @@ const AUTO_ADVANCE_FLAGS = [
 // options resolved and keeps them; this only changes what the next launch uses.
 function TaskModelPanel({ task, onUpdated }: { task: TaskRecord; onUpdated: () => void }) {
   const rpc = useRpc<RpcContract>();
-  const [catalog, setCatalog] = useState<ListModelsOutput | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetchModelCatalog(rpc, task.hostId).then((result) => {
-      if (!cancelled) setCatalog(result);
-    });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [task.hostId]);
 
   const save = async (next: ModelSelectValue) => {
     await rpc.call("updateTask", { taskId: task.id, patch: { providerId: next.providerId, model: next.model, reasoningLevel: next.reasoningLevel } });
@@ -1900,15 +1841,14 @@ function TaskModelPanel({ task, onUpdated }: { task: TaskRecord; onUpdated: () =
 
   return (
     <div className="max-w-sm space-y-2">
-      <ModelSelect
+      <RpiModelPicker
         hostId={task.hostId}
         value={{ providerId: task.providerId, model: task.model, reasoningLevel: task.reasoningLevel }}
         onChange={(next) => void save(next)}
         allowDefault
-        label="Model"
       />
       <p className="text-xs text-muted-foreground">
-        Current: {catalog ? modelDisplay(catalog, task.providerId, task.model) : "..."} · used by every session launched from now on; running sessions keep theirs.
+        Used by every session launched from now on; running sessions keep theirs.
       </p>
     </div>
   );
@@ -3398,7 +3338,7 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
   const initializedFilterRef = useRef<string | null>(null);
   const [panelWidth, setRoot] = useElementWidth();
   const compact = panelWidth > 0 && panelWidth < 560;
-  const [modelCatalog, setModelCatalog] = useState<ListModelsOutput | null>(null);
+  const { providers } = experimental_useProviders();
 
   const refetch = () => {
     Promise.all([
@@ -3427,16 +3367,6 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
   useEffect(() => {
     if (artifactFileName) setTab("artifacts");
   }, [artifactFileName]);
-  useEffect(() => {
-    let cancelled = false;
-    fetchModelCatalog(rpc, task?.hostId ?? null).then((result) => {
-      if (!cancelled) setModelCatalog(result);
-    });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [task?.hostId]);
   useRealtime("tasks", refetch);
   useRealtime("rpi:sessions", refetch);
   useRealtime("rpi:ui-state", () => {
@@ -3526,7 +3456,7 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
             />
             <span aria-hidden="true">·</span>
             <TaskMetaTerm
-              text={task.providerId && task.model ? (modelCatalog ? modelDisplay(modelCatalog, task.providerId, task.model) : `${task.providerId}/${task.model}`) : "default model"}
+              text={task.providerId && task.model ? modelLabel(providers, task.providerId, task.model) : "default model"}
               hint="Model used for new sessions of this task; change it in Settings."
             />
           </p>
@@ -4634,25 +4564,23 @@ export function RpiDefaultsSettings() {
       </div>
       <div className="grid gap-3 lg:grid-cols-2">
         <div className="rounded-md border border-border bg-card p-3">
-          <ModelSelect
+          <RpiModelPicker
             hostId={null}
             value={{ providerId: prefs.defaults.providerId ?? null, model: prefs.defaults.model ?? null, reasoningLevel: prefs.defaults.reasoningLevel ?? null }}
             onChange={(next) => saveDefaults({ providerId: next.providerId, model: next.model, reasoningLevel: next.reasoningLevel })}
             allowDefault
-            defaultOptionLabel="bb default (the provider's choice)"
-            label="Default model"
+            defaultLabel="bb default (the provider's choice)"
           />
         </div>
         <div className="rounded-md border border-border bg-card p-3">
           {/* researchModel is a bare model string with no providerId of its own (see server.ts's
-              researchModelPreference); ModelSelect matches it by model id alone and this only ever
-              writes back the model half of what it reports. */}
-          <ModelSelect
+              researchModelPreference); RpiModelPicker seeds it by model id alone and this only ever
+              writes back the model half of what the native picker reports. */}
+          <RpiModelPicker
             hostId={null}
             value={{ providerId: null, model: prefs.defaults.researchModel ?? null, reasoningLevel: null }}
             onChange={(next) => saveDefaults({ researchModel: next.model })}
             allowDefault
-            label="Research subagent model"
           />
         </div>
       </div>
@@ -4674,13 +4602,11 @@ export function RpiDefaultsSettings() {
                   <tr key={option.value} className="border-b border-border last:border-b-0">
                     <td className="px-3 py-2 font-medium text-foreground">{option.label}</td>
                     <td className="min-w-[220px] px-3 py-2">
-                      <ModelSelect
+                      <RpiModelPicker
                         hostId={null}
                         value={{ providerId: override.providerId ?? null, model: override.model ?? null, reasoningLevel: override.reasoningLevel ?? null }}
                         onChange={(next) => saveWorkflow(option.value, { providerId: next.providerId, model: next.model, reasoningLevel: next.reasoningLevel })}
                         allowDefault
-                        size="sm"
-                        label={`${option.label} model`}
                       />
                     </td>
                     <td className="px-3 py-2">
@@ -4906,19 +4832,23 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
 }
 
 // Registered as the "next-step" banner in app.composer.customize's `rpi-session` customization
-// (app.tsx), scope "thread" only. Carries completion actions, the context-high notice, and the
-// next-session model picker. Renders null for every other composer scope kind and for a non-RPI
+// (app.tsx), scope "thread" only. Carries completion actions, the context-high notice, and a
+// read-only label of the model the launch composer will start from. Renders null for every other
+// composer scope kind and for a non-RPI
 // thread (`getSession` returns null), and hides entirely when neither completion actions nor the
 // independent context warning applies.
 export function RpiComposerBanner() {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
   const { values: settings } = useSettings();
+  const { providers } = experimental_useProviders();
   const view = useComposerView();
   const threadId = view.scope.kind === "thread" ? view.scope.threadId : null;
   const { session, uiState, setUiState, launchAttempts } = useRpiSessionState(threadId);
-  const [pendingIterateConfirm, setPendingIterateConfirm] = useState(false);
   const [launchingActionId, setLaunchingActionId] = useState<string | null>(null);
+  // Banner action awaiting the in-place launch prompt: a CompletionAction, or "iterate" from the
+  // context-high notice. Null means no dialog is open.
+  const [pendingAction, setPendingAction] = useState<CompletionAction | "iterate" | null>(null);
   // The task's next incomplete plan phase, derived from the newest plan artifact. Non-null only
   // when the plan marks earlier phases complete with checked acceptance boxes, so the banner can
   // offer "Implement Phase N" as a one-click continuation of /rpi-implement-plan.
@@ -4927,7 +4857,6 @@ export function RpiComposerBanner() {
   // the compact model control below fetches the task itself; "tasks" is the same realtime channel
   // updateTask publishes on, so a change from the task Settings tab shows up here too.
   const [bannerTask, setBannerTask] = useState<TaskRecord | null>(null);
-  const [bannerModelCatalog, setBannerModelCatalog] = useState<ListModelsOutput | null>(null);
   const bannerTaskId = session?.taskId ?? null;
 
   useEffect(() => {
@@ -4941,17 +4870,6 @@ export function RpiComposerBanner() {
   useRealtime("tasks", () => {
     if (bannerTaskId) rpc.call("getTask", { taskId: bannerTaskId }).then(({ task }) => setBannerTask(task));
   });
-
-  useEffect(() => {
-    let cancelled = false;
-    fetchModelCatalog(rpc, bannerTask?.hostId ?? null).then((result) => {
-      if (!cancelled) setBannerModelCatalog(result);
-    });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bannerTask?.hostId]);
 
   const phaseLabel = session ? normalizePhaseLabel(session.label) : null;
   const planPhaseWorkflow = session?.workflowType === "rpi" || session?.workflowType === "prd_tdd";
@@ -4982,15 +4900,6 @@ export function RpiComposerBanner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId, session?.taskId, phaseLabel, session?.workflowType, session?.rpiStatus, session?.completedTurnKey]);
 
-  const saveBannerModel = async (next: ModelSelectValue) => {
-    if (!bannerTask) return;
-    const { task: updated } = await rpc.call("updateTask", {
-      taskId: bannerTask.id,
-      patch: { providerId: next.providerId, model: next.model, reasoningLevel: next.reasoningLevel },
-    });
-    setBannerTask(updated);
-  };
-
   if (!threadId || !session) return null;
 
   const gauge = contextGaugeText(session.contextUsage, session.contextWarnThreshold);
@@ -5010,42 +4919,56 @@ export function RpiComposerBanner() {
   });
   if (!completion && (!contextWarn || contextWarningDismissed)) return null;
 
-  const launchIterateDirect = async () => {
+  const launchIterateDirect = async (override?: ModelOverride | null) => {
+    setLaunchingActionId("iterate");
     try {
-      const result = await rpc.call("iterateInFreshSession", { threadId });
+      const result = await rpc.call("iterateInFreshSession", { threadId, ...(override ? { modelOverride: override } : {}) });
       navigate.toThread(result.threadId);
     } catch (error) {
       reportLaunchError(error);
+    } finally {
+      setLaunchingActionId(null);
     }
   };
+  // Model choice happens at launch time, in place: banner actions open the launch prompt dialog
+  // (default model vs one-shot pick) instead of navigating away from the session. The direct
+  // one-click path stays only for users who turned the iterate confirmation off.
   const iterate = () => {
     if (settings?.showIterateConfirmation !== false) {
-      setPendingIterateConfirm(true);
+      setPendingAction("iterate");
       return;
     }
     void launchIterateDirect();
   };
   const runAction = (action: CompletionAction) => {
-    if (action.intent.kind === "iterate") {
+    if (action.intent.kind === "iterate" && settings?.showIterateConfirmation === false) {
       void launchIterateDirect();
       return;
     }
-    const intent = action.intent;
-    setLaunchingActionId(action.id);
-    void (async () => {
-      try {
-        const result = intent.kind === "proceed"
-          ? await rpc.call("proceed", { threadId: intent.threadId })
-          : intent.kind === "completion"
-            ? await rpc.call("launchCompletion", { intent })
-            : null;
-        if (result?.threadId) navigate.toThread(result.threadId);
-      } catch (error) {
-        reportLaunchError(error);
-      } finally {
-        setLaunchingActionId(null);
+    setPendingAction(action);
+  };
+  const launchPendingAction = async (override: ModelOverride | null) => {
+    const pending = pendingAction;
+    if (!pending) return;
+    const kind = pending === "iterate" ? "iterate" : pending.intent.kind;
+    const patch = override ? { modelOverride: override } : {};
+    setLaunchingActionId(pending === "iterate" ? "iterate" : pending.id);
+    setPendingAction(null);
+    try {
+      if (pending === "iterate") {
+        await launchIterateDirect(override);
+      } else if (pending.intent.kind === "proceed") {
+        const result = await rpc.call("proceed", { threadId: pending.intent.threadId, ...patch });
+        if (result.threadId) navigate.toThread(result.threadId);
+      } else if (pending.intent.kind === "completion") {
+        const result = await rpc.call("launchCompletion", { intent: pending.intent, ...patch });
+        navigate.toThread(result.threadId);
       }
-    })();
+    } catch (error) {
+      reportLaunchError(error);
+    } finally {
+      setLaunchingActionId(null);
+    }
   };
 
   return (
@@ -5119,40 +5042,97 @@ export function RpiComposerBanner() {
         </span>
       ) : null}
       {bannerTask ? (
-        <Popover>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <PopoverTrigger asChild>
-                <Button type="button" variant="outline" className="h-7 gap-1 px-2 text-xs">
-                  <Icon name="ChevronDown" className="size-3.5" />
-                  {truncateForBanner(bannerModelCatalog ? modelDisplay(bannerModelCatalog, bannerTask.providerId, bannerTask.model) : "Model")}
-                </Button>
-              </PopoverTrigger>
-            </TooltipTrigger>
-            <TooltipContent>Model for the next session</TooltipContent>
-          </Tooltip>
-          <PopoverContent className="w-72">
-            <ModelSelect
-              hostId={bannerTask.hostId}
-              value={{ providerId: bannerTask.providerId, model: bannerTask.model, reasoningLevel: bannerTask.reasoningLevel }}
-              onChange={(next) => void saveBannerModel(next)}
-              allowDefault
-              size="sm"
-              label="Model"
-            />
-          </PopoverContent>
-        </Popover>
+        <span className="shrink-0 text-xs text-muted-foreground" title="Model the next launch uses unless you pick another in the launch prompt">
+          {bannerTask.providerId && bannerTask.model ? `Next: ${modelLabel(providers, bannerTask.providerId, bannerTask.model)}` : "Next: default model"}
+        </span>
       ) : null}
-      <ConfirmDialog
-        open={pendingIterateConfirm}
-        onOpenChange={setPendingIterateConfirm}
-        title="Start a fresh session?"
-        description="The current session keeps running."
-        confirmLabel="Iterate"
-        onConfirm={() => void launchIterateDirect()}
+      <LaunchActionDialog
+        pendingAction={pendingAction}
+        task={bannerTask}
+        providers={providers}
+        launching={launchingActionId !== null}
+        onOpenChange={(open) => { if (!open) setPendingAction(null); }}
+        onLaunch={(override) => void launchPendingAction(override)}
       />
     </div>
     </TooltipProvider>
+  );
+}
+
+// In-place launch prompt for the composer banner's actions: staying inside the session, it asks
+// which model the next session should run on. "Use task default" is the pre-checked path; any
+// concrete pick is a one-shot modelOverride sent with the launch RPC and never written to the
+// task record. The dialog is also the confirmation step the old iterate ConfirmDialog provided.
+function LaunchActionDialog({
+  pendingAction,
+  task,
+  providers,
+  launching,
+  onOpenChange,
+  onLaunch,
+}: {
+  pendingAction: CompletionAction | "iterate" | null;
+  task: TaskRecord | null;
+  providers: ReadonlyArray<{ id: string; displayName: string }>;
+  launching: boolean;
+  onOpenChange: (open: boolean) => void;
+  onLaunch: (override: ModelOverride | null) => void;
+}) {
+  const seed: ModelSelectValue = task
+    ? { providerId: task.providerId, model: task.model, reasoningLevel: task.reasoningLevel }
+    : { providerId: null, model: null, reasoningLevel: null };
+  const [value, setValue] = useState<ModelSelectValue>(seed);
+  const open = pendingAction !== null;
+  useEffect(() => {
+    if (open) setValue(seed);
+    // Re-seed on each open; the dialog starts at the task's current defaults every time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+  const useDefault = !(value.providerId && value.model);
+  const title = pendingAction === "iterate" ? "Iterate in fresh session" : pendingAction ? pendingAction.label : "";
+  const description = pendingAction === "iterate"
+    ? "The current session keeps running."
+    : "Starts the next session for this task.";
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{title || "Launch"}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <label className="flex cursor-pointer items-start gap-2 text-sm font-medium text-foreground">
+            <Checkbox
+              checked={useDefault}
+              onCheckedChange={(checked) => { if (checked === true) setValue({ providerId: null, model: null, reasoningLevel: null }); }}
+            />
+            <span className="flex flex-col">
+              {task?.providerId && task.model ? `Use task default (${modelLabel(providers, task.providerId, task.model)})` : "Use task default"}
+              <span className="text-xs font-normal text-muted-foreground">The task's stored model, as shown above.</span>
+            </span>
+          </label>
+          {!useDefault ? (
+            <RpiModelPicker
+              hostId={task?.hostId ?? null}
+              value={value}
+              onChange={setValue}
+            />
+          ) : null}
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            disabled={launching}
+            onClick={() => onLaunch(useDefault ? null : { providerId: value.providerId!, model: value.model!, ...(value.reasoningLevel ? { reasoningLevel: value.reasoningLevel as ModelOverride["reasoningLevel"] } : {}) })}
+          >
+            {pendingAction === "iterate" ? "Iterate" : "Launch"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

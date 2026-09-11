@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type * as BetterSqlite3 from "better-sqlite3";
 import { TASK_ROOT_DIR } from "./constants";
-import { manualLaunchRequestSchema, reasoningLevelSchema, serviceTierSchema, type ManualLaunchRequest, type TaskRecord } from "./contract";
+import { manualLaunchRequestSchema, modelOverrideSchema, reasoningLevelSchema, serviceTierSchema, type ManualLaunchRequest, type ModelOverride, type TaskRecord } from "./contract";
 import { nowMs, parseJson, readRow, readRows, writeRow } from "./db";
 import { getTask } from "./tasks";
 import { FIRST_SKILL_BY_WORKFLOW, skillInfo, type SkillId } from "./transitions";
@@ -525,6 +525,7 @@ export async function launchPhase(
     prompt?: string;
     commandLine?: string | null;
     request?: ManualLaunchRequest;
+    modelOverride?: ModelOverride;
     launchedBy: string;
     fromThreadId: string | null;
     attemptId?: string;
@@ -534,6 +535,9 @@ export async function launchPhase(
   canonicalSkill(input.skillId);
   if (task.archived) throw new Error("Task is archived.");
   let request = input.request ? manualLaunchRequestSchema.parse(input.request) : undefined;
+  const modelOverride = input.modelOverride
+    ? modelOverrideSchema.parse(input.modelOverride)
+    : undefined;
   const commandLine = commandFor(input.skillId, input.commandLine);
   const label = labelTitle(input.skillId);
   let environmentRole = environmentRoleForAttempt(task, input.skillId);
@@ -591,13 +595,17 @@ export async function launchPhase(
           title: `${labelTitle(input.skillId)}: ${task.name}`,
           visibility: "visible",
           executionInputSources: {
-            providerId: task.providerId ? "explicit" : undefined,
-            model: task.model ? "explicit" : undefined,
-            reasoningLevel: task.reasoningLevel ? "explicit" : undefined,
+            providerId: (modelOverride?.providerId ?? task.providerId) ? "explicit" : undefined,
+            model: (modelOverride?.model ?? task.model) ? "explicit" : undefined,
+            reasoningLevel: (modelOverride?.reasoningLevel ?? task.reasoningLevel) ? "explicit" : undefined,
             serviceTier: task.serviceTier ? "explicit" : undefined,
             permissionMode: task.permissionMode && task.permissionMode !== "default" ? "explicit" : undefined,
           },
           ...taskExecutionSeeds(task),
+          // One-shot per-launch model choice wins over the task record without mutating it.
+          ...(modelOverride?.providerId ? { providerId: modelOverride.providerId } : {}),
+          ...(modelOverride?.model ? { model: modelOverride.model } : {}),
+          ...(modelOverride?.reasoningLevel ? { reasoningLevel: modelOverride.reasoningLevel } : {}),
         });
     notePendingLaunchThread(bindings, attemptId, thread.id);
     const bound = bindPendingLaunch(db, mirror, bindings, attemptId, thread.id);
@@ -663,9 +671,14 @@ export async function forkSession(
 ) {
   const source = mirror.get(threadId);
   if (!source) throw new Error(`No session found for thread ${threadId}`);
+  // Fork runs in the source thread's own environment: read environmentId via threads.get (never
+  // from the fork/spawn response) and pass environment reuse explicitly, matching the current
+  // SDK's fork contract.
+  const hydrated = await bb.sdk.threads.get({ threadId, include: "environment" });
+  const environmentId = hydrated.environmentId ?? null;
   const fork = await bb.sdk.threads.fork({
     sourceThreadId: threadId,
-    workspace: "reuse",
+    ...(environmentId ? { environment: { type: "reuse" as const, environmentId } } : {}),
     title: source.taskName,
     ...(text?.trim()
       ? { agentContextSeed: [{ type: "text" as const, text: text.trim(), mentions: [], visibility: "agent-only" as const }] }

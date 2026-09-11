@@ -4,7 +4,7 @@ import type * as BetterSqlite3 from "better-sqlite3";
 import { parseJson, readRow, writeRow } from "./db";
 import { getArtifactVersion, listArtifacts } from "./artifacts";
 import { latestImplementationReceipt, latestPlanArtifact, nextImplementablePlanPhase, type PlanPhaseHint } from "./plan-phases";
-import { manualLaunchRequestSchema, type ManualLaunchIntent, type ManualLaunchRequest, type PreparedManualLaunch, type SessionRow, type TaskRecord } from "./contract";
+import { manualLaunchRequestSchema, type ManualLaunchIntent, type ManualLaunchRequest, type ModelOverride, type PreparedManualLaunch, type SessionRow, type TaskRecord } from "./contract";
 import type { NextStepSuggestions } from "./extraction";
 import {
   activeLaunchAttempt,
@@ -41,6 +41,7 @@ export async function proceed(
   mirror: Map<string, SessionMirrorRow>,
   bindings: LaunchBindingMirror,
   threadId: string,
+  modelOverride?: ModelOverride,
 ) {
   const session = readRow<SessionRow>(
     db,
@@ -57,7 +58,7 @@ export async function proceed(
     threadId,
   );
   if (!session) throw new Error(`No session found for thread ${threadId}`);
-  return advanceSession(bb, db, mirror, bindings, session, "proceed");
+  return advanceSession(bb, db, mirror, bindings, session, "proceed", modelOverride);
 }
 
 export async function launchSkill(
@@ -101,6 +102,7 @@ export async function iterateInFreshSession(
   mirror: Map<string, SessionMirrorRow>,
   bindings: LaunchBindingMirror,
   threadId: string,
+  modelOverride?: ModelOverride,
 ) {
   const resolved = resolveIterateLaunch(db, mirror, threadId);
   return launchPhase(bb, db, mirror, bindings, resolved.task, {
@@ -109,6 +111,7 @@ export async function iterateInFreshSession(
     prompt: resolved.prompt,
     launchedBy: resolved.launchedBy,
     fromThreadId: resolved.fromThreadId,
+    modelOverride,
   });
 }
 
@@ -275,6 +278,7 @@ export async function launchCompletion(
   mirror: Map<string, SessionMirrorRow>,
   bindings: LaunchBindingMirror,
   intent: Extract<ManualLaunchIntent, { kind: "completion" }>,
+  modelOverride?: ModelOverride,
 ) {
   const taskId = taskIdForManualIntent(db, intent);
   return withTaskLock(taskId, async () => {
@@ -294,6 +298,7 @@ export async function launchCompletion(
       prompt: authorized.prompt,
       launchedBy: authorized.launchedBy,
       fromThreadId: authorized.fromThreadId,
+      modelOverride,
       attemptId,
     }).then((result) => {
       if (freshTask.isDraft) {
@@ -494,6 +499,7 @@ function advanceSession(
   bindings: LaunchBindingMirror,
   session: SessionRow,
   mode: AdvanceMode,
+  modelOverride?: ModelOverride,
 ) {
   return withTaskLock(session.taskId, async () => {
     const fresh = readSessionForAdvance(db, session.threadId) ?? session;
@@ -522,6 +528,7 @@ function advanceSession(
       commandLine: nextStep.extraction.nextStepPrompt,
       launchedBy: mode,
       fromThreadId: fresh.threadId,
+      modelOverride,
       attemptId: attempted.attemptId,
     });
   });

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { modelDisplay, modelOptionValue, normalizeModelCatalog, parseModelOptionValue, type RawProviderModelsResponse } from "../models";
+import { normalizeModelCatalog, type RawProviderModelsResponse } from "../models";
 
 function provider(overrides: Partial<RawProviderModelsResponse["provider"]> = {}): RawProviderModelsResponse["provider"] {
   return { id: "codex", displayName: "Codex", available: true, serviceTiers: [], ...overrides };
@@ -75,29 +75,4 @@ test("normalizeModelCatalog caps models at 1000 and providers at 50, and surface
   assert.equal(result.providers.length, 50);
   assert.ok(result.models.length <= 1000);
   assert.deepEqual(result.error, { code: "auth_required", providerId: "p5" });
-});
-
-test("modelOptionValue and parseModelOptionValue round-trip, including model ids containing a slash", () => {
-  assert.equal(modelOptionValue(null, null), "");
-  assert.equal(modelOptionValue("pi", null), "");
-  assert.equal(modelOptionValue(null, "gpt-5.5"), "");
-  const value = modelOptionValue("pi", "anthropic/claude-sonnet-5");
-  assert.equal(value, "pi/anthropic/claude-sonnet-5");
-  assert.deepEqual(parseModelOptionValue(value), { providerId: "pi", model: "anthropic/claude-sonnet-5" });
-  assert.deepEqual(parseModelOptionValue(""), { providerId: null, model: null });
-});
-
-test("modelDisplay falls back to the raw id when unknown, adds the provider name when more than one provider is present, and reports Default for no selection", () => {
-  const catalog = normalizeModelCatalog([
-    { provider: provider({ id: "codex", displayName: "Codex" }), models: [model({ id: "a", model: "a", displayName: "Alpha" })], modelLoadError: null },
-    { provider: provider({ id: "pi", displayName: "Pi" }), models: [model({ id: "b", model: "b", displayName: "Beta" })], modelLoadError: null },
-  ]);
-  assert.equal(modelDisplay(catalog, null, null), "Default");
-  assert.equal(modelDisplay(catalog, "codex", "missing"), "codex/missing");
-  assert.equal(modelDisplay(catalog, "codex", "a"), "Codex · Alpha");
-
-  const singleProviderCatalog = normalizeModelCatalog([
-    { provider: provider({ id: "codex", displayName: "Codex" }), models: [model({ id: "a", model: "a", displayName: "Alpha" })], modelLoadError: null },
-  ]);
-  assert.equal(modelDisplay(singleProviderCatalog, "codex", "a"), "Alpha");
 });

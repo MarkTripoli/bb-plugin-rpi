@@ -93,31 +93,3 @@ export function normalizeModelCatalog(entries: RawProviderModelsResponse[]): Lis
 
   return { providers, models, error };
 }
-
-// "" when either half is missing (the "inherit/default" option value); otherwise the option
-// value bb's own catalog is keyed by. Model ids can contain "/" (e.g. "anthropic/claude-sonnet-5"
-// under provider "pi"), so this is not itself round-trippable by splitting on every "/"; see
-// parseModelOptionValue, which splits on the first one only.
-export function modelOptionValue(providerId: string | null, model: string | null): string {
-  if (!providerId || !model) return "";
-  return `${providerId}/${model}`;
-}
-
-export function parseModelOptionValue(value: string): { providerId: string | null; model: string | null } {
-  if (!value) return { providerId: null, model: null };
-  const separatorIndex = value.indexOf("/");
-  if (separatorIndex === -1) return { providerId: value, model: null };
-  return { providerId: value.slice(0, separatorIndex), model: value.slice(separatorIndex + 1) };
-}
-
-// Display text for a task's/prefs' chosen model. Falls back to the raw "providerId/model" when
-// the catalog does not have it (e.g. saved before that provider was installed), and to "Default"
-// when nothing was chosen at all.
-export function modelDisplay(catalog: ListModelsOutput, providerId: string | null, model: string | null): string {
-  if (!providerId || !model) return "Default";
-  const match = catalog.models.find((entry) => entry.providerId === providerId && entry.model === model);
-  if (!match) return `${providerId}/${model}`;
-  const provider = catalog.providers.find((entry) => entry.id === providerId);
-  const multipleProviders = new Set(catalog.models.map((entry) => entry.providerId)).size > 1;
-  return multipleProviders && provider ? `${provider.displayName} · ${match.displayName}` : match.displayName;
-}
