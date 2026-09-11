@@ -5,12 +5,14 @@ import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import {
   iterateSkillForLabel,
   latestLaunchAttemptLabel,
+  launchCompletion,
   onCompletedTurn,
   prepareManualLaunch,
   submitManualLaunch,
 } from "../advance";
 import { MANUAL_LAUNCH_TEXT_LIMIT, prepareManualLaunchOutputSchema, type ManualLaunchRequest } from "../contract";
 import { MIGRATIONS, stringifyJson } from "../db";
+import { upsertArtifact } from "../artifacts";
 import { createDraftTask } from "../tasks";
 import { proceed } from "../advance";
 import { createLaunchBindingMirror, mirrorSession, type SessionMirrorRow } from "../sessions";
@@ -396,8 +398,44 @@ test("completion preparation is read-only and submission claims the source with 
   db.close();
 });
 
-test("completion submissions are single-winner and revalidate interactions and catalog state", async () => {
-  {
+test("launchCompletion one-click launches the catalog action and claims the source session", async () => {
+  const db = makeDb();
+  const { taskId } = seed(db, "implementation", "describe-pr", { auto_advance: 0 });
+  upsertArtifact(db, taskId, "01-plan-demo.md", `---\ntype: plan\n---\n\n## Phase 1: Scaffold\n\n- [x] done\n\n## Phase 2: Wire server\n\n- [ ] todo\n`, {
+    createdBy: "test",
+    operation: "test",
+  });
+  const { bb, spawns } = fakeBb();
+  const intent = { kind: "completion", threadId: "thr_source", skillId: "implement-plan" } as const;
+  const launched = await launchCompletion(bb as never, db, new Map(), createLaunchBindingMirror(), intent);
+  assert.equal(launched.threadId, "thr_next_1");
+  assert.equal(spawns.length, 1);
+  assert.deepEqual(db.prepare("SELECT from_thread_id AS fromThreadId, skill_id AS skillId, command_line AS commandLine, launched_by AS launchedBy FROM launch_attempts WHERE task_id = ?").get(taskId), {
+    fromThreadId: "thr_source",
+    skillId: "implement-plan",
+    commandLine: "/rpi-implement-plan",
+    launchedBy: "completion",
+  });
+  assert.equal((db.prepare("SELECT advanced_at AS advancedAt FROM sessions WHERE thread_id = 'thr_source'").get() as { advancedAt: number | null }).advancedAt !== null, true);
+  assert.equal((db.prepare("SELECT is_draft AS isDraft FROM tasks WHERE id = ?").get(taskId) as { isDraft: number }).isDraft, 0);
+  db.close();
+});
+
+test("launchCompletion rejects a phase action the recomputed catalog no longer offers", async () => {
+  const db = makeDb();
+  const { taskId } = seed(db, "implementation", "describe-pr", { auto_advance: 0 });
+  const { bb, spawns } = fakeBb();
+  await assert.rejects(
+    launchCompletion(bb as never, db, new Map(), createLaunchBindingMirror(), { kind: "completion", threadId: "thr_source", skillId: "implement-plan" }),
+    /no longer available/,
+  );
+  assert.equal(spawns.length, 0);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts WHERE task_id = ?").get(taskId) as { count: number }).count, 0);
+  assert.equal((db.prepare("SELECT advanced_at AS advancedAt FROM sessions WHERE thread_id = 'thr_source'").get() as { advancedAt: number | null }).advancedAt, null);
+  db.close();
+});
+
+test("completion submissions are single-winner and revalidate interactions and catalog state", async () => {  {
     const db = makeDb();
     seed(db, "implementation", null, { auto_advance: 0, base_environment_id: "env_base" });
     const { bb, spawns } = fakeBb();

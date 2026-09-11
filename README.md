@@ -49,7 +49,10 @@ Workspace, Scratch, Minimap, Tips, model settings, code review, pull request
 creation, and pull request review resolution available from any task session.
 
 Manual quick actions open bb's new-thread composer with the intended prompt and
-wait for explicit submission. The draft can be edited and its model, reasoning,
+wait for explicit submission. Phase-complete banner actions are the exception:
+they launch immediately on click, including an "Implement Phase N" primary
+action that continues /rpi-implement-plan at the plan's next incomplete phase.
+The draft can be edited and its model, reasoning,
 service tier, and permission mode apply to that session only. The task's project
 and workspace remain fixed; for unmanaged workspaces bb may display a normalized
 checkout while RPI restores the task's canonical path on submit. Retry reuses the

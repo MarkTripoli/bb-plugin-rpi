@@ -307,6 +307,71 @@ test("RPI launch RPC and CLI paths are enabled", async () => {
   await harness.lifecycle.dispose();
 });
 
+test("launchCompletion RPC one-click launches a completion action with task execution defaults", async (t) => {
+  const spawnInputs: Array<Record<string, unknown>> = [];
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "rpi",
+    sdk: {
+      subscribe: () => () => undefined,
+      projects: {
+        get: async ({ projectId }: { projectId: string }) => ({
+          id: projectId,
+          name: "Proj",
+          kind: "standard" as const,
+          gitRemoteUrl: null,
+          createdAt: 1,
+          updatedAt: 1,
+          sources: [{ id: "src_1", projectId, hostId: "host_seed", path: "/repo", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 }],
+        }),
+      },
+      threads: {
+        spawn: async (input) => {
+          spawnInputs.push(input as unknown as Record<string, unknown>);
+          return makeThreadResponse({ id: `thr_quick_${spawnInputs.length}`, environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
+        },
+        get: async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" }),
+        interactions: { list: async () => [] },
+      },
+    },
+  });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const created = await harness.behavior.callRpc("createTask", {
+    request: {
+      text: "prompt",
+      projectId: "proj_1",
+      workflowType: "rpi",
+      worktreeTiming: "never",
+      permissionMode: "accept_edits",
+      autoAdvance: false,
+      providerId: "pi",
+      model: "task-model",
+      reasoningLevel: "low",
+      serviceTier: "default",
+    },
+    name: "Task",
+    draft: true,
+  }) as { taskId: string };
+  const db = bb.storage.database();
+  db.prepare(`
+    INSERT INTO sessions (
+      thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
+      rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason,
+      next_step_json, completed_turn_key, next_step_turn_key, last_summarized_turn_key, created_at, updated_at
+    ) VALUES ('thr_source', ?, 'implementation', 'implement-plan', 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, ?, 'turn_1', 'turn_1', 'turn_1', 1, 1)
+  `).run(created.taskId, JSON.stringify({ parsedAt: 1, extraction: { type: "next_step_found", nextStepPrompt: "/rpi-describe-pr", nextStepSummary: "next", nextStepType: "describe-pr", taskReference: null, suggestedDirectory: null } }));
+  await import("../artifacts").then(({ upsertArtifact }) => upsertArtifact(db, created.taskId, "01-plan-demo.md", `---\ntype: plan\n---\n\n## Phase 1: Scaffold\n\n- [x] done\n\n## Phase 2: Wire server\n\n- [ ] todo\n`, { createdBy: "test", operation: "test" }));
+
+  const launched = await harness.behavior.callRpc("launchCompletion", {
+    intent: { kind: "completion", threadId: "thr_source", skillId: "implement-plan" },
+  }) as { threadId: string };
+  assert.equal(launched.threadId, "thr_quick_1");
+  const spawnInput = spawnInputs[0]!;
+  assert.equal(spawnInput.providerId, "pi");
+  assert.equal(spawnInput.model, "task-model");
+  assert.equal(spawnInput.permissionMode, "accept-edits");
+});
+
 test("manual launch RPC prepares read-only state, submits structured input, and returns typed relocation rejections", async (t) => {
   const spawnInputs: Array<Record<string, unknown>> = [];
   const { bb, harness } = createFakePluginHost({
