@@ -357,13 +357,24 @@ test("launchCompletion RPC one-click launches a completion action with task exec
     INSERT INTO sessions (
       thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
       rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason,
-      next_step_json, completed_turn_key, next_step_turn_key, last_summarized_turn_key, created_at, updated_at
-    ) VALUES ('thr_source', ?, 'implementation', 'implement-plan', 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, ?, 'turn_1', 'turn_1', 'turn_1', 1, 1)
-  `).run(created.taskId, JSON.stringify({ parsedAt: 1, extraction: { type: "next_step_found", nextStepPrompt: "/rpi-describe-pr", nextStepSummary: "next", nextStepType: "describe-pr", taskReference: null, suggestedDirectory: null } }));
+      next_step_json, summary_json, completed_turn_key, next_step_turn_key, last_summarized_turn_key, created_at, updated_at
+    ) VALUES ('thr_source', ?, 'implementation', 'implement-plan', 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, ?, ?, 'turn_1', 'turn_1', 'turn_1', 1, 1)
+  `).run(
+    created.taskId,
+    JSON.stringify({ parsedAt: 1, extraction: { type: "next_step_found", nextStepPrompt: "/rpi-describe-pr", nextStepSummary: "next", nextStepType: "describe-pr", taskReference: null, suggestedDirectory: null } }),
+    JSON.stringify({ primaryReviewArtifact: { fileName: "02-implementation-receipt.md" } }),
+  );
   await import("../artifacts").then(({ upsertArtifact }) => upsertArtifact(db, created.taskId, "01-plan-demo.md", `---\ntype: plan\n---\n\n## Phase 1: Scaffold\n\n- [x] done\n\n## Phase 2: Wire server\n\n- [ ] todo\n`, { createdBy: "test", operation: "test" }));
+  await import("../artifacts").then(({ upsertArtifact }) => upsertArtifact(db, created.taskId, "02-implementation-receipt.md", `---\ntype: implementation\ncompleted_phase: 1\n---\n`, { createdBy: "test", operation: "test" }));
+
+  await assert.rejects(harness.behavior.callRpc("launchCompletion", {
+    intent: { kind: "completion", threadId: "thr_source", skillId: "implement-plan", phase: 3 },
+  }), /no longer available/);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts WHERE task_id = ?").get(created.taskId) as { count: number }).count, 0);
+  assert.equal((db.prepare("SELECT advanced_at AS advancedAt FROM sessions WHERE thread_id = 'thr_source'").get() as { advancedAt: number | null }).advancedAt, null);
 
   const launched = await harness.behavior.callRpc("launchCompletion", {
-    intent: { kind: "completion", threadId: "thr_source", skillId: "implement-plan" },
+    intent: { kind: "completion", threadId: "thr_source", skillId: "implement-plan", phase: 2 },
   }) as { threadId: string };
   assert.equal(launched.threadId, "thr_quick_1");
   const spawnInput = spawnInputs[0]!;

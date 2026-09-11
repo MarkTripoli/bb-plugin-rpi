@@ -1,9 +1,13 @@
-Artifact saved:
+The PRD needs human review before technical design.
+
+Review artifact:
 {artifact_directive}
 
-The PRD has been started. Continue the product interview one decision at a time before opening technical design.
+Check:
+- {review_check}
+- Known limits: {known_limits}
 
-Auto-advance does not apply at this human gate. Continue manually with:
+Comment on the artifact and send the comments to the iteration session. Starting iteration records requested changes, not approval.
 
 ```text
 /rpi-iterate-prd{artifact_arg}

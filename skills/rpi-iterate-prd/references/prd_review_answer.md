@@ -1,9 +1,13 @@
-Artifact saved:
+The updated PRD still needs human review.
+
+Review artifact:
 {artifact_directive}
 
-The PRD has been updated and still needs product review or another decision.
+Check:
+- {review_check}
+- Known limits: {known_limits}
 
-Auto-advance does not apply at this human gate. Continue manually with:
+Comment on the artifact and send the comments to another iteration session. Starting iteration records requested changes, not approval.
 
 ```text
 /rpi-iterate-prd{artifact_arg}

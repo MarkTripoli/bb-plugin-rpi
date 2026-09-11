@@ -42,7 +42,11 @@ Run checks the child missed and checks the plan makes mandatory: build, test, li
 
 ### 5. Report the phase to the human
 
-After a phase is implemented and automated verification is complete, summarize:
+After each verified numeric phase, call `rpi_next_artifact_number`, write one receipt from `references/implementation_template.md`, and save it with `rpi_artifact_save`, even when later phases remain. Set `completed_phase` to the highest proven plan phase. Fill `Human Review` with exact targets, checks, and known limits.
+
+Use `references/implementation_phase_final_answer.md` between numeric phases and `references/implementation_final_answer.md` only after the terminal phase. Name the receipt as the primary directive, copy its checks, invoke this skill with the same plan between phases, and keep the command fence last.
+
+Then summarize:
 
 ```markdown
 ## Phase [N] Implementation Summary
@@ -103,7 +107,7 @@ When the user explicitly asks for multiple phases, spawn a fresh implementer chi
 
 ### Artifact Notes
 
-Read `references/implementation_template.md` and `references/implementation_final_answer.md`.
+Read `references/implementation_template.md`, `references/implementation_phase_final_answer.md`, and `references/implementation_final_answer.md`.
 
 If you write an implementation receipt or update the plan artifact, call `rpi_next_artifact_number` for a new `NN-implementation-*.md` file.
 

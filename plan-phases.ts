@@ -1,6 +1,4 @@
-// Pure plan-phase parsing, shared by the server (advance.ts launch validation) and the
-// frontend bundle (ui/rpi.tsx phase-complete banner). Follows the rpi-create-plan template
-// shape: "## Phase N: Title" sections whose "Success Criteria" hold "- [ ]" / "- [x]" items.
+// Pure plan-phase parsing and session-bound handoff derivation, shared by the server and UI.
 export type PlanPhase = {
   phase: number;
   title: string;
@@ -12,8 +10,20 @@ export type PlanPhaseHint = {
   title: string;
 };
 
+export type PrimaryReviewArtifact = { fileName: string };
+
+export type PhaseArtifact = {
+  fileName: string;
+  frontmatter: Readonly<Record<string, string | number | boolean>>;
+};
+
+export type PhaseHandoff<T extends PhaseArtifact = PhaseArtifact> =
+  | { ok: true; reviewArtifact: T; completedPhase: number; nextPhase: PlanPhaseHint | null }
+  | { ok: false; error: "missing_review_artifact" | "missing_phase_completion" | "phase_not_in_plan" };
+
 const PHASE_HEADING = /^##\s+Phase\s+(\d+)\s*:?\s*(.*)$/;
 const UNCHECKED_ITEM = /^(\s*[-*]\s*)\[ \]/;
+const MAX_SUMMARY_JSON_LENGTH = 1024 * 1024;
 
 export function parsePlanPhases(content: string): PlanPhase[] {
   const lines = content.split("\n");
@@ -41,44 +51,6 @@ export function parsePlanPhases(content: string): PlanPhase[] {
   return phases.map(({ phase, title, complete }) => ({ phase, title, complete }));
 }
 
-// The launch target for an "Implement Phase N" button: the first phase whose acceptance boxes
-// are not all checked. Phase 1 is never returned: an unchecked Phase 1 on a task whose
-// implementation session just finished a turn cannot be distinguished from a plan whose
-// acceptance boxes were simply never ticked, and re-implementing Phase 1 would be the wrong
-// guess. Returns null when the plan is fully complete or unreadable.
-export function nextIncompletePlanPhase(content: string): PlanPhaseHint | null {
-  const phases = parsePlanPhases(content);
-  if (phases.length === 0) return null;
-  const next = phases.find((phase) => !phase.complete);
-  if (!next || next.phase <= 1) return null;
-  const title = /^\[.*\]$/.test(next.title) ? "" : next.title;
-  return { phase: next.phase, title };
-}
-
-// The phase range a completed implementation receipt claims, parsed from its H1 heading
-// ("# Phase 1 Implementation Receipt") and its "Phase range:" source line only. Frontmatter
-// summaries and body prose deliberately mention later phases ("Phase 2 must build on..."),
-// so everything outside those two shapes is ignored; sub-item numbers like "items 1.1" are
-// skipped because they never follow the word "Phase" directly.
-export function receiptPhaseRange(content: string): number | null {
-  const body = content.replace(/^---\n[\s\S]*?\n---\n/, "");
-  let max: number | null = null;
-  const consider = (phase: number) => {
-    if (Number.isFinite(phase) && (max === null || phase > max)) max = phase;
-  };
-  for (const line of body.split("\n")) {
-    const heading = /^#\s+Phase\s+(\d+)(?![.\d])/.exec(line);
-    if (heading) consider(Number.parseInt(heading[1]!, 10));
-    const range = /^[-*]\s*[Pp]hase range:\s*(.*)$/.exec(line);
-    if (range) {
-      for (const match of range[1]!.matchAll(/Phase\s+(\d+)(?![.\d])/g)) {
-        consider(Number.parseInt(match[1]!, 10));
-      }
-    }
-  }
-  return max;
-}
-
 export type LatestPlanArtifactInput = {
   groupType: string;
   updatedAt: number;
@@ -95,38 +67,51 @@ export function latestPlanArtifact<T extends LatestPlanArtifactInput>(artifacts:
   });
 }
 
-export type LatestReceiptArtifactInput = {
-  type: string;
-  updatedAt: number;
-  fileName: string;
-};
-
-export function latestImplementationReceipt<T extends LatestReceiptArtifactInput>(artifacts: T[]): T | null {
-  const receipts = artifacts.filter((artifact) => artifact.type === "implementation");
-  if (receipts.length === 0) return null;
-  return receipts.reduce((latest, artifact) => (artifact.updatedAt > latest.updatedAt ? artifact : latest));
-}
-
-// Launch target for the "Implement Phase N" banner action. The newest implementation receipt's
-// claimed phase range is authoritative when present (Phase N done, so offer N+1 when the plan
-// has it); otherwise the plan's own acceptance-checkbox markers decide, but only from Phase 2
-// upward: an unticked Phase 1 on a task whose implementation session just finished a turn is
-// indistinguishable from a plan whose boxes were never ticked, so it never launches a guess.
-export function nextImplementablePlanPhase(
-  planContent: string,
-  receiptContent: string | null,
-): PlanPhaseHint | null {
-  const phases = parsePlanPhases(planContent);
-  if (phases.length === 0) return null;
-  const receiptPhase = receiptContent === null ? null : receiptPhaseRange(receiptContent);
-  if (receiptPhase !== null) {
-    const next = phases.find((phase) => phase.phase === receiptPhase + 1);
-    if (next) return { phase: next.phase, title: displayTitle(next.title) };
+export function parsePrimaryReviewArtifact(summaryJson: string | null): PrimaryReviewArtifact | null {
+  if (!summaryJson || summaryJson.length > MAX_SUMMARY_JSON_LENGTH) return null;
+  try {
+    const summary = JSON.parse(summaryJson) as { primaryReviewArtifact?: unknown };
+    const value = summary?.primaryReviewArtifact;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const fileName = (value as { fileName?: unknown }).fileName;
+    if (typeof fileName !== "string" || fileName.length === 0 || fileName.length > 255) return null;
+    return { fileName };
+  } catch {
     return null;
   }
-  const next = phases.find((phase) => !phase.complete);
-  if (!next || next.phase <= 1) return null;
-  return { phase: next.phase, title: displayTitle(next.title) };
+}
+
+export function derivePhaseHandoff<T extends PhaseArtifact>(
+  planContent: string,
+  primaryReviewArtifact: PrimaryReviewArtifact | null,
+  artifacts: readonly T[],
+): PhaseHandoff<T> {
+  const reviewArtifact = primaryReviewArtifact
+    ? artifacts.find((artifact) => artifact.fileName === primaryReviewArtifact.fileName)
+    : undefined;
+  if (!reviewArtifact) return { ok: false, error: "missing_review_artifact" };
+
+  const completedPhase = reviewArtifact.frontmatter.type === "implementation"
+    ? reviewArtifact.frontmatter.completed_phase
+    : undefined;
+  if (typeof completedPhase !== "number" || !Number.isSafeInteger(completedPhase) || completedPhase <= 0) {
+    return { ok: false, error: "missing_phase_completion" };
+  }
+
+  const phases = parsePlanPhases(planContent);
+  if (phases.filter((phase) => phase.phase === completedPhase).length !== 1) {
+    return { ok: false, error: "phase_not_in_plan" };
+  }
+  const later = phases.filter((phase) => phase.phase > completedPhase);
+  if (later.length === 0) return { ok: true, reviewArtifact, completedPhase, nextPhase: null };
+  const next = phases.find((phase) => phase.phase === completedPhase + 1);
+  if (!next) return { ok: false, error: "phase_not_in_plan" };
+  return {
+    ok: true,
+    reviewArtifact,
+    completedPhase,
+    nextPhase: { phase: next.phase, title: displayTitle(next.title) },
+  };
 }
 
 function displayTitle(title: string): string {

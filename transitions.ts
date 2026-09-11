@@ -323,7 +323,7 @@ function completionCatalog(
     const implementPhase = planPhased && nextPlanPhase
       ? [{
           id: "implement-phase" as const,
-          label: `Implement Phase ${nextPlanPhase.phase}`,
+          label: `Proceed to Phase ${nextPlanPhase.phase}`,
           emphasis: "primary" as const,
           skillId: "implement-plan" as SkillId,
           forceCompletion: true,
@@ -395,7 +395,9 @@ export function completionActionsForSession(
       ? { kind: "proceed" as const, threadId: session.threadId }
       : descriptor.id === "iterate"
         ? { kind: "iterate" as const, threadId: session.threadId }
-        : { kind: "completion" as const, threadId: session.threadId, skillId: skillId! },
+        : descriptor.id === "implement-phase"
+          ? { kind: "completion" as const, threadId: session.threadId, skillId: skillId!, phase: nextPlanPhase!.phase }
+          : { kind: "completion" as const, threadId: session.threadId, skillId: skillId! },
   }));
   if (extraction && skillInfo(extraction.nextStepType) && !catalog.some((entry) => entry.skillId === extraction.nextStepType)) {
     actions.push({

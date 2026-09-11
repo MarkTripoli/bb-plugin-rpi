@@ -64,3 +64,17 @@ Recommendation: [recommended option and why the research or product pattern supp
 ```
 [short target-shape snippet]
 ```
+
+## Human Review
+
+### Review targets
+
+- [Decisions, behavior, and artifact sections the human should inspect.]
+
+### Verify
+
+- [ ] [Exact evidence or manual check required before starting the successor.]
+
+### Known limits
+
+- [Known limit, or `None.`]

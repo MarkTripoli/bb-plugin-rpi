@@ -1,9 +1,14 @@
-Artifact saved:
+The updated implementation outline is ready for review.
+
+Review artifact:
 {artifact_directive}
 
-The implementation outline has been updated, and this session is already in a worktree.
+Check:
+- {review_check}
+- Known limits: {known_limits}
 
-Auto-advance does not apply at this human gate. Continue manually with:
+If changes are needed, comment on the artifact and send the comments to another iteration session.
+If approved, choose **Proceed to implementation**. Starting implementation records approval of the outline.
 
 ```text
 /rpi-implement-outline{artifact_arg}

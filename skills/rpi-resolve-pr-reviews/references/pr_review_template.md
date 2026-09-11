@@ -41,3 +41,17 @@ summary: "State what this review round resolved and what still prevents approval
 - requested changes:
 - approval:
 - required checks:
+
+## Human Review
+
+### Review targets
+
+- [Resolved threads, current approval state, and required checks to inspect.]
+
+### Verify
+
+- [ ] [Exact hosted review or check state required before another round.]
+
+### Known limits
+
+- [Known limit, or `None.`]

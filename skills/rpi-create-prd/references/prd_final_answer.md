@@ -1,9 +1,14 @@
-Artifact saved:
+The PRD is ready for review.
+
+Review artifact:
 {artifact_directive}
 
-The PRD is approved and ready to hand to technical design.
+Check:
+- {review_check}
+- Known limits: {known_limits}
 
-Auto-advance does not apply at this human gate. Continue manually with:
+If changes are needed, comment on the artifact and send the comments to an iteration session.
+If approved, choose **Proceed to technical design**. Starting the TDD records approval of the PRD.
 
 ```text
 /rpi-create-tdd{artifact_arg}

@@ -52,3 +52,17 @@ sha: [current commit]
 
 - [Behavior explicitly not included]
 - [Future work not needed for this version]
+
+## Human Review
+
+### Review targets
+
+- [Product decisions, user behavior, and scope boundaries to inspect.]
+
+### Verify
+
+- [ ] [Exact product or evidence check required before technical design.]
+
+### Known limits
+
+- [Known limit, or `None.`]

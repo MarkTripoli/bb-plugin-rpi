@@ -39,7 +39,7 @@ import type {
   CommentThreadRecord,
 } from "../contract";
 import { AUTO_ADVANCE, BOARD_COLUMNS, FIRST_SKILL_BY_WORKFLOW, SKILL_BY_ID, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS, completionActionsForSession, normalizePhaseLabel, type CompletionAction } from "../transitions";
-import { latestImplementationReceipt, latestPlanArtifact, nextImplementablePlanPhase, type PlanPhaseHint } from "../plan-phases";
+import { derivePhaseHandoff, latestPlanArtifact, parsePrimaryReviewArtifact, type PhaseHandoff } from "../plan-phases";
 import { ARTIFACT_COMMENTS_WIDTH_RANGE, ARTIFACT_LIST_WIDTH_RANGE, ARTIFACT_PANEL_STACK_BREAKPOINT, artifactLayoutMode, clampWidth } from "../artifact-layout";
 import {
   PHASE_DESCRIPTIONS,
@@ -3570,20 +3570,22 @@ export function RpiArtifactDirective({ attributes, source }: { attributes: Reado
   const taskId = attributes.task;
   const fileName = attributes.file;
   if (!taskId || !fileName || fileName.includes("..") || fileName.includes("/") || fileName.includes("\\")) return <code>{source}</code>;
-  const open = () => {
-    const accepted = navigate.openThreadPanel({
-      actionId: "rpi",
-      title: "RPI",
-      params: { view: "artifacts", fileName },
-    });
-    if (!accepted) navigate.toPluginPanel("rpi", { subPath: `tasks/${taskId}/artifacts/${encodeURIComponent(fileName)}` });
-  };
+  const open = () => openRpiArtifact(navigate, taskId, fileName);
   return (
     <button type="button" onClick={open} className="inline-flex items-center gap-2 rounded-md border border-border bg-card px-2 py-1 text-sm font-medium text-foreground">
       <Icon name="Code" className="size-4" />
       {fileName}
     </button>
   );
+}
+
+function openRpiArtifact(navigate: ReturnType<typeof useBbNavigate>, taskId: string, fileName: string) {
+  const accepted = navigate.openThreadPanel({
+    actionId: "rpi",
+    title: "RPI",
+    params: { view: "artifacts", fileName },
+  });
+  if (!accepted) navigate.toPluginPanel("rpi", { subPath: `tasks/${taskId}/artifacts/${encodeURIComponent(fileName)}` });
 }
 
 // Sidebar thread-list replacement (Fable §11, shipped last/optional per plan §2.7). Groups this
@@ -4716,10 +4718,9 @@ export function RpiComposerBanner() {
   // Banner action awaiting the in-place launch prompt: a CompletionAction, or "iterate" from the
   // context-high notice. Null means no dialog is open.
   const [pendingAction, setPendingAction] = useState<CompletionAction | "iterate" | null>(null);
-  // The task's next incomplete plan phase, derived from the newest plan artifact. Non-null only
-  // when the plan marks earlier phases complete with checked acceptance boxes, so the banner can
-  // offer "Implement Phase N" as a one-click continuation of /rpi-implement-plan.
-  const [nextPlanPhase, setNextPlanPhase] = useState<PlanPhaseHint | null>(null);
+  // The completed phase and review artifact proved by this session's primary receipt.
+  const [phaseHandoff, setPhaseHandoff] = useState<PhaseHandoff<ArtifactRecord> | null>(null);
+  const [phaseArtifactRevision, setPhaseArtifactRevision] = useState(0);
   // The session view (getSession) does not carry the task's providerId/model/reasoningLevel, so
   // the compact model control below fetches the task itself; "tasks" is the same realtime channel
   // updateTask publishes on, so a change from the task Settings tab shows up here too.
@@ -4737,35 +4738,42 @@ export function RpiComposerBanner() {
   useRealtime("tasks", () => {
     if (bannerTaskId) rpc.call("getTask", { taskId: bannerTaskId }).then(({ task }) => setBannerTask(task));
   });
+  useRealtime("rpi:artifacts", (payload) => {
+    if (!payload || typeof payload !== "object" || (payload as { taskId?: unknown }).taskId !== bannerTaskId) return;
+    setPhaseArtifactRevision((revision) => revision + 1);
+  });
 
   const phaseLabel = session ? normalizePhaseLabel(session.label) : null;
   const planPhaseWorkflow = session?.workflowType === "rpi" || session?.workflowType === "prd_tdd";
+  const needsPhaseReview = phaseLabel === "implementation" && planPhaseWorkflow;
   useEffect(() => {
-    setNextPlanPhase(null);
-    if (!threadId || !session || phaseLabel !== "implementation" || !planPhaseWorkflow) return;
+    setPhaseHandoff(null);
+    if (!threadId || !session || !needsPhaseReview) return;
     let cancelled = false;
     void (async () => {
       try {
         const { artifacts } = await rpc.call("listArtifacts", { taskId: session.taskId });
         const plan = latestPlanArtifact(artifacts);
-        if (!plan || cancelled) return;
+        if (!plan) {
+          if (!cancelled) setPhaseHandoff({ ok: false, error: "phase_not_in_plan" });
+          return;
+        }
         const { content } = await rpc.call("getArtifact", { taskId: session.taskId, fileName: plan.fileName });
-        if (cancelled || !content) return;
-        const receipt = latestImplementationReceipt(artifacts);
-        const receiptContent = receipt
-          ? (await rpc.call("getArtifact", { taskId: session.taskId, fileName: receipt.fileName })).content
-          : null;
         if (cancelled) return;
-        setNextPlanPhase(nextImplementablePlanPhase(content, receiptContent));
+        if (!content) {
+          setPhaseHandoff({ ok: false, error: "phase_not_in_plan" });
+          return;
+        }
+        setPhaseHandoff(derivePhaseHandoff(content, parsePrimaryReviewArtifact(session.summaryJson), artifacts));
       } catch {
-        if (!cancelled) setNextPlanPhase(null);
+        if (!cancelled) setPhaseHandoff({ ok: false, error: "missing_review_artifact" });
       }
     })();
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threadId, session?.taskId, phaseLabel, session?.workflowType, session?.rpiStatus, session?.completedTurnKey]);
+  }, [threadId, session?.taskId, session?.summaryJson, phaseLabel, session?.workflowType, session?.rpiStatus, session?.completedTurnKey, phaseArtifactRevision]);
 
   if (!threadId || !session) return null;
 
@@ -4779,12 +4787,18 @@ export function RpiComposerBanner() {
   const successorThreadId = taskAttempts.find((attempt) =>
     attempt.fromThreadId === threadId && attempt.status === "spawned" && attempt.threadId,
   )?.threadId ?? null;
-  const completion = completionActionsForSession(session, {
-    activeAttempt: Boolean(activeAttempt),
-    successorThreadId,
-    nextPlanPhase,
-  });
-  if (!completion && (!contextWarn || contextWarningDismissed)) return null;
+  const completionBase = !needsPhaseReview || phaseHandoff
+    ? completionActionsForSession(session, {
+      activeAttempt: Boolean(activeAttempt),
+      successorThreadId,
+      nextPlanPhase: phaseHandoff?.ok ? phaseHandoff.nextPhase : null,
+    })
+    : null;
+  const completion = completionBase && needsPhaseReview && phaseHandoff && !phaseHandoff.ok && completionBase.state !== "replaced"
+    ? { ...completionBase, actions: completionBase.actions.filter((action) => action.id === "iterate") }
+    : completionBase;
+  const showReviewState = needsPhaseReview && phaseHandoff !== null && completionBase !== null && completionBase.state !== "replaced";
+  if (!completion && !showReviewState && (!contextWarn || contextWarningDismissed)) return null;
 
   const launchIterateDirect = async (override?: ModelOverride | null) => {
     setLaunchingActionId("iterate");
@@ -4841,6 +4855,35 @@ export function RpiComposerBanner() {
   return (
     <TooltipProvider delayDuration={300}>
     <div className="flex w-full min-w-0 flex-wrap items-center gap-2">
+      {showReviewState ? (
+        phaseHandoff.ok ? (
+          <div role="group" aria-label="Phase review" className="flex min-w-0 flex-1 flex-wrap items-center gap-2 text-xs">
+            <span className="shrink-0 font-semibold text-foreground">Phase {phaseHandoff.completedPhase} ready for review</span>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-7 shrink-0 px-2 text-xs"
+              onClick={() => openRpiArtifact(navigate, session.taskId, phaseHandoff.reviewArtifact.fileName)}
+            >
+              Open review artifact
+            </Button>
+            <span className="shrink-0 text-muted-foreground">{plural(phaseHandoff.reviewArtifact.commentCount, "unresolved comment")}</span>
+            <span className="min-w-0 text-muted-foreground">Open the artifact for exact checks and known limits.</span>
+          </div>
+        ) : (
+          <div role="status" aria-label="Phase review metadata unavailable" className="flex min-w-0 flex-1 flex-wrap items-center gap-2 text-xs">
+            <span className="shrink-0 font-semibold text-foreground">Phase review metadata unavailable</span>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-7 shrink-0 px-2 text-xs"
+              onClick={() => navigate.toPluginPanel("rpi", { subPath: `tasks/${session.taskId}/artifacts` })}
+            >
+              Open task artifacts
+            </Button>
+          </div>
+        )
+      ) : null}
       {completion ? (
         <div
           role="group"
@@ -4869,7 +4912,7 @@ export function RpiComposerBanner() {
                   aria-label={action.id === "agent-suggestion" ? "Agent suggestion" : action.label}
                   onClick={() => runAction(action)}
                 >
-                  <span className="truncate" title={action.id === "implement-phase" && nextPlanPhase?.title ? nextPlanPhase.title : undefined}>
+                  <span className="truncate" title={action.id === "implement-phase" && phaseHandoff?.ok && phaseHandoff.nextPhase?.title ? phaseHandoff.nextPhase.title : undefined}>
                     {action.id === "agent-suggestion" ? "Agent suggestion" : action.label}
                   </span>
                 </Button>
@@ -4960,6 +5003,13 @@ function LaunchActionDialog({
   const description = pendingAction === "iterate"
     ? "The current session keeps running."
     : "Starts the next session for this task.";
+  const launchLabel = pendingAction === "iterate"
+    ? "Iterate"
+    : pendingAction?.id === "implement-phase" && pendingAction.intent.kind === "completion" && pendingAction.intent.phase !== undefined
+      ? `Approve Phase ${pendingAction.intent.phase - 1} and start Phase ${pendingAction.intent.phase}`
+      : pendingAction
+        ? `Approve and ${pendingAction.label}`
+        : "Launch";
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
@@ -4995,7 +5045,7 @@ function LaunchActionDialog({
             disabled={launching}
             onClick={() => onLaunch(useDefault ? null : { providerId: value.providerId!, model: value.model!, ...(value.reasoningLevel ? { reasoningLevel: value.reasoningLevel as ModelOverride["reasoningLevel"] } : {}) })}
           >
-            {pendingAction === "iterate" ? "Iterate" : "Launch"}
+            {launchLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

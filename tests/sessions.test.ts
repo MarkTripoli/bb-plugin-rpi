@@ -316,12 +316,62 @@ test("idle completion stores next step and relevant RPI documents", async () => 
   db.close();
 });
 
+test("idle completion binds a just-ingested review artifact, stays idempotent, and clears it on the next real turn", async () => {
+  const db = makeDb();
+  const mirror = new Map();
+  seedSession(db);
+  const taskId = (db.prepare("SELECT task_id AS taskId FROM sessions WHERE thread_id = 'thr_1'").get() as { taskId: string }).taskId;
+  const content = "---\ntype: implementation\n---\n# Receipt\n";
+  const bb = {
+    log: { info: () => undefined, warn: () => undefined },
+    realtime: { publish: () => undefined },
+    sdk: {
+      threads: {
+        interactions: { list: async () => [] },
+        timeline: async () => ({ rows: [] }),
+        get: async () => ({ environment: { path: "/repo", hostId: "host_1" } }),
+      },
+      files: {
+        listPaths: async () => ({ paths: [{ kind: "file", path: "01-implementation.md", sizeBytes: Buffer.byteLength(content) }] }),
+        read: async () => ({ content, contentEncoding: "utf8", sha256: "disk-sha", sizeBytes: Buffer.byteLength(content) }),
+      },
+    },
+  };
+  const firstThread = thread({ numEvents: 1, updatedAt: 2 });
+  const directive = `::rpi-artifact{task="${taskId}" file="01-implementation.md"}`;
+  await recordIdleCompletion(bb as never, db, mirror, firstThread, `Ready for review.\n${directive}`);
+  let summary = parseJson<{ summaryHistory?: string[]; primaryReviewArtifact?: { fileName: string } | null }>(
+    (db.prepare("SELECT summary_json AS summaryJson FROM sessions WHERE thread_id = ?").get("thr_1") as { summaryJson: string }).summaryJson,
+    {},
+  );
+  assert.deepEqual(summary.primaryReviewArtifact, { fileName: "01-implementation.md" });
+
+  await recordIdleCompletion(bb as never, db, mirror, firstThread, "same turn without directive");
+  summary = parseJson(
+    (db.prepare("SELECT summary_json AS summaryJson FROM sessions WHERE thread_id = ?").get("thr_1") as { summaryJson: string }).summaryJson,
+    {},
+  );
+  assert.deepEqual(summary.primaryReviewArtifact, { fileName: "01-implementation.md" });
+
+  await recordIdleCompletion(bb as never, db, mirror, thread({ numEvents: 2, updatedAt: 3 }), "next turn without directive");
+  summary = parseJson(
+    (db.prepare("SELECT summary_json AS summaryJson FROM sessions WHERE thread_id = ?").get("thr_1") as { summaryJson: string }).summaryJson,
+    {},
+  );
+  assert.equal(summary.primaryReviewArtifact, null);
+  assert.equal(summary.summaryHistory?.length, 2);
+  db.close();
+});
+
 test("system-injected initiating messages append summary without overwriting an existing next step", async () => {
   const db = makeDb();
   const mirror = new Map();
   seedSession(db);
   const priorNext = JSON.stringify({ parsedAt: 1, extraction: { type: "next_step_found", nextStepPrompt: "/rpi-create-research", nextStepSummary: "next", nextStepType: "create-research", taskReference: null, suggestedDirectory: null } });
-  db.prepare("UPDATE sessions SET label = 'research-questions', rpi_status = 'ready_for_input', next_step_json = ?, next_step_turn_key = 'turn_old', completed_turn_key = 'turn_old', last_summarized_turn_key = 'turn_old' WHERE thread_id = 'thr_1'").run(priorNext);
+  db.prepare("UPDATE sessions SET label = 'research-questions', rpi_status = 'ready_for_input', next_step_json = ?, summary_json = ?, next_step_turn_key = 'turn_old', completed_turn_key = 'turn_old', last_summarized_turn_key = 'turn_old' WHERE thread_id = 'thr_1'").run(
+    priorNext,
+    JSON.stringify({ primaryReviewArtifact: { fileName: "01-review.md" } }),
+  );
   mirrorSession(db, mirror, "thr_1");
   let spawns = 0;
   const bb = {
@@ -351,7 +401,9 @@ test("system-injected initiating messages append summary without overwriting an 
   assert.equal(stored.completed_turn_key, "turn_old");
   assert.equal(stored.next_step_turn_key, "turn_old");
   assert.equal(stored.next_step_json, priorNext);
-  assert.deepEqual(parseJson<{ summaryHistory?: string[] }>(stored.summary_json, {}).summaryHistory, ["noted"]);
+  const summary = parseJson<{ summaryHistory?: string[]; primaryReviewArtifact?: { fileName: string } | null }>(stored.summary_json, {});
+  assert.deepEqual(summary.summaryHistory, ["noted"]);
+  assert.deepEqual(summary.primaryReviewArtifact, { fileName: "01-review.md" });
   const result = await proceed(bb as never, db, new Map(), createLaunchBindingMirror(), "thr_1");
   assert.deepEqual(result, { threadId: "thr_next" });
   assert.equal(spawns, 1);

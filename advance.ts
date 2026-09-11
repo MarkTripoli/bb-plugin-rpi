@@ -3,7 +3,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type * as BetterSqlite3 from "better-sqlite3";
 import { parseJson, readRow, writeRow } from "./db";
 import { getArtifactVersion, listArtifacts } from "./artifacts";
-import { latestImplementationReceipt, latestPlanArtifact, nextImplementablePlanPhase, type PlanPhaseHint } from "./plan-phases";
+import { derivePhaseHandoff, latestPlanArtifact, parsePrimaryReviewArtifact, type PhaseHandoff } from "./plan-phases";
 import { manualLaunchRequestSchema, type ManualLaunchIntent, type ManualLaunchRequest, type ModelOverride, type PreparedManualLaunch, type SessionRow, type TaskRecord } from "./contract";
 import type { NextStepSuggestions } from "./extraction";
 import {
@@ -325,6 +325,10 @@ async function resolveManualIntent(bb: BbPluginApi, db: Database, intent: Manual
     const task = manualTaskRecord(db, session.taskId);
     const validation = await validateAdvance(bb, db, task, session, "proceed");
     if (!validation.ok) throw validation.error;
+    if (requiresNumericPhaseHandoff(task, session) && !phaseHandoffForSession(db, session).ok) {
+      throw new LaunchRejectedError("stale_intent", "Phase review metadata is unavailable.");
+    }
+    requirePrimaryReviewArtifact(db, session);
     return {
       task,
       skillId: validation.nextStep.extraction.nextStepType,
@@ -360,10 +364,22 @@ async function resolveManualIntent(bb: BbPluginApi, db: Database, intent: Manual
     const task = manualTaskRecord(db, session.taskId);
     const sourceError = await validateCompletionSource(bb, db, task, session);
     if (sourceError) throw sourceError;
-    const nextPlanPhase = taskNextPlanPhase(db, task.id);
+    requirePrimaryReviewArtifact(db, session);
+    const handoff = phaseHandoffForSession(db, session);
+    const nextPlanPhase = handoff.ok ? handoff.nextPhase : null;
+    if (requiresNumericPhaseHandoff(task, session)) {
+      if (!handoff.ok) {
+        throw new LaunchRejectedError("stale_intent", "Phase review metadata is unavailable.");
+      }
+      if (intent.skillId === "implement-plan" && intent.phase !== handoff.nextPhase?.phase) {
+        throw new LaunchRejectedError("stale_intent", "This phase action is no longer available.");
+      }
+    }
     const projection = completionActionsForSession({ ...session, workflowType: task.workflowType }, { activeAttempt: false, successorThreadId: successorFor(db, session.threadId), nextPlanPhase });
     const action = projection?.actions.find((candidate) =>
-      candidate.intent.kind === "completion" && candidate.intent.skillId === intent.skillId,
+      candidate.intent.kind === "completion"
+      && candidate.intent.skillId === intent.skillId
+      && candidate.intent.phase === intent.phase,
     );
     const info = skillInfo(intent.skillId);
     if (!action || !info) throw new LaunchRejectedError("stale_intent", "This phase action is no longer available.");
@@ -412,22 +428,30 @@ function manualTaskRecord(db: Database, taskId: string) {
   return result.task;
 }
 
-// Server-side mirror of the banner's own derivation: reads the task's newest plan artifact and
-// parses its phase markers, so launchCompletion validates the same "Implement Phase N" action
-// the UI computed. Any read/parse failure degrades to null (no phase action), never throws.
-function taskNextPlanPhase(db: Database, taskId: string): PlanPhaseHint | null {
+export function phaseHandoffForSession(db: Database, session: Pick<SessionRow, "taskId" | "summaryJson">): PhaseHandoff {
   try {
-    const artifacts = listArtifacts(db, taskId);
+    const artifacts = listArtifacts(db, session.taskId);
     const plan = latestPlanArtifact(artifacts);
-    if (!plan) return null;
-    const planContent = getArtifactVersion(db, taskId, plan.fileName)?.version.content.toString("utf8") ?? null;
-    if (planContent === null) return null;
-    const receipt = latestImplementationReceipt(artifacts);
-    const receiptContent = receipt ? getArtifactVersion(db, taskId, receipt.fileName)?.version.content.toString("utf8") ?? null : null;
-    return nextImplementablePlanPhase(planContent, receiptContent);
+    if (!plan) return { ok: false, error: "phase_not_in_plan" };
+    const planContent = getArtifactVersion(db, session.taskId, plan.fileName)?.version.content.toString("utf8");
+    if (planContent === undefined) return { ok: false, error: "phase_not_in_plan" };
+    return derivePhaseHandoff(planContent, parsePrimaryReviewArtifact(session.summaryJson), artifacts);
   } catch {
-    return null;
+    return { ok: false, error: "missing_review_artifact" };
   }
+}
+
+function requirePrimaryReviewArtifact(db: Database, session: Pick<SessionRow, "taskId" | "label" | "summaryJson">) {
+  if (!session.label) return;
+  const primary = parsePrimaryReviewArtifact(session.summaryJson);
+  if (!primary || !listArtifacts(db, session.taskId).some((artifact) => artifact.fileName === primary.fileName)) {
+    throw new LaunchRejectedError("stale_intent", "Phase review metadata is unavailable.");
+  }
+}
+
+function requiresNumericPhaseHandoff(task: Pick<TaskRecord, "workflowType">, session: Pick<SessionRow, "label">) {
+  return normalizePhaseLabel(session.label) === "implementation"
+    && (task.workflowType === "rpi" || task.workflowType === "prd_tdd");
 }
 
 function manualLaunchStateToken(db: Database, intent: ManualLaunchIntent, resolved: ResolvedManualLaunch) {
@@ -510,6 +534,9 @@ function advanceSession(
     if (!validation.ok) {
       if (mode === "proceed") throw validation.error;
       return { threadId: existing };
+    }
+    if (mode === "proceed" && requiresNumericPhaseHandoff(task, fresh) && !phaseHandoffForSession(db, fresh).ok) {
+      throw new LaunchRejectedError("stale_intent", "Phase review metadata is unavailable.");
     }
     const transition = validation.transition;
     const nextStep = validation.nextStep;

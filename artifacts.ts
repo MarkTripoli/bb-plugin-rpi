@@ -191,6 +191,35 @@ export function assertSafeArtifactFileName(fileName: string) {
 
 export const validateFileName = assertSafeArtifactFileName;
 
+export type PrimaryReviewArtifact = { fileName: string };
+
+export function extractPrimaryReviewArtifact(
+  text: string,
+  taskId: string,
+  liveArtifactNames: ReadonlySet<string>,
+): PrimaryReviewArtifact | null {
+  let fence: { marker: "`" | "~"; length: number } | null = null;
+  for (const line of text.split(/\r?\n/)) {
+    const fenceMatch = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (fenceMatch) {
+      const run = fenceMatch[1]!;
+      if (!fence) fence = { marker: run[0] as "`" | "~", length: run.length };
+      else if (run[0] === fence.marker && run.length >= fence.length) fence = null;
+      continue;
+    }
+    if (fence || /^(?: {4}|\t)/.test(line)) continue;
+    const match = /^ {0,3}::rpi-artifact\{task="([^"\r\n]+)" file="([^"\r\n]+)"\} {0,3}$/.exec(line);
+    if (!match || match[1] !== taskId) continue;
+    try {
+      const fileName = assertSafeArtifactFileName(match[2]!);
+      if (liveArtifactNames.has(fileName)) return { fileName };
+    } catch {
+      // Invalid directives are untrusted assistant output; keep looking for the first valid one.
+    }
+  }
+  return null;
+}
+
 export function parseFrontmatter(input: string | Buffer): Frontmatter {
   const text = Buffer.isBuffer(input) ? input.toString("utf8") : input;
   if (!text.startsWith("---\n") && !text.startsWith("---\r\n")) return {};

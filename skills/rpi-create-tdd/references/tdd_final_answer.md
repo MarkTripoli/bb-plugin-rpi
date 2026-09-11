@@ -1,9 +1,14 @@
-Artifact saved:
+The TDD is ready for review.
+
+Review artifact:
 {artifact_directive}
 
-The TDD is approved and ready for implementation structuring.
+Check:
+- {review_check}
+- Known limits: {known_limits}
 
-Auto-advance does not apply at this human gate. Continue manually with:
+If changes are needed, comment on the artifact and send the comments to an iteration session.
+If approved, choose **Proceed to plan**. Starting the plan records approval of the TDD.
 
 ```text
 /rpi-create-plan{artifact_arg}

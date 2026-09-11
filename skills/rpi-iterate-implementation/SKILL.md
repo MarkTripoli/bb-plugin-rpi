@@ -55,7 +55,9 @@ If the change updates comments, use `rpi_reply_to_artifact_comment` or `rpi_upda
 
 ### 6. Update the user
 
-Read `references/implementation_final_answer.md` from this skill directory and respond using that structure exactly. Include the saved `::rpi-artifact{...}` directive if a task artifact was written. The final answer must end with the single fenced `text` command from the template.
+When the iteration completes a numeric phase, call `rpi_next_artifact_number`, write one receipt from `references/implementation_template.md`, and save it with `rpi_artifact_save`. Set `completed_phase` to the highest plan or outline phase the receipt proves complete. Populate `Human Review` with exact review targets, checks, and known limits. Save this receipt even when later numeric phases remain.
+
+Read `references/implementation_phase_final_answer.md` when another numeric phase remains, and set `{implementation_command}` to `/rpi-implement-plan` or `/rpi-implement-outline` for the source artifact. Read `references/implementation_final_answer.md` only for terminal implementation. Populate `Check` from the receipt's `Human Review` section, include exactly one standalone receipt directive, and keep the final command fence last.
 
 ## Guidance
 

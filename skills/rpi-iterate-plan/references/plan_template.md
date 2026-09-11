@@ -72,3 +72,17 @@ sha: [current commit]
 ## Phase 2: [Phase title]
 
 [Repeat this structure.]
+
+## Human Review
+
+### Review targets
+
+- [Phase boundaries, dependencies, and changed-file ownership to inspect.]
+
+### Verify
+
+- [ ] [Exact plan or acceptance check required before implementation.]
+
+### Known limits
+
+- [Known limit, or `None.`]

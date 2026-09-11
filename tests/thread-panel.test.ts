@@ -28,4 +28,6 @@ test("app exposes one consolidated RPI thread panel action", () => {
     assert.doesNotMatch(uiSource, new RegExp(`Workflow actions[\\s\\S]{0,400}${label}`));
   }
   assert.doesNotMatch(uiSource, /rpc\.call\("launchSkill"/);
+  assert.match(uiSource, /function openRpiArtifact\(/);
+  assert.match(uiSource, /openRpiArtifact\(navigate, session\.taskId, phaseHandoff\.reviewArtifact\.fileName\)/);
 });

@@ -179,7 +179,7 @@ export const manualLaunchIntentSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("draft"), taskId: boundedId }).strict(),
   z.object({ kind: z.literal("skill"), taskId: boundedId, skillId: boundedId }).strict(),
   z.object({ kind: z.literal("proceed"), threadId: boundedId }).strict(),
-  z.object({ kind: z.literal("completion"), threadId: boundedId, skillId: boundedId }).strict(),
+  z.object({ kind: z.literal("completion"), threadId: boundedId, skillId: boundedId, phase: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional() }).strict(),
   z.object({ kind: z.literal("iterate"), threadId: boundedId }).strict(),
 ]);
 export type ManualLaunchIntent = z.infer<typeof manualLaunchIntentSchema>;
@@ -224,7 +224,7 @@ export const submitManualLaunchOutputSchema = z.discriminatedUnion("status", [
 ]);
 
 export const launchCompletionInputSchema = z.object({
-  intent: z.object({ kind: z.literal("completion"), threadId: boundedId, skillId: boundedId }).strict(),
+  intent: z.object({ kind: z.literal("completion"), threadId: boundedId, skillId: boundedId, phase: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional() }).strict(),
   modelOverride: modelOverrideSchema.optional(),
 }).strict();
 export const launchCompletionOutputSchema = z.object({ threadId: boundedId }).strict();

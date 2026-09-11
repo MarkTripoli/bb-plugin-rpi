@@ -87,3 +87,24 @@ test("phase completion owns continuation actions", () => {
     assert.equal(panel.includes(label), false, `side panel still owns ${label}`);
   }
 });
+
+test("phase completion presents the session-bound review handoff before actions", () => {
+  assert.match(content, /derivePhaseHandoff\(content, parsePrimaryReviewArtifact\(session\.summaryJson\), artifacts\)/);
+  assert.match(content, /Phase \{phaseHandoff\.completedPhase\} ready for review/);
+  assert.match(content, /Open review artifact/);
+  assert.match(content, /plural\(phaseHandoff\.reviewArtifact\.commentCount, "unresolved comment"\)/);
+  assert.match(content, /Open the artifact for exact checks and known limits\./);
+  assert.match(content, /Phase review metadata unavailable/);
+  assert.match(content, /Open task artifacts/);
+  assert.match(content, /actions\.filter\(\(action\) => action\.id === "iterate"\)/);
+  assert.match(content, /useRealtime\("rpi:artifacts", \(payload\) =>/);
+  assert.match(content, /setPhaseArtifactRevision\(\(revision\) => revision \+ 1\)/);
+  assert.match(content, /completionBase !== null && completionBase\.state !== "replaced"/);
+  assert.ok(content.indexOf("Open review artifact") < content.indexOf("completion ? ("));
+});
+
+test("launch dialog labels the confirmation as the approval event", () => {
+  assert.match(content, /Approve Phase \$\{pendingAction\.intent\.phase - 1\} and start Phase \$\{pendingAction\.intent\.phase\}/);
+  assert.match(content, /`Approve and \$\{pendingAction\.label\}`/);
+  assert.match(content, /pendingAction === "iterate"\s*\?\s*"Iterate"/);
+});

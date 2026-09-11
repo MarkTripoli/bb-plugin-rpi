@@ -1,9 +1,13 @@
-Artifact saved:
+The program design needs human review before implementation structuring.
+
+Review artifact:
 {artifact_directive}
 
-The program design is ready for review. Resolve any code-shape concerns before creating the structure outline.
+Check:
+- {review_check}
+- Known limits: {known_limits}
 
-Auto-advance does not apply at this human gate. Continue manually with:
+Comment on the artifact and send the comments to the iteration session. Starting iteration records requested changes, not approval.
 
 ```text
 /rpi-iterate-tdd{artifact_arg}
