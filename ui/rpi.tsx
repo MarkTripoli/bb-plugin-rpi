@@ -10,6 +10,7 @@ import {
   experimental_useSidebarThreads,
   useBbContext,
   useBbNavigate,
+  useComposer,
   useComposerView,
   useRealtime,
   useRpc,
@@ -60,6 +61,8 @@ import { markdownBlocks, markdownGroups } from "../blocks";
 import { ScratchPadSync } from "../scratch-pad-sync";
 import { parseRpiThreadPanelParams, type RpiThreadPanelView } from "../thread-panel";
 import { buildManualLaunchRoute, parseManualLaunchRoute } from "../manual-launch";
+import { manualLaunchRequestSchema } from "../contract";
+import { composerRequestToTaskCreate } from "../task-create";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -1222,58 +1225,16 @@ function NewTaskPage({
 }) {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
+  const composer = useComposer();
   const { projectId: currentProjectId } = useBbContext();
   const { values: settings, isLoading: settingsLoading } = useSettings();
-  const [text, setText] = useState("");
-  const [name, setName] = useState("");
-  const [projectOptions, setProjectOptions] = useState<Array<{ id: string; name: string }>>([]);
-  const [hostOptions, setHostOptions] = useState<Array<{ id: string; name: string; status: string }>>([]);
-  const [projectId, setProjectId] = useState(currentProjectId ?? "");
-  const [hostId, setHostId] = useState("");
-  const [defaultDirectory, setDefaultDirectory] = useState("");
-  const [permissionMode, setPermissionMode] = useState<"default" | "accept_edits" | "auto" | "bypass">("default");
-  const [workflowType, setWorkflowType] = useState<"rpi" | "outline_only" | "prd_tdd" | "oneshot" | "freeform">("rpi");
+  const [workflowType, setWorkflowType] = useState<WorkflowType>("rpi");
   const [worktreeTiming, setWorktreeTiming] = useState<"now" | "later" | "never">("later");
   const [autoAdvance, setAutoAdvance] = useState(false);
-  const [providerId, setProviderId] = useState<string | null>(null);
-  const [model, setModel] = useState<string | null>(null);
-  const [reasoningLevel, setReasoningLevel] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
-    Promise.all([
-      rpc.call("listProjects", { includePersonal: true }),
-      rpc.call("listHosts", {}),
-    ]).then(([projects, hosts]) => {
-      if (cancelled) return;
-      setProjectOptions(projects as Array<{ id: string; name: string }>);
-      setHostOptions(hosts as Array<{ id: string; name: string; status: string }>);
-      if (!projectId) {
-        setProjectId((projects[0] as { id: string } | undefined)?.id ?? "");
-      }
-      if (!hostId) {
-        setHostId((hosts[0] as { id: string } | undefined)?.id ?? "");
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [hostId, projectId, rpc]);
-
-  useEffect(() => {
     if (settingsLoading) return;
-    const permissionModeSetting = settings?.defaultPermissionMode;
-    if (
-      permissionModeSetting === "default" ||
-      permissionModeSetting === "accept_edits" ||
-      permissionModeSetting === "auto" ||
-      permissionModeSetting === "bypass"
-    ) {
-      setPermissionMode(permissionModeSetting);
-    } else {
-      setPermissionMode("default");
-    }
     const workflowTypeSetting = settings?.defaultWorkflowType;
     if (
       workflowTypeSetting === "rpi" ||
@@ -1296,57 +1257,60 @@ function NewTaskPage({
   }, [settings, settingsLoading]);
 
   const draftTasks = useMemo(() => tasks.filter((task) => task.isDraft), [tasks]);
-  const createDraft = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (busy || projectId === "" || text.trim() === "") return;
+
+  // The composer's submit is the create-and-start path, exactly like bb's default new-thread
+  // screen: submit creates the task as a draft row, launches its first phase, and opens the
+  // thread. Throwing keeps the host draft so a failed create never loses what the user typed.
+  const createAndLaunch = async (request: NewThreadRequest) => {
+    const validated = manualLaunchRequestSchema.parse(request);
+    const input = composerRequestToTaskCreate(validated, { workflowType, worktreeTiming, autoAdvance });
+    if (input.text === "") {
+      toast.error("Add a text prompt before creating the task.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const created = await rpc.call("createTask", { request: input, draft: true });
+      const launched = await rpc.call("launchDraft", { taskId: created.taskId });
+      navigate.toThread(launched.threadId);
+    } catch (error) {
+      reportLaunchError(error);
+      throw error;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Plugin-owned draft save: the composer exposes no read-side API for its selected project,
+  // host, or model, so a draft captures the prompt text and the extras into the project this
+  // panel is opened in. Host and directory stay null so launch resolution falls back to the
+  // project's default source; the task's Settings tab can pin them before launch.
+  const saveDraft = async () => {
+    const text = composer.text.trim();
+    if (text === "") {
+      toast.error("Type a prompt before saving a draft.");
+      return;
+    }
+    if (!currentProjectId) {
+      toast.error("Open a project before saving a draft.");
+      return;
+    }
     setBusy(true);
     try {
       await rpc.call("createTask", {
         request: {
           text,
-          projectId,
-          hostId: hostId || null,
-          defaultDirectory: defaultDirectory.trim() || null,
+          projectId: currentProjectId,
+          hostId: null,
+          defaultDirectory: null,
           workflowType,
           worktreeTiming,
-          permissionMode,
           autoAdvance,
-          providerId,
-          model,
-          reasoningLevel,
         },
-        name: name.trim() || undefined,
         draft: true,
       });
-      setText("");
-      setName("");
-    } finally {
-      setBusy(false);
-    }
-  };
-  const createAndLaunch = async () => {
-    if (busy || projectId === "" || text.trim() === "") return;
-    setBusy(true);
-    try {
-      const created = await rpc.call("createTask", {
-        request: {
-          text,
-          projectId,
-          hostId: hostId || null,
-          defaultDirectory: defaultDirectory.trim() || null,
-          workflowType,
-          worktreeTiming,
-          permissionMode,
-          autoAdvance,
-          providerId,
-          model,
-          reasoningLevel,
-        },
-        name: name.trim() || undefined,
-        draft: true,
-      });
-      const launched = await rpc.call("launchDraft", { taskId: created.taskId });
-      navigate.toThread(launched.threadId);
+      composer.clear();
+      toast.success("Draft saved. Find it under Drafts.");
     } catch (error) {
       reportLaunchError(error);
     } finally {
@@ -1354,170 +1318,77 @@ function NewTaskPage({
     }
   };
 
-  const projectLabel = (projectId && projectOptions.find((project) => project.id === projectId)?.name) ||
-    (projectId || "Select project");
-  const hostLabel = (hostId && hostOptions.find((host) => host.id === hostId)?.name) ||
-    (hostId || "Select host");
-
-  const firstSkillId = FIRST_SKILL_BY_WORKFLOW[workflowType];
-  const firstPhaseLabel = firstSkillId ? labelStep(SKILL_BY_ID[firstSkillId].label) : null;
-  const primaryLabel = firstPhaseLabel ? `Create and start ${firstPhaseLabel}` : "Create";
   const workflowSteps = WORKFLOW_GRAPHS[workflowType];
-  // Helper copy is linked with aria-describedby rather than nested in the <label>, so a control's
-  // name is "Worktree", not "Worktree Research and planning run in...".
   const hintId = useId();
   const worktreeHintId = `${hintId}-worktree`;
   const workflowHintId = `${hintId}-workflow`;
   const autoAdvanceHintId = `${hintId}-auto-advance`;
 
   return (
-    <div className="space-y-6">
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 py-2">
       <div className="space-y-1">
         <h1 className="text-lg font-semibold text-foreground">New task</h1>
-        <p className="text-sm text-muted-foreground">Describe the task, then choose where and how it runs.</p>
+        <p className="text-sm text-muted-foreground">Describe the task. The compose surface picks project, machine, workspace, and model; the row below shapes the RPI workflow.</p>
       </div>
 
-      <form onSubmit={createDraft} className="space-y-4">
-        <div className="space-y-4 rounded-2xl border border-border bg-card/70 p-4 shadow-sm">
-          <textarea
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-            placeholder="Describe the task..."
-            aria-label="Task description"
-            className="min-h-[220px] w-full resize-y rounded-xl border border-border bg-background/80 p-4 text-base leading-7 text-foreground outline-none placeholder:text-muted-foreground focus:border-foreground"
-          />
-          <label className="block max-w-[320px] space-y-1 text-xs text-muted-foreground">
-            <span className="block">Task name</span>
-            <Input
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="Task name"
-              className="h-10"
+      <div className="min-h-[200px]">
+        <NewThreadComposer
+          className="w-full"
+          defaultProjectId={currentProjectId ?? undefined}
+          layout="document"
+          onSubmit={createAndLaunch}
+        />
+      </div>
+
+      <div className="space-y-3 rounded-2xl border border-border bg-card/70 p-4 shadow-sm">
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="space-y-1 text-xs text-muted-foreground">
+            <label htmlFor={`${hintId}-workflow-select`} className="block">Workflow</label>
+            <ComposerToolbarSelect
+              id={`${hintId}-workflow-select`}
+              describedBy={workflowHintId}
+              className="w-full"
+              value={workflowType}
+              onChange={(value) => setWorkflowType(value as WorkflowType)}
+              options={(Object.keys(WORKFLOW_GRAPH_LABELS) as WorkflowType[]).map((key) => ({
+                value: key,
+                label: `${WORKFLOW_GRAPH_LABELS[key]} (${plural(WORKFLOW_GRAPHS[key].length, "step")})`,
+              }))}
             />
-          </label>
 
-          <div className="grid gap-4 lg:grid-cols-2">
-            <div className="space-y-3 rounded-xl border border-border bg-card p-3">
-              <h2 className="text-sm font-semibold text-foreground">Where</h2>
-              <label className="block space-y-1 text-xs text-muted-foreground">
-                <span className="block">Project</span>
-                <ComposerToolbarSelect
-                  className="w-full"
-                  value={projectId}
-                  onChange={setProjectId}
-                  options={projectOptions.map((project) => ({ value: project.id, label: project.name }))}
-                />
-              </label>
-              <label className="block space-y-1 text-xs text-muted-foreground">
-                <span className="block">Machine</span>
-                <ComposerToolbarSelect
-                  className="w-full"
-                  value={hostId}
-                  onChange={setHostId}
-                  options={hostOptions.map((host) => ({ value: host.id, label: host.name }))}
-                />
-              </label>
-              <div className="space-y-1 text-xs text-muted-foreground">
-                <label htmlFor={`${hintId}-worktree-select`} className="block">Worktree</label>
-                <ComposerToolbarSelect
-                  id={`${hintId}-worktree-select`}
-                  describedBy={worktreeHintId}
-                  className="w-full"
-                  value={worktreeTiming}
-                  onChange={(value) => setWorktreeTiming(value as "now" | "later" | "never")}
-                  options={[
-                    { value: "now", label: "From the start" },
-                    { value: "later", label: "After planning" },
-                    { value: "never", label: "No worktree" },
-                  ]}
-                />
-                <span id={worktreeHintId} className="block text-muted-foreground">Research and planning run in the main checkout; implementation gets its own branch.</span>
-              </div>
-              <label className="block space-y-1 text-xs text-muted-foreground">
-                <span className="block">Working directory</span>
-                <Input
-                  value={defaultDirectory}
-                  onChange={(event) => setDefaultDirectory(event.target.value)}
-                  placeholder="Default: repo root"
-                  className="h-9"
-                />
-              </label>
-            </div>
-
-            <div className="space-y-3 rounded-xl border border-border bg-card p-3">
-              <h2 className="text-sm font-semibold text-foreground">How</h2>
-              <div className="space-y-1 text-xs text-muted-foreground">
-                <label htmlFor={`${hintId}-workflow-select`} className="block">Workflow</label>
-                <ComposerToolbarSelect
-                  id={`${hintId}-workflow-select`}
-                  describedBy={workflowHintId}
-                  className="w-full"
-                  value={workflowType}
-                  onChange={(value) => setWorkflowType(value as "rpi" | "outline_only" | "prd_tdd" | "oneshot" | "freeform")}
-                  options={(Object.keys(WORKFLOW_GRAPH_LABELS) as WorkflowType[]).map((key) => ({
-                    value: key,
-                    label: `${WORKFLOW_GRAPH_LABELS[key]} (${plural(WORKFLOW_GRAPHS[key].length, "step")})`,
-                  }))}
-                />
-                <span id={workflowHintId} className="block text-muted-foreground">{workflowSteps.join(" \u2192 ")}</span>
-              </div>
-              <label className="block space-y-1 text-xs text-muted-foreground">
-                <span className="block">Permissions</span>
-                <ComposerToolbarSelect
-                  className="w-full"
-                  value={permissionMode}
-                  onChange={(value) => setPermissionMode(value as "default" | "accept_edits" | "auto" | "bypass")}
-                  options={[
-                    { value: "default", label: "Default" },
-                    { value: "accept_edits", label: "Accept edits" },
-                    { value: "auto", label: "Auto" },
-                    { value: "bypass", label: "Bypass" },
-                  ]}
-                />
-              </label>
-              <div className="space-y-1 text-xs text-muted-foreground">
-                <label className="flex w-fit cursor-pointer items-center gap-2 py-1 text-sm font-medium text-foreground">
-                  <Checkbox checked={autoAdvance} onCheckedChange={(checked) => setAutoAdvance(checked === true)} aria-describedby={autoAdvanceHintId} />
-                  Auto-advance
-                </label>
-                <span id={autoAdvanceHintId} className="block">Phases chain automatically; you approve before implementation and before the optional review or PR.</span>
-              </div>
-              <RpiModelPicker
-                hostId={hostId || null}
-                value={{ providerId, model, reasoningLevel }}
-                onChange={(next) => {
-                  setProviderId(next.providerId);
-                  setModel(next.model);
-                  setReasoningLevel(next.reasoningLevel);
-                }}
-                allowDefault
-              />
-              <span className="block text-xs text-muted-foreground">Applies to every session of this task. You can change it later in the task's Settings tab.</span>
-            </div>
+            <span id={workflowHintId} className="block text-muted-foreground">{workflowSteps.join(" \u2192 ")}</span>
           </div>
-
-          <div className="flex items-center justify-end gap-2">
-            <button
-              type="submit"
-              disabled={busy || text.trim() === "" || projectId === ""}
-              className="inline-flex h-10 items-center gap-2 rounded-md border border-border bg-card px-4 text-sm font-semibold text-foreground transition hover:border-foreground/40 disabled:cursor-not-allowed disabled:text-muted-foreground disabled:opacity-60"
-            >
-              <Icon name="EditFile" className="size-4" />
-              Save as draft
-            </button>
-            <button
-              type="button"
-              onClick={createAndLaunch}
-              disabled={busy || text.trim() === "" || projectId === ""}
-              title={primaryLabel}
-              className="inline-flex h-10 items-center gap-2 rounded-md bg-foreground px-4 text-sm font-semibold text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <Icon name="Play" className="size-4" />
-              {primaryLabel}
-            </button>
+          <div className="space-y-1 text-xs text-muted-foreground">
+            <label htmlFor={`${hintId}-worktree-select`} className="block">Worktree</label>
+            <ComposerToolbarSelect
+              id={`${hintId}-worktree-select`}
+              describedBy={worktreeHintId}
+              className="w-full"
+              value={worktreeTiming}
+              onChange={(value) => setWorktreeTiming(value as "now" | "later" | "never")}
+              options={[
+                { value: "now", label: "From the start" },
+                { value: "later", label: "After planning" },
+                { value: "never", label: "No worktree" },
+              ]}
+            />
+            <span id={worktreeHintId} className="block text-muted-foreground">Research and planning run in the main checkout; implementation gets its own branch.</span>
           </div>
         </div>
-      </form>
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div className="space-y-1 text-xs text-muted-foreground">
+            <label className="flex w-fit cursor-pointer items-center gap-2 py-1 text-sm font-medium text-foreground">
+              <Checkbox checked={autoAdvance} onCheckedChange={(checked) => setAutoAdvance(checked === true)} aria-describedby={autoAdvanceHintId} />
+              Auto-advance
+            </label>
+            <span id={autoAdvanceHintId} className="block">Phases chain automatically; you approve before implementation and before the optional review or PR.</span>
+          </div>
+          <Button type="button" variant="outline" disabled={busy} onClick={saveDraft}>
+            <Icon name="EditFile" className="size-4" />
+            Save as draft
+          </Button>
+        </div>
+      </div>
 
       <div className="space-y-3">
         <SectionTitle title="Recent drafts" count={draftTasks.length} />
@@ -1537,10 +1408,6 @@ function NewTaskPage({
                 <div className="space-y-1">
                   <div className="font-medium text-foreground">{task.name}</div>
                   <div className="text-xs text-muted-foreground">{task.slug}</div>
-                </div>
-                <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                  <span>{projectLabel}</span>
-                  <span>{hostLabel}</span>
                 </div>
               </button>
             ))}

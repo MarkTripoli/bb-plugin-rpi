@@ -402,6 +402,7 @@ export function createDraftTask(
     model?: string | null;
     reasoningLevel?: string | null;
     serviceTier?: string | null;
+    baseEnvironmentId?: string | null;
   },
 ) {
   const createdAt = nowMs();
@@ -430,7 +431,7 @@ export function createDraftTask(
       input.workflowType,
       input.worktreeTiming,
       input.hostId ?? null,
-      null,
+      input.baseEnvironmentId ?? null,
       null,
       input.defaultDirectory ?? null,
       input.providerId ?? null,
