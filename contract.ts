@@ -572,6 +572,11 @@ export const taskCreateRequestSchema = z
     model: z.string().nullable().optional(),
     reasoningLevel: z.string().nullable().optional(),
     serviceTier: z.string().nullable().optional(),
+    // Composer-created tasks only: when the submit-side environment picker resolved to
+    // `{type:"reuse", environmentId}`, that environment becomes the task's base environment
+    // (tasks.base_environment_id), which selectEnvironment already prefers for base-role
+    // launches. Server-side createTask validates it still exists before storing.
+    baseEnvironmentId: boundedId.nullable().optional(),
     autoAdvance: z.boolean().default(false),
   })
   .strict();

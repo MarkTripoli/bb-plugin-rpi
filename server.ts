@@ -577,6 +577,11 @@ export default async function plugin(bb: BbPluginApi) {
         defaultDirectory: request.defaultDirectory ?? null,
         worktreeTiming: request.worktreeTiming,
       });
+      // A composer reuse-environment pick only stores if the environment still exists; a stale
+      // id must fail the create rather than silently degrade to the project default source.
+      if (request.baseEnvironmentId) {
+        await bb.sdk.environments.get({ environmentId: request.baseEnvironmentId });
+      }
       // Precedence: explicit request field (including an explicit clearing `null`) > that
       // workflow type's stored default > the workflow-agnostic global default.
       const resolved = resolveTaskExecutionDefaults(request, request.workflowType, prefs);
@@ -589,6 +594,7 @@ export default async function plugin(bb: BbPluginApi) {
         workflowType: request.workflowType,
         worktreeTiming: request.worktreeTiming,
         autoAdvance: request.autoAdvance,
+        baseEnvironmentId: request.baseEnvironmentId ?? null,
         ...resolved,
       });
       bb.realtime.publish("tasks", { taskId: result.taskId });

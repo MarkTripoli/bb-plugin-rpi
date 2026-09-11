@@ -729,3 +729,53 @@ test("launchSkill rejects while a launch_attempt for the task is already pending
   assert.equal(spawns, 0, "launchSkill must not spawn while a launch_attempt for this task is pending");
   await harness.lifecycle.dispose();
 });
+
+test("createTask stores a composer reuse environment as the task base environment and rejects a stale one", async (t) => {
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "rpi",
+    sdk: {
+      subscribe: () => () => undefined,
+      environments: {
+        get: async ({ environmentId }: { environmentId: string }) => {
+          if (environmentId !== "env_good") throw new Error(`No such environment: ${environmentId}`);
+          return { id: environmentId, hostId: "host_1", status: "ready" };
+        },
+      },
+    },
+  });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+
+  const created = await harness.behavior.callRpc("createTask", {
+    request: {
+      text: "Reuse base",
+      projectId: "proj_1",
+      workflowType: "freeform",
+      worktreeTiming: "never",
+      baseEnvironmentId: "env_good",
+      autoAdvance: false,
+    },
+    draft: true,
+  }) as { taskId: string };
+  const db = bb.storage.database();
+  assert.equal(
+    (db.prepare("SELECT base_environment_id FROM tasks WHERE id = ?").get(created.taskId) as { base_environment_id: string | null }).base_environment_id,
+    "env_good",
+  );
+
+  await assert.rejects(
+    harness.behavior.callRpc("createTask", {
+      request: {
+        text: "Stale base",
+        projectId: "proj_1",
+        workflowType: "freeform",
+        worktreeTiming: "never",
+        baseEnvironmentId: "env_gone",
+        autoAdvance: false,
+      },
+      draft: true,
+    }),
+    /No such environment/,
+  );
+  await harness.lifecycle.dispose();
+});
