@@ -412,7 +412,10 @@ export function registerArtifactTools(
         result = await ingest(bb, db, row.taskId, threadId, { threadId, fileName, operation: "ingest" });
         artifact = getArtifact(db, row.taskId, fileName);
       }
-      if (!artifact) throw new Error(`artifact not found: ${file_name}`);
+      if (!artifact) {
+        const directory = result.artifactDir ? ` (task artifact directory: ${result.artifactDir})` : "";
+        throw new Error(`artifact not found: ${file_name}${directory}. Write the file into the task artifact directory reported by rpi_task_context, using a bare name, then call rpi_artifact_save again.`);
+      }
       const saved = fileName.endsWith(".md") ? getArtifactVersion(db, row.taskId, fileName) : null;
       const writingIssues = saved ? lintWriting(saved.version.content.toString("utf8")) : [];
       return JSON.stringify({
