@@ -64,6 +64,8 @@ test("workspace view reports exactly-one-primary warnings and provisioning event
     aa_plan_to_worktree: true,
     aa_worktree_to_implementation: true,
     aa_implementation_to_pr: false,
+    e2eMode: false,
+    phaseModels: {},
     createdAt: 1,
     updatedAt: 1,
   } as const;
@@ -126,6 +128,8 @@ test("workspace view merges root .local.json overrides", async () => {
     aa_plan_to_worktree: true,
     aa_worktree_to_implementation: true,
     aa_implementation_to_pr: false,
+    e2eMode: false,
+    phaseModels: {},
     createdAt: 1,
     updatedAt: 1,
   } as const;
@@ -177,6 +181,8 @@ test("workspace config reads are rooted under .rpi and invalid config is surface
     aa_plan_to_worktree: true,
     aa_worktree_to_implementation: true,
     aa_implementation_to_pr: false,
+    e2eMode: false,
+    phaseModels: {},
     createdAt: 1,
     updatedAt: 1,
   } as const;

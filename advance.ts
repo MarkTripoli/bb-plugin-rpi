@@ -4,14 +4,16 @@ import type * as BetterSqlite3 from "better-sqlite3";
 import { parseJson, readRow, writeRow } from "./db";
 import { getArtifactVersion, listArtifacts } from "./artifacts";
 import { derivePhaseHandoff, latestPhaseArtifact, parsePrimaryReviewArtifact, type PhaseHandoff } from "./plan-phases";
-import { manualLaunchRequestSchema, type ManualLaunchIntent, type ManualLaunchRequest, type ModelOverride, type PreparedManualLaunch, type SessionRow, type TaskRecord } from "./contract";
+import { DEFAULT_E2E_PREFS, manualLaunchRequestSchema, type E2ePrefs, type ManualLaunchIntent, type ManualLaunchRequest, type ModelOverride, type PreparedManualLaunch, type SessionRow, type TaskRecord } from "./contract";
 import type { NextStepSuggestions } from "./extraction";
+import { e2eGuardState, phaseModelFor } from "./e2e";
 import {
   activeLaunchAttempt,
   environmentRoleForAttempt,
   insertAttempt,
   LaunchRejectedError,
   launchPhase,
+  listLaunchAttempts,
   resolveDraftLaunch,
   resolveSkillLaunch,
   selectEnvironment,
@@ -19,11 +21,13 @@ import {
   withTaskLock,
 } from "./launch";
 import { getTask } from "./tasks";
-import { AUTO_ADVANCE, ITERATE_SKILL_BY_LABEL, autoAdvanceAccepts, autoAdvanceTransition, completedTurnIsProcessed, completionActionsForSession, isNumericImplementationSkill, isReviewEntrySkill, normalizePhaseLabel, phaseImplementationSkill, skillInfo, type PhaseLabel } from "./transitions";
+import { AUTO_ADVANCE, ITERATE_SKILL_BY_LABEL, autoAdvanceAccepts, autoAdvanceTransition, completedTurnIsProcessed, completionActionsForSession, e2eTransition, isNumericImplementationSkill, isReviewEntrySkill, normalizePhaseLabel, phaseImplementationSkill, skillInfo, type PhaseLabel } from "./transitions";
 import type { LaunchBindingMirror, SessionMirrorRow } from "./sessions";
 
 type Database = BetterSqlite3.Database;
 type AdvanceMode = "auto_advance" | "proceed" | "completion";
+
+export type AdvanceOptions = { e2e?: () => E2ePrefs };
 
 export async function onCompletedTurn(
   bb: BbPluginApi,
@@ -31,8 +35,9 @@ export async function onCompletedTurn(
   mirror: Map<string, SessionMirrorRow>,
   bindings: LaunchBindingMirror,
   session: SessionRow,
+  options: AdvanceOptions = {},
 ) {
-  return advanceSession(bb, db, mirror, bindings, session, "auto_advance");
+  return advanceSession(bb, db, mirror, bindings, session, "auto_advance", undefined, options);
 }
 
 export async function proceed(
@@ -534,6 +539,7 @@ function advanceSession(
   session: SessionRow,
   mode: AdvanceMode,
   modelOverride?: ModelOverride,
+  options: AdvanceOptions = {},
 ) {
   return withTaskLock(session.taskId, async () => {
     const fresh = readSessionForAdvance(db, session.threadId) ?? session;
@@ -547,23 +553,48 @@ function advanceSession(
     }
     const transition = validation.transition;
     const nextStep = validation.nextStep;
+    let target: { skillId: string; commandLine: string; phase?: number } = {
+      skillId: nextStep.extraction.nextStepType,
+      commandLine: nextStep.extraction.nextStepPrompt,
+    };
+    let e2eHop = false;
     if (mode === "auto_advance") {
-      if (!transition || transition.flag === null) return { threadId: existing };
-      if (!autoAdvanceAccepts(normalizePhaseLabel(fresh.label) as PhaseLabel, task.workflowType, nextStep.extraction.nextStepType)) return { threadId: existing };
-      if (!task.autoAdvance || !task[transition.flag as keyof TaskRecord]) return { threadId: existing };
+      const label = normalizePhaseLabel(fresh.label) as PhaseLabel | null;
+      const prefs = options.e2e?.() ?? DEFAULT_E2E_PREFS;
+      const row = task.e2eMode ? e2eTransition(label, task.workflowType, nextStep.extraction.nextStepType) : undefined;
+      // listLaunchAttempts returns newest-first; e2eGuardState anchors by scanning the tail for
+      // the newest human launch, so feed it oldest-first.
+      const guards = row ? e2eGuardState([...listLaunchAttempts(db, task.id)].reverse(), prefs) : null;
+      const flagPath = Boolean(transition && transition.flag !== null
+        && label && autoAdvanceAccepts(label, task.workflowType, nextStep.extraction.nextStepType)
+        && task.autoAdvance && task[transition.flag as keyof TaskRecord]);
+      if (row && guards && !guards.pausedReason) {
+        if (row.chain === "phase") {
+          const handoff = phaseHandoffForSession(db, fresh, task.workflowType);
+          if (!handoff.ok || !handoff.nextPhase) {
+            if (!flagPath) return { threadId: existing };
+          } else {
+            target = { skillId: row.next, commandLine: nextStep.extraction.nextStepPrompt, phase: handoff.nextPhase.phase };
+            e2eHop = true;
+          }
+        } else {
+          target = { skillId: row.next, commandLine: row.next === nextStep.extraction.nextStepType ? nextStep.extraction.nextStepPrompt : skillInfo(row.next)!.command };
+          e2eHop = true;
+        }
+      }
+      if (!e2eHop && !flagPath) return { threadId: existing };
     }
-    const attempted = claimAdvanceAndAttempt(db, task, fresh, {
-      skillId: nextStep.extraction.nextStepType,
-      commandLine: nextStep.extraction.nextStepPrompt,
-    }, mode);
+    const attempted = claimAdvanceAndAttempt(db, task, fresh, target, mode);
     if (!attempted) return { threadId: successorFor(db, fresh.threadId) };
+    const phaseModel = mode === "auto_advance" ? phaseModelFor(task, skillInfo(target.skillId)?.label ?? null, options.e2e?.() ?? DEFAULT_E2E_PREFS) : undefined;
     return launchPhase(bb, db, mirror, bindings, task, {
-      skillId: nextStep.extraction.nextStepType,
-      commandLine: nextStep.extraction.nextStepPrompt,
+      skillId: target.skillId,
+      commandLine: target.commandLine,
       launchedBy: mode,
       fromThreadId: fresh.threadId,
-      modelOverride,
+      modelOverride: modelOverride ?? phaseModel,
       attemptId: attempted.attemptId,
+      e2ePermissionMode: (options.e2e?.() ?? DEFAULT_E2E_PREFS).permissionMode,
     });
   });
 }

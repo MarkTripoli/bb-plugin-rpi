@@ -18,7 +18,7 @@ function request(overrides: Partial<ManualLaunchRequest> = {}): ManualLaunchRequ
   } as unknown as ManualLaunchRequest;
 }
 
-const extras = { workflowType: "rpi" as const, worktreeTiming: "later" as const, autoAdvance: false };
+const extras = { workflowType: "rpi" as const, worktreeTiming: "later" as const, autoAdvance: false, e2eMode: false };
 
 test("maps text inputs to the task prompt", () => {
   const mapped = composerRequestToTaskCreate(request(), extras);
@@ -82,16 +82,22 @@ test("personal workspace contributes nothing", () => {
 test("extras flow through and execution selections pass through", () => {
   const mapped = composerRequestToTaskCreate(
     request({ permissionMode: "full", serviceTier: "fast" }),
-    { workflowType: "oneshot", worktreeTiming: "now", autoAdvance: true },
+    { workflowType: "oneshot", worktreeTiming: "now", autoAdvance: true, e2eMode: true },
   );
   assert.equal(mapped.workflowType, "oneshot");
   assert.equal(mapped.worktreeTiming, "now");
   assert.equal(mapped.autoAdvance, true);
+  assert.equal(mapped.e2eMode, true);
   assert.equal(mapped.permissionMode, "bypass");
   assert.equal(mapped.serviceTier, "fast");
   assert.equal(mapped.providerId, "prov_1");
   assert.equal(mapped.model, "model-1");
   assert.equal(mapped.reasoningLevel, "high");
+});
+
+test("default extras keep e2e mode off", () => {
+  const mapped = composerRequestToTaskCreate(request(), extras);
+  assert.equal(mapped.e2eMode, false);
 });
 
 test("sdk permission vocabulary maps onto the task record vocabulary", () => {

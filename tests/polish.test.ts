@@ -118,3 +118,23 @@ test("setPrefs merges workflowDefaults per workflow type instead of replacing th
   assert.equal(afterThird.workflowDefaults.rpi?.reasoningLevel, "high");
   await harness.lifecycle.dispose();
 });
+
+test("setPrefs merges the e2e block and keeps defaults", async () => {
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "rpi",
+    sdk: { subscribe: () => () => undefined },
+  });
+  await plugin(bb);
+  const before = await harness.behavior.callRpc("getPrefs", {}) as { e2e: { permissionMode: string; maxHops: number; maxReviewCycles: number; maxRetries: number } };
+  assert.equal(before.e2e.permissionMode, "bypass", "an empty kv returns the e2e defaults");
+  assert.equal(before.e2e.maxHops, 30);
+  assert.equal(before.e2e.maxReviewCycles, 5);
+  assert.equal(before.e2e.maxRetries, 3);
+
+  await harness.behavior.callRpc("setPrefs", { e2e: { maxHops: 10 } });
+  const after = await harness.behavior.callRpc("getPrefs", {}) as { e2e: { maxHops: number; permissionMode: string; maxReviewCycles: number } };
+  assert.equal(after.e2e.maxHops, 10);
+  assert.equal(after.e2e.permissionMode, "bypass", "a single-field patch must not drop other e2e fields");
+  assert.equal(after.e2e.maxReviewCycles, 5);
+  await harness.lifecycle.dispose();
+});

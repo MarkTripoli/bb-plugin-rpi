@@ -32,6 +32,11 @@ export const modelOverrideSchema = z
   })
   .strict();
 export type ModelOverride = z.infer<typeof modelOverrideSchema>;
+
+// Per-phase model overrides for a task, keyed by phase label (AUTO_ADVANCE keys). Stored as
+// tasks.phase_models JSON; an empty record means no per-phase entries.
+export const phaseModelsSchema = z.record(z.string().min(1).max(64), modelOverrideSchema);
+export type PhaseModels = z.infer<typeof phaseModelsSchema>;
 export const serviceTierSchema = z.enum(["default", "fast"]);
 export const sdkPermissionModeSchema = z.enum(["accept-edits", "auto", "full"]);
 const executionInputSourceSchema = z.enum(["client-preference", "explicit"]);
@@ -256,6 +261,7 @@ export const taskRowSchema = z
     aa_plan_to_worktree: z.boolean(),
     aa_worktree_to_implementation: z.boolean(),
     aa_implementation_to_pr: z.boolean(),
+    e2eMode: z.boolean(),
     currentLabel: z.string().nullable(),
     stepLabel: z.string(),
     attentionCount: z.number().int().nonnegative(),
@@ -294,6 +300,8 @@ export const taskRecordSchema = z
     aa_plan_to_worktree: z.boolean(),
     aa_worktree_to_implementation: z.boolean(),
     aa_implementation_to_pr: z.boolean(),
+    e2eMode: z.boolean(),
+    phaseModels: phaseModelsSchema,
     createdAt: z.number().int(),
     updatedAt: z.number().int(),
   })
@@ -579,6 +587,7 @@ export const taskCreateRequestSchema = z
     // launches. Server-side createTask validates it still exists before storing.
     baseEnvironmentId: boundedId.nullable().optional(),
     autoAdvance: z.boolean().default(false),
+    e2eMode: z.boolean().default(false),
   })
   .strict();
 
@@ -615,6 +624,9 @@ export const taskUpdateInputSchema = z
         aa_plan_to_worktree: z.boolean().optional(),
         aa_worktree_to_implementation: z.boolean().optional(),
         aa_implementation_to_pr: z.boolean().optional(),
+        e2eMode: z.boolean().optional(),
+        // null clears every per-phase entry.
+        phaseModels: phaseModelsSchema.nullable().optional(),
       })
       .strict(),
   })
@@ -683,6 +695,21 @@ export const contextWarningPrefsSchema = z
   .strict();
 export type ContextWarningPrefs = z.infer<typeof contextWarningPrefsSchema>;
 
+// Full-auto (e2e) defaults. fastModel/reasoningModel null means no class default (the task's own
+// model applies). Caps bound guard counters derived from launch_attempts.
+export const e2ePrefsSchema = z
+  .object({
+    fastModel: modelOverrideSchema.nullable().default(null),
+    reasoningModel: modelOverrideSchema.nullable().default(null),
+    permissionMode: permissionModeSchema.default("bypass"),
+    maxHops: z.number().int().min(1).max(500).default(30),
+    maxReviewCycles: z.number().int().min(1).max(50).default(5),
+    maxRetries: z.number().int().min(0).max(20).default(3),
+  })
+  .strict();
+export type E2ePrefs = z.infer<typeof e2ePrefsSchema>;
+export const DEFAULT_E2E_PREFS: E2ePrefs = e2ePrefsSchema.parse({});
+
 export const prefsSchema = z
   .object({
     defaults: prefsDefaultsSchema,
@@ -695,6 +722,7 @@ export const prefsSchema = z
       jumpHotkey: "mod+shift+u",
     }),
     contextWarning: contextWarningPrefsSchema.default({ defaultThreshold: 0.6, rules: [], removedBuiltins: [] }),
+    e2e: e2ePrefsSchema.default(DEFAULT_E2E_PREFS),
   })
   .strict();
 export type Prefs = z.infer<typeof prefsSchema>;
@@ -705,6 +733,7 @@ export const prefsUpdateSchema = z
     workflowDefaults: workflowDefaultsSchema.optional(),
     notifications: notificationPrefsSchema.partial().optional(),
     contextWarning: contextWarningPrefsSchema.partial().optional(),
+    e2e: e2ePrefsSchema.partial().optional(),
   })
   .strict();
 

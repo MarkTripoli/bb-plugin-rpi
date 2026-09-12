@@ -6,7 +6,7 @@ import { MANUAL_LAUNCH_REQUEST_BYTES_LIMIT, manualLaunchRequestSchema, type Manu
 import { MIGRATIONS } from "../db";
 import { createDraftTask, getTask } from "../tasks";
 import { launchDraft, launchPhase, LaunchRejectedError, listLaunchAdoptionCandidates, listLaunchAttempts, promoteStalePendingLaunchAttempts, resolveLaunchAttempt } from "../launch";
-import { START_LINKED_TICKET_ACTION, TASK_CONTEXT_FIRST_ACTION } from "../instructions";
+import { START_LINKED_TICKET_ACTION, E2E_LAUNCH_CONTEXT, TASK_CONTEXT_FIRST_ACTION } from "../instructions";
 import { bindPendingLaunch, createLaunchBindingMirror, registerPendingLaunch, type SessionMirrorRow } from "../sessions";
 
 function makeDb() {
@@ -147,6 +147,8 @@ test("launchPhase prompts start with marker then task context first-action line"
     aa_plan_to_worktree: true,
     aa_worktree_to_implementation: true,
     aa_implementation_to_pr: false,
+    e2eMode: false,
+    phaseModels: {},
     createdAt: 1,
     updatedAt: 1,
   }, { skillId: null, prompt: "do work", launchedBy: "user", fromThreadId: null });
@@ -335,6 +337,8 @@ test("launchPhase rejects with a typed no_source_host error when the project has
       aa_plan_to_worktree: true,
       aa_worktree_to_implementation: true,
       aa_implementation_to_pr: false,
+      e2eMode: false,
+      phaseModels: {},
       createdAt: 1,
       updatedAt: 1,
     }, { skillId: null, prompt: "do work", launchedBy: "user", fromThreadId: null }),
@@ -825,5 +829,33 @@ test("a hostless base-role task with no project source and no task.hostId reject
   const attempts = db.prepare("SELECT status FROM launch_attempts WHERE task_id = ?").all(taskId) as Array<{ status: string }>;
   assert.equal(attempts.length, 1);
   assert.equal(attempts[0]!.status, "failed");
+  db.close();
+});
+
+test("retry of an e2e hop keeps the bypass override", async () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  db.prepare("UPDATE tasks SET e2e_mode = 1 WHERE id = ?").run(taskId);
+  db.prepare("INSERT INTO launch_attempts (id, task_id, from_thread_id, skill_id, command_line, label, environment_role, launched_by, status, thread_id, created_at) VALUES ('attempt_1', ?, 'thr_source', 'create-research', '/rpi-create-research', 'research', 'base', 'auto_advance', 'failed', NULL, ?)").run(taskId, 1);
+  const spawnInputs: Array<Record<string, unknown>> = [];
+  const bb = {
+    realtime: { publish: () => undefined },
+    sdk: {
+      projects: stubDefaultSource(),
+      threads: {
+        spawn: async (input: Record<string, unknown>) => {
+          spawnInputs.push(input);
+          return makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
+        },
+        get: async () => makeThreadResponse({ id: "thr_retry", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" }),
+      },
+    },
+    log: { warn: () => undefined },
+  };
+  await resolveLaunchAttempt(bb as never, db, new Map(), createLaunchBindingMirror(), "attempt_1", { type: "retry" }, { e2ePermissionMode: "bypass" });
+  assert.equal(spawnInputs.length, 1);
+  assert.equal(spawnInputs[0]!.permissionMode, "full");
+  assert.equal((spawnInputs[0]!.executionInputSources as { permissionMode?: string }).permissionMode, "explicit");
+  assert.ok((spawnInputs[0]!.prompt as string).includes(E2E_LAUNCH_CONTEXT));
   db.close();
 });

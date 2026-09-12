@@ -63,6 +63,7 @@ import { parseRpiThreadPanelParams, type RpiThreadPanelView } from "../thread-pa
 import { buildManualLaunchRoute, parseManualLaunchRoute } from "../manual-launch";
 import { manualLaunchRequestSchema } from "../contract";
 import { composerRequestToTaskCreate } from "../task-create";
+import { E2E_REASONING_LABELS, e2eGuardStateFromRecent, e2ePausedText } from "../e2e";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -810,15 +811,19 @@ function boardColumnsClass(width: number): string {
 
 const MENU_ITEM_CLASS = "flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-foreground outline-none focus:bg-muted data-[disabled]:pointer-events-none data-[disabled]:opacity-50";
 
-function TaskActionsMenu({ task, fromThreadId, onNavigate }: { task: Pick<TaskRecord, "id" | "name" | "completed">; fromThreadId?: string | null; onNavigate?: () => void }) {
+function TaskActionsMenu({ task, fromThreadId, onNavigate }: { task: Pick<TaskRecord, "id" | "name" | "completed" | "e2eMode">; fromThreadId?: string | null; onNavigate?: () => void }) {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
   const [saving, setSaving] = useState(false);
   const [confirm, setConfirm] = useState<"archive" | "delete" | null>(null);
-  const run = async (action: "chat" | "complete" | "archive" | "delete") => {
+  const run = async (action: "chat" | "complete" | "archive" | "delete" | "e2e", checked?: boolean) => {
     setSaving(true);
     try {
-      if (action === "chat") {
+      if (action === "e2e") {
+        const e2eMode = checked === true;
+        await rpc.call("updateTask", { taskId: task.id, patch: { e2eMode } });
+        toast.success(e2eMode ? "Full auto on. Takes effect at the next completed turn." : "Full auto off");
+      } else if (action === "chat") {
         const { sessions } = await rpc.call("listSessions", { taskId: task.id });
         const latest = sessions.find((session) => session.threadId === fromThreadId) ?? sessions.sort((a, b) => b.createdAt - a.createdAt)[0];
         const intent: ManualLaunchIntent = latest
@@ -851,6 +856,12 @@ function TaskActionsMenu({ task, fromThreadId, onNavigate }: { task: Pick<TaskRe
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content align="end" sideOffset={4} className="z-50 min-w-40 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md" onClick={stopRowClick}>
+          <DropdownMenu.CheckboxItem className={MENU_ITEM_CLASS} checked={Boolean(task.e2eMode)} onCheckedChange={(checked) => void run("e2e", checked === true)}>
+            <span className="flex size-4 shrink-0 items-center justify-center" aria-hidden="true">
+              {Boolean(task.e2eMode) ? <Icon name="Check" className="size-4" /> : null}
+            </span>
+            Full auto
+          </DropdownMenu.CheckboxItem>
           <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => void run("chat")}><Icon name="Plus" className="size-4" />New chat</DropdownMenu.Item>
           <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => void run("complete")}><Icon name={task.completed ? "RotateCcw" : "Check"} className="size-4" />{task.completed ? "Reopen" : "Mark done"}</DropdownMenu.Item>
           <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => setConfirm("archive")}><Icon name="Archive" className="size-4" />Archive</DropdownMenu.Item>
@@ -1232,6 +1243,7 @@ function NewTaskPage({
   const [workflowType, setWorkflowType] = useState<WorkflowType>("rpi");
   const [worktreeTiming, setWorktreeTiming] = useState<"now" | "later" | "never">("later");
   const [autoAdvance, setAutoAdvance] = useState(false);
+  const [e2eMode, setE2eMode] = useState(false);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -1264,7 +1276,7 @@ function NewTaskPage({
   // thread. Throwing keeps the host draft so a failed create never loses what the user typed.
   const createAndLaunch = async (request: NewThreadRequest) => {
     const validated = manualLaunchRequestSchema.parse(request);
-    const input = composerRequestToTaskCreate(validated, { workflowType, worktreeTiming, autoAdvance });
+    const input = composerRequestToTaskCreate(validated, { workflowType, worktreeTiming, autoAdvance, e2eMode });
     if (input.text === "") {
       toast.error("Add a text prompt before creating the task.");
       return;
@@ -1307,6 +1319,7 @@ function NewTaskPage({
           workflowType,
           worktreeTiming,
           autoAdvance,
+          e2eMode,
         },
         draft: true,
       });
@@ -1324,6 +1337,7 @@ function NewTaskPage({
   const worktreeHintId = `${hintId}-worktree`;
   const workflowHintId = `${hintId}-workflow`;
   const autoAdvanceHintId = `${hintId}-auto-advance`;
+  const e2eHintId = `${hintId}-full-auto`;
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 py-2">
@@ -1383,6 +1397,11 @@ function NewTaskPage({
               Auto-advance
             </label>
             <span id={autoAdvanceHintId} className="block">Phases chain automatically; you approve before implementation and before the optional review or PR.</span>
+            <label className="flex w-fit cursor-pointer items-center gap-2 py-1 text-sm font-medium text-foreground">
+              <Checkbox checked={e2eMode} onCheckedChange={(checked) => setE2eMode(checked === true)} aria-describedby={e2eHintId} />
+              Full auto
+            </label>
+            <span id={e2eHintId} className="block">Runs to an open pull request with permission prompts bypassed. You approve the design and the plan.</span>
           </div>
           <Button type="button" variant="outline" disabled={busy} onClick={saveDraft}>
             <Icon name="EditFile" className="size-4" />
@@ -1722,19 +1741,54 @@ function TaskModelPanel({ task, onUpdated }: { task: TaskRecord; onUpdated: () =
   );
 }
 
-function AutoAdvancePanel({ task, onUpdated }: { task: TaskRecord; onUpdated: () => void }) {
+function AutoAdvancePanel({ task, launchAttempts, onUpdated }: { task: TaskRecord; launchAttempts: LaunchAttemptRecord[]; onUpdated: () => void }) {
   const rpc = useRpc<RpcContract>();
+  const [prefs, setPrefs] = useState<Prefs | null>(null);
+  const refreshPrefs = () => {
+    rpc.call("getPrefs", {}).then(setPrefs).catch(() => undefined);
+  };
+  useEffect(() => {
+    refreshPrefs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useRealtime("prefs", refreshPrefs);
   const update = async (patch: Partial<TaskRecord>) => {
     await rpc.call("updateTask", { taskId: task.id, patch });
     onUpdated();
   };
   const humanGates = Object.entries(AUTO_ADVANCE).filter(([, value]) => value.flag === null);
+  const pausedText = prefs && task.e2eMode
+    ? e2ePausedText(e2eGuardStateFromRecent(launchAttempts, prefs.e2e))
+    : null;
+  // phaseModels is a record keyed by AUTO_ADVANCE labels; picking a concrete model stores the
+  // entry, picking "default" removes it. An empty record is a valid value.
+  const savePhaseModel = (label: string, next: ModelSelectValue) => {
+    const phaseModels: TaskRecord["phaseModels"] = next.providerId && next.model
+      ? {
+          ...task.phaseModels,
+          [label]: {
+            providerId: next.providerId,
+            model: next.model,
+            ...(next.reasoningLevel ? { reasoningLevel: next.reasoningLevel as ModelOverride["reasoningLevel"] } : {}),
+          },
+        }
+      : Object.fromEntries(Object.entries(task.phaseModels).filter(([key]) => key !== label));
+    void update({ phaseModels });
+  };
   return (
     <div className="space-y-3">
       <label className="flex items-center justify-between rounded-md border border-border bg-card p-3 text-sm">
         <span className="font-medium text-foreground">Auto-advance</span>
         <input type="checkbox" checked={task.autoAdvance} onChange={(event) => void update({ autoAdvance: event.target.checked })} />
       </label>
+      <label className="flex items-center justify-between rounded-md border border-border bg-card p-3 text-sm">
+        <span className="space-y-0.5">
+          <span className="block font-medium text-foreground">Full auto</span>
+          <span className="block text-xs text-muted-foreground">Runs to an open pull request; you approve the design and the plan. Changes apply at the next completed turn.</span>
+        </span>
+        <input type="checkbox" checked={Boolean(task.e2eMode)} onChange={(event) => void update({ e2eMode: event.target.checked })} />
+      </label>
+      {pausedText ? <p className="text-xs text-warning">{pausedText}. Proceed from the waiting session to continue.</p> : null}
       <div className="grid gap-2 lg:grid-cols-2">
         {AUTO_ADVANCE_FLAGS.map((flag) => (
           <label key={flag.field} className="flex items-center justify-between rounded-md border border-border bg-card p-3 text-sm">
@@ -1750,6 +1804,30 @@ function AutoAdvancePanel({ task, onUpdated }: { task: TaskRecord; onUpdated: ()
             <span>human gate</span>
           </div>
         ))}
+      </div>
+      <div className="space-y-2">
+        <h3 className="text-sm font-semibold text-foreground">Phase models</h3>
+        <p className="text-xs text-muted-foreground">Models launched for each phase of the workflow. Unset follows the class default while full auto is on, or the task model otherwise.</p>
+        <div className="grid gap-2 lg:grid-cols-2">
+          {(Object.keys(AUTO_ADVANCE) as Array<keyof typeof AUTO_ADVANCE>).map((label) => {
+            const override = task.phaseModels[label] ?? null;
+            const defaultLabel = task.e2eMode
+              ? `Class default: ${E2E_REASONING_LABELS.has(label) ? "reasoning" : "fast"}`
+              : "Task model";
+            return (
+              <div key={label} className="space-y-1 rounded-md border border-border bg-card p-3">
+                <span className="block text-sm font-medium text-foreground">{label}</span>
+                <RpiModelPicker
+                  hostId={task.hostId}
+                  value={{ providerId: override?.providerId ?? null, model: override?.model ?? null, reasoningLevel: override?.reasoningLevel ?? null }}
+                  onChange={(next) => savePhaseModel(label, next)}
+                  allowDefault
+                  defaultLabel={defaultLabel}
+                />
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -3322,6 +3400,13 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
                 ? "The task moves to the next phase automatically when a phase finishes cleanly, except at gates you chose to keep manual."
                 : "You approve each phase transition yourself; nothing advances automatically."}
             />
+            {task.e2eMode ? <>
+              <span aria-hidden="true">·</span>
+              <TaskMetaTerm
+                text="full auto on"
+                hint="Runs to an open pull request without a human between plan approval and the PR. Permission prompts are bypassed on those sessions."
+              />
+            </> : null}
             <span aria-hidden="true">·</span>
             <TaskMetaTerm
               text={task.providerId && task.model ? modelLabel(providers, task.providerId, task.model) : "default model"}
@@ -3407,7 +3492,7 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
             </div>
             <div className="space-y-3">
               <h3 className="text-sm font-semibold text-foreground">Auto-advance</h3>
-              <AutoAdvancePanel task={task} onUpdated={refetch} />
+              <AutoAdvancePanel task={task} launchAttempts={workspace.launchAttempts} onUpdated={refetch} />
             </div>
           </div>
         ) : (
@@ -3473,6 +3558,7 @@ export function RpiThreadPanel({ threadId, params }: { threadId: string; params?
   const [view, setView] = useState<RpiThreadPanelView>(initial.view);
   const [session, setSession] = useState<SessionView | null | undefined>(undefined);
   const [task, setTask] = useState<TaskRecord | null>(null);
+  const [taskAttempts, setTaskAttempts] = useState<LaunchAttemptRecord[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const launchReviewAction = (skillId: (typeof RPI_REVIEW_ACTIONS)[number]["skillId"]) => {
@@ -3485,6 +3571,7 @@ export function RpiThreadPanel({ threadId, params }: { threadId: string; params?
     rpc.call("getTask", { taskId: session.taskId }).then(({ task: next }) => setTask(next)).catch((error: unknown) => {
       setLoadError(error instanceof Error ? error.message : "Failed to load the RPI task");
     });
+    rpc.call("listLaunchAttempts", { taskId: session.taskId }).then(({ attempts }) => setTaskAttempts(attempts)).catch(() => undefined);
   };
 
   useEffect(() => {
@@ -3497,7 +3584,11 @@ export function RpiThreadPanel({ threadId, params }: { threadId: string; params?
       setSession(next);
       if (!next) return;
       const { task: nextTask } = await rpc.call("getTask", { taskId: next.taskId });
-      if (!cancelled) setTask(nextTask);
+      if (cancelled) return;
+      setTask(nextTask);
+      rpc.call("listLaunchAttempts", { taskId: next.taskId }).then(({ attempts }) => {
+        if (!cancelled) setTaskAttempts(attempts);
+      }).catch(() => undefined);
     }).catch((error: unknown) => {
       if (!cancelled) setLoadError(error instanceof Error ? error.message : "Failed to load the RPI session");
     });
@@ -3544,7 +3635,7 @@ export function RpiThreadPanel({ threadId, params }: { threadId: string; params?
             </section>
             <section className="space-y-3">
               <h3 className="text-sm font-semibold text-foreground">Auto-advance</h3>
-              <AutoAdvancePanel task={task} onUpdated={refetchTask} />
+              <AutoAdvancePanel task={task} launchAttempts={taskAttempts} onUpdated={refetchTask} />
             </section>
           </div>
         )}
@@ -4017,7 +4108,7 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
       rows.some((row) => descendantsOf(row.thread.id).some((child) => child.id === activeThreadId || threadIsBusy(child)));
     const firstCreated = Math.min(...rows.map((row) => row.session.createdAt));
     const latestThreadId = (live[0] ?? done[0])?.thread.id ?? null;
-    return { taskId, taskName: group.taskName, projectId: task?.projectId ?? null, completed: task?.completed ?? false, live, done, needsHumanCount, hasActive, firstCreated, latestThreadId };
+    return { taskId, taskName: group.taskName, projectId: task?.projectId ?? null, completed: task?.completed ?? false, e2eMode: task?.e2eMode ?? false, live, done, needsHumanCount, hasActive, firstCreated, latestThreadId };
   });
   // One flat list of tasks, newest task first by its first session's creation time. Nothing that
   // changes on click or as work progresses (active project, needs-you, last update) is a sort
@@ -4155,7 +4246,7 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
             </Tooltip>
           ) : null}
         </button>
-        <TaskActionsMenu task={{ id: entry.taskId, name: entry.taskName, completed: entry.completed }} fromThreadId={entry.latestThreadId} onNavigate={onNavigate} />
+        <TaskActionsMenu task={{ id: entry.taskId, name: entry.taskName, completed: entry.completed, e2eMode: entry.e2eMode }} fromThreadId={entry.latestThreadId} onNavigate={onNavigate} />
       </div>
     );
   };
@@ -4439,6 +4530,9 @@ export function RpiDefaultsSettings() {
   const saveContextWarning = (patch: Partial<Prefs["contextWarning"]>) => {
     void rpc.call("setPrefs", { contextWarning: patch }).then(setPrefs);
   };
+  const saveE2e = (patch: Partial<Prefs["e2e"]>) => {
+    void rpc.call("setPrefs", { e2e: patch }).then(setPrefs);
+  };
   const updateContextWarningRule = (index: number, patch: Partial<ContextWarningRule>) => {
     saveContextWarning({ rules: prefs.contextWarning.rules.map((rule, ruleIndex) => (ruleIndex === index ? { ...rule, ...patch } : rule)) });
   };
@@ -4527,6 +4621,82 @@ export function RpiDefaultsSettings() {
               })}
             </tbody>
           </table>
+        </div>
+      </div>
+      <div className="space-y-2">
+        <h3 className="text-sm font-semibold text-foreground">Full auto</h3>
+        <p className="text-xs text-muted-foreground">Applies to sessions launched by full auto. Manual launches keep the task's own settings.</p>
+        <div className="grid gap-3 lg:grid-cols-2">
+          <div className="rounded-md border border-border bg-card p-3">
+            <RpiModelPicker
+              hostId={null}
+              value={{ providerId: prefs.e2e.fastModel?.providerId ?? null, model: prefs.e2e.fastModel?.model ?? null, reasoningLevel: prefs.e2e.fastModel?.reasoningLevel ?? null }}
+              onChange={(next) => saveE2e({ fastModel: next.providerId && next.model ? { providerId: next.providerId, model: next.model, ...(next.reasoningLevel ? { reasoningLevel: next.reasoningLevel as ModelOverride["reasoningLevel"] } : {}) } : null })}
+              allowDefault
+              defaultLabel="Task model"
+            />
+            <p className="text-xs text-muted-foreground">Fast model (implementation, fixes, worktree, PR description)</p>
+          </div>
+          <div className="rounded-md border border-border bg-card p-3">
+            <RpiModelPicker
+              hostId={null}
+              value={{ providerId: prefs.e2e.reasoningModel?.providerId ?? null, model: prefs.e2e.reasoningModel?.model ?? null, reasoningLevel: prefs.e2e.reasoningModel?.reasoningLevel ?? null }}
+              onChange={(next) => saveE2e({ reasoningModel: next.providerId && next.model ? { providerId: next.providerId, model: next.model, ...(next.reasoningLevel ? { reasoningLevel: next.reasoningLevel as ModelOverride["reasoningLevel"] } : {}) } : null })}
+              allowDefault
+              defaultLabel="Task model"
+            />
+            <p className="text-xs text-muted-foreground">Reasoning model (research, design, plan, code review)</p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-end gap-3 rounded-md border border-border bg-card p-3 text-sm">
+          <div className="space-y-1 text-xs text-muted-foreground">
+            <label htmlFor="rpi-e2e-permission-mode" className="block">Permission mode for full-auto sessions</label>
+            <ComposerToolbarSelect
+              id="rpi-e2e-permission-mode"
+              className="w-48"
+              value={prefs.e2e.permissionMode}
+              onChange={(value) => saveE2e({ permissionMode: value as Prefs["e2e"]["permissionMode"] })}
+              options={[
+                { value: "default", label: "Default" },
+                { value: "accept_edits", label: "Accept edits" },
+                { value: "auto", label: "Auto" },
+                { value: "bypass", label: "Bypass" },
+              ]}
+            />
+          </div>
+          <div className="space-y-1 text-xs text-muted-foreground">
+            <label htmlFor="rpi-e2e-max-hops" className="block">Hop cap</label>
+            <Input
+              id="rpi-e2e-max-hops"
+              type="number"
+              min={1}
+              className="h-8 w-20"
+              value={prefs.e2e.maxHops}
+              onChange={(event) => saveE2e({ maxHops: Number(event.currentTarget.value) })}
+            />
+          </div>
+          <div className="space-y-1 text-xs text-muted-foreground">
+            <label htmlFor="rpi-e2e-max-review-cycles" className="block">Review cycle cap</label>
+            <Input
+              id="rpi-e2e-max-review-cycles"
+              type="number"
+              min={1}
+              className="h-8 w-20"
+              value={prefs.e2e.maxReviewCycles}
+              onChange={(event) => saveE2e({ maxReviewCycles: Number(event.currentTarget.value) })}
+            />
+          </div>
+          <div className="space-y-1 text-xs text-muted-foreground">
+            <label htmlFor="rpi-e2e-max-retries" className="block">Retry cap</label>
+            <Input
+              id="rpi-e2e-max-retries"
+              type="number"
+              min={0}
+              className="h-8 w-20"
+              value={prefs.e2e.maxRetries}
+              onChange={(event) => saveE2e({ maxRetries: Number(event.currentTarget.value) })}
+            />
+          </div>
         </div>
       </div>
       <div className="space-y-2">

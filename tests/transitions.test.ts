@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   ALIASES,
   AUTO_ADVANCE,
+  E2E_AUTO_ADVANCE,
   HELPERS,
   SKILLS,
   WORKFLOW_GRAPHS,
@@ -11,6 +12,7 @@ import {
   completionActionsForSession,
   computeSuggestedNext,
   deriveBoardColumn,
+  e2eTransition,
   parseNextStepExtraction,
   suggestedNextForSession,
   suggestedNextHint,
@@ -48,6 +50,45 @@ test("auto advance table is literal", () => {
     "describe-pr": { flag: null, next: "resolve-pr-reviews", to: "pr-review" },
     "pr-review": { flag: null, next: "resolve-pr-reviews", to: "pr-review" },
   });
+});
+
+test("e2e auto advance table is literal", () => {
+  assert.deepEqual(E2E_AUTO_ADVANCE, {
+    "research-questions": { "create-research": { next: "create-research", to: "research" } },
+    research: {
+      "create-design-discussion": { next: "create-design-discussion", to: "design" },
+      "create-structure-outline": { next: "create-structure-outline", to: "structure" },
+      "create-prd": { next: "create-prd", to: "design-prd" },
+    },
+    "worktree-setup": {
+      "implement-plan": { next: "implement-plan", to: "implementation" },
+      "implement-outline": { next: "implement-outline", to: "implementation" },
+    },
+    implementation: {
+      "implement-plan": { next: "implement-plan", to: "implementation", chain: "phase" },
+      "implement-outline": { next: "implement-outline", to: "implementation", chain: "phase" },
+      "describe-pr": { next: "review-code", to: "code-review" },
+    },
+    "code-review": {
+      "fix-code-review": { next: "fix-code-review", to: "review-fixes" },
+      "describe-pr": { next: "describe-pr", to: "describe-pr" },
+    },
+    "review-fixes": { "review-code": { next: "review-code", to: "code-review" } },
+  });
+});
+
+test("e2eTransition resolves rows, redirects implementation into review, and refuses human gates", () => {
+  assert.equal(e2eTransition("implementation", "rpi", "describe-pr")?.next, "review-code");
+  assert.deepEqual(e2eTransition("implementation", "rpi", "implement-plan"), { next: "implement-plan", to: "implementation", chain: "phase" });
+  assert.equal(e2eTransition("implementation", "outline_only", "implement-plan"), undefined);
+  assert.equal(e2eTransition("implementation", "outline_only", "implement-outline")?.chain, "phase");
+  assert.equal(e2eTransition("research", "rpi", "create-prd"), undefined);
+  assert.equal(e2eTransition("research", "prd_tdd", "create-prd")?.to, "design-prd");
+  for (const label of ["design", "design-prd", "design-tdd", "structure", "plan", "describe-pr", "pr-review"] as const) {
+    assert.equal(e2eTransition(label, "rpi", AUTO_ADVANCE[label].next), undefined, label);
+  }
+  assert.equal(e2eTransition("code-review", "rpi", "show-me"), undefined);
+  assert.equal(e2eTransition(null, "rpi", "create-research"), undefined);
 });
 
 test("auto advance resolves workflow-specific targets", () => {

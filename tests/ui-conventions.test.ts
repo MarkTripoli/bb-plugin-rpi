@@ -49,6 +49,7 @@ test("manual quick actions use the reviewable composer boundary", () => {
     "Phase complete",
     "Agent suggestion",
     "Iterate in fresh session",
+    "Full auto",
   ]) {
     assert.equal(content.includes(label), true, `missing manual action ${label}`);
   }

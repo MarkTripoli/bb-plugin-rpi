@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { prefsSchema, prefsUpdateSchema, proceedInputSchema, rpcContract, taskUiStateSchema, taskUpdateInputSchema, type ContextWarningPrefs, type WorkflowType } from "./contract";
+import { DEFAULT_E2E_PREFS, e2ePrefsSchema, prefsSchema, prefsUpdateSchema, proceedInputSchema, rpcContract, taskUiStateSchema, taskUpdateInputSchema, type ContextWarningPrefs, type E2ePrefs, type WorkflowType } from "./contract";
 import { contextThresholdFor, seedContextWarningRules } from "./context-threshold";
 import { nowMs, openPluginDatabase, parseJson, readRow, writeRow } from "./db";
 import {
@@ -41,6 +41,7 @@ import {
   submitManualLaunch,
 } from "./advance";
 import {
+  autoRetryFailedAttempt,
   forkSession,
   adoptThread,
   interruptSession,
@@ -252,6 +253,7 @@ export default async function plugin(bb: BbPluginApi) {
   let contextWarningPrefs: ContextWarningPrefs = seedContextWarningRules(
     initialPrefs.success ? initialPrefs.data.contextWarning : defaultTaskPrefs({}).contextWarning,
   );
+  let e2ePrefs: E2ePrefs = initialPrefs.success ? initialPrefs.data.e2e : DEFAULT_E2E_PREFS;
   for (const taskId of promoteStalePendingLaunchAttempts(db)) {
     bb.realtime.publish("tasks", { taskId });
     bb.realtime.publish("rpi:sessions", { taskId, threadId: null });
@@ -485,6 +487,11 @@ export default async function plugin(bb: BbPluginApi) {
 
   async function notifyAdvanceFailed(session: NonNullable<ReturnType<typeof sessionMirror.get>>) {
     if (!session.completedTurnKey) return;
+    // Full auto first: a launched retry keeps the source turn's suppression row unconsumed, so no
+    // ready toast fires for a hop that continued on its own. Only when nothing was retried (no
+    // failed attempt, cap reached, non-e2e task, or the retry itself failed) does the recovery
+    // notification fire.
+    if (await autoRetryFailedAttempt(bb, db, sessionMirror, launchBindings, session.taskId, e2ePrefs)) return;
     await recoverReadyAfterFailedAdvance(bb, db, await currentNotificationPrefs(), {
       threadId: session.threadId,
       completedTurnKey: session.completedTurnKey,
@@ -594,6 +601,7 @@ export default async function plugin(bb: BbPluginApi) {
         workflowType: request.workflowType,
         worktreeTiming: request.worktreeTiming,
         autoAdvance: request.autoAdvance,
+        e2eMode: request.e2eMode,
         baseEnvironmentId: request.baseEnvironmentId ?? null,
         ...resolved,
       });
@@ -673,7 +681,7 @@ export default async function plugin(bb: BbPluginApi) {
     interruptSession: async ({ threadId }) => interruptSession(bb, db, sessionMirror, threadId),
     adoptThread: async ({ threadId, taskId }) => adoptThread(bb, db, sessionMirror, threadId, taskId),
 	    listLaunchAttempts: async ({ taskId }) => ({ attempts: await attemptsWithCandidates(bb, db, listLaunchAttempts(db, taskId)) }),
-    resolveLaunchAttempt: async ({ id, action }) => resolveLaunchAttempt(bb, db, sessionMirror, launchBindings, id, action),
+    resolveLaunchAttempt: async ({ id, action }) => resolveLaunchAttempt(bb, db, sessionMirror, launchBindings, id, action, { e2ePermissionMode: e2ePrefs.permissionMode }),
     listArtifacts: async ({ taskId, includeDeleted }) => ({ artifacts: listArtifacts(db, taskId, { includeDeleted }) }),
     getArtifact: async ({ taskId, fileName, version }) => {
       const result = getArtifactVersion(db, taskId, fileName, version ?? null);
@@ -891,10 +899,12 @@ export default async function plugin(bb: BbPluginApi) {
           rules: patch.contextWarning?.rules ?? current.contextWarning.rules,
           removedBuiltins: patch.contextWarning?.removedBuiltins ?? current.contextWarning.removedBuiltins,
         },
+        e2e: e2ePrefsSchema.parse({ ...current.e2e, ...patch.e2e }),
       };
       researchModelPreference = next.defaults.researchModel;
       notificationPrefs = next.notifications;
       contextWarningPrefs = seedContextWarningRules(next.contextWarning);
+      e2ePrefs = next.e2e;
       await bb.storage.kv.set(PREFS_KEY, next);
       bb.realtime.publish("prefs", { changed: true });
       return { ...prefsSchema.parse(next), contextWarning: contextWarningPrefs };
@@ -1087,7 +1097,7 @@ export default async function plugin(bb: BbPluginApi) {
           if (argv[1] === "dismiss") {
             const opts = parseArgs(argv.slice(2));
             if (!opts.id) return { exitCode: 2, stderr: "usage: bb rpi launch-attempts dismiss --id <attemptId>\n" };
-            const result = await resolveLaunchAttempt(bb, db, sessionMirror, launchBindings, opts.id, { type: "dismiss" });
+            const result = await resolveLaunchAttempt(bb, db, sessionMirror, launchBindings, opts.id, { type: "dismiss" }, { e2ePermissionMode: e2ePrefs.permissionMode });
             return { exitCode: 0, stdout: json ? `${JSON.stringify(result)}\n` : "dismissed\n" };
           }
           const opts = parseArgs(argv.slice(1));
@@ -1285,7 +1295,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
   }), { auth: "local" });
 
-  registerArtifactTools(bb, db, sessionMirror, childThreadMirror, { getResearchModel: () => researchModelPreference });
+  registerArtifactTools(bb, db, sessionMirror, childThreadMirror, { getResearchModel: () => researchModelPreference, getE2ePrefs: () => e2ePrefs });
 
   bb.agents.configure((context) => {
     bindPendingThread(db, sessionMirror, launchBindings, context.thread.id);
@@ -1303,7 +1313,7 @@ export default async function plugin(bb: BbPluginApi) {
     db,
     sessionMirror,
     launchBindings,
-    (row) => onCompletedTurn(bb, db, sessionMirror, launchBindings, row),
+    (row) => onCompletedTurn(bb, db, sessionMirror, launchBindings, row, { e2e: () => e2ePrefs }),
     childThreadMirror,
     notifySnapshot,
     notifyAdvanceFailed,
@@ -1323,6 +1333,21 @@ export default async function plugin(bb: BbPluginApi) {
         for (const taskId of dismissStaleUncertainAttempts(db)) {
           bb.realtime.publish("tasks", { taskId });
           bb.realtime.publish("rpi:sessions", { taskId, threadId: null });
+          // Full auto: a stale-uncertain attempt the sweep just marked failed is auto-retried
+          // while the retry chain is under the cap; at the cap (or when nothing can be retried)
+          // the source session's advance-failure recovery notification fires instead. Wrapped so
+          // one failing task never kills the sweep loop.
+          try {
+            const retried = await autoRetryFailedAttempt(bb, db, sessionMirror, launchBindings, taskId, e2ePrefs);
+            if (!retried) {
+              const task = getTask(db, taskId)?.task;
+              const attempt = listLaunchAttempts(db, taskId).find((row) => row.status === "failed");
+              const source = attempt?.fromThreadId ? sessionMirror.get(attempt.fromThreadId) : undefined;
+              if (source && task?.e2eMode) await notifyAdvanceFailed(source);
+            }
+          } catch (error) {
+            bb.log.warn(`RPI full auto sweep retry failed for task ${taskId}: ${String(error)}`);
+          }
         }
         await sleep(60_000, signal);
       }

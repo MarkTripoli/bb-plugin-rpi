@@ -12,15 +12,15 @@ test("FEATURES.md recount sentence matches the mechanical count (cannot drift)",
   // The summary sentence in FEATURES.md's opening "Recount" paragraph must spell out these exact
   // numbers. If a table row changes status, this test fails until the sentence is updated to
   // match `npm run check:features`'s output, so the two can never silently drift apart.
-  assert.equal(counts.rows, 93);
+  assert.equal(counts.rows, 96);
   assert.equal(counts.mixedRows, 1);
-  assert.equal(counts.full, 61);
+  assert.equal(counts.full, 64);
   assert.equal(counts.partial, 14);
   assert.equal(counts.omitted, 7);
   assert.equal(counts["N/A"], 12);
   assert.match(
     markdown,
-    /\*\*93\nstatus-bearing rows, 1 of them mixed \(the palette row counts toward both N\/A and full\): 61\nfull, 14 partial, 7 omitted, 12 N\/A\*\*/,
+    /\*\*96\nstatus-bearing rows, 1 of them mixed \(the palette row counts toward both N\/A and full\): 64\nfull, 14 partial, 7 omitted, 12 N\/A\*\*/,
     "FEATURES.md summary sentence must state the script's exact counts",
   );
 });
