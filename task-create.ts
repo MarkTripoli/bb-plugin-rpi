@@ -12,6 +12,7 @@ export type TaskCreateExtras = {
   workflowType: WorkflowType;
   worktreeTiming: "now" | "later" | "never";
   autoAdvance: boolean;
+  e2eMode: boolean;
 };
 
 export type TaskCreateRequestInput = {
@@ -28,6 +29,7 @@ export type TaskCreateRequestInput = {
   serviceTier: string | undefined;
   baseEnvironmentId: string | null;
   autoAdvance: boolean;
+  e2eMode: boolean;
 };
 
 // The composer submits bb's permission vocabulary ("accept-edits"/"auto"/"full"); the task
@@ -80,5 +82,6 @@ export function composerRequestToTaskCreate(
     reasoningLevel: request.reasoningLevel,
     serviceTier: request.serviceTier,
     autoAdvance: extras.autoAdvance,
+    e2eMode: extras.e2eMode,
   };
 }
