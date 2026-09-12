@@ -64,6 +64,7 @@ import { buildManualLaunchRoute, parseManualLaunchRoute } from "../manual-launch
 import { manualLaunchRequestSchema } from "../contract";
 import { composerRequestToTaskCreate } from "../task-create";
 import { E2E_REASONING_LABELS, e2eGuardStateFromRecent, e2ePausedText } from "../e2e";
+import { DEFAULT_EPIC_MAX_PARALLEL, childrenByDepth, epicRollup } from "../epic";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -800,6 +801,53 @@ function PhaseStripMini({ task }: { task: TaskRow }) {
   );
 }
 
+// Epic row cell: the phase strip while the epic runs its own phases, then `K of N tasks` once it
+// reaches delivery. `statusByTask` is the current effective status per task (see
+// currentStatusByTask), so the running count matches the epic page.
+function EpicProgressCell({ epic, children, statusByTask }: { epic: TaskRow; children: TaskRow[]; statusByTask: ReadonlyMap<string, string> }) {
+  if (labelStep(epic.currentLabel) !== "delivery") return <PhaseStripMini task={epic} />;
+  const rollup = epicRollup(children, statusByTask);
+  return (
+    <div className="flex flex-col">
+      <span className="text-sm text-foreground">{rollup.done} of {plural(children.length, "task")}</span>
+      <span className="text-xs text-muted-foreground">{rollup.running} running · {rollup.waiting} need you</span>
+    </div>
+  );
+}
+
+// An epic's attention count folds in its children so the table chip reads the whole tree.
+function taskAttentionCount(task: TaskRow, childrenByEpic: ReadonlyMap<string, TaskRow[]>): number {
+  if (task.workflowType !== "epic") return task.attentionCount;
+  return (childrenByEpic.get(task.id) ?? []).reduce((sum, child) => sum + child.attentionCount, task.attentionCount);
+}
+
+// Current effective status per task, from the panel's flat sessions fetch (currentSessionFor +
+// effectiveStatus); tasks without a live session have no entry.
+function currentStatusByTask(sessions: SessionView[], tasks: Array<Pick<TaskRow, "id" | "workflowType" | "worktreeTiming">>): Map<string, string> {
+  const sessionsByTask = new Map<string, SessionView[]>();
+  for (const session of sessions) {
+    const list = sessionsByTask.get(session.taskId);
+    if (list) list.push(session);
+    else sessionsByTask.set(session.taskId, [session]);
+  }
+  const out = new Map<string, string>();
+  for (const task of tasks) {
+    const list = sessionsByTask.get(task.id) ?? [];
+    const current = currentSessionFor(list, task);
+    if (current) out.set(task.id, effectiveStatus(current, list, task));
+  }
+  return out;
+}
+
+type TaskListExtras = { childrenByEpic: ReadonlyMap<string, TaskRow[]>; statusByTask: ReadonlyMap<string, string> };
+
+function TaskPhaseCell({ task, extras, pill }: { task: TaskRow; extras: TaskListExtras; pill?: boolean }) {
+  if (task.completed) return <LabelPill label="Done" />;
+  if (task.isDraft) return <LabelPill label="Draft" />;
+  if (task.workflowType === "epic") return <EpicProgressCell epic={task} children={extras.childrenByEpic.get(task.id) ?? []} statusByTask={extras.statusByTask} />;
+  return pill ? <TaskStepPill task={task} /> : <PhaseStripMini task={task} />;
+}
+
 // >= 1100px fits four board columns, >= 760px fits two, otherwise one; measured from the panel's
 // own width (useElementWidth), not a viewport breakpoint, so a narrow split panel never gets
 // columns squeezed to nothing.
@@ -898,7 +946,8 @@ function SessionCompletionButton({ session }: { session: Pick<SessionView, "thre
   );
 }
 
-function TaskCompactRow({ task, onOpen }: { task: TaskRow; onOpen: () => void }) {
+function TaskCompactRow({ task, onOpen, extras }: { task: TaskRow; onOpen: () => void; extras: TaskListExtras }) {
+  const attention = taskAttentionCount(task, extras.childrenByEpic);
   return (
     <div onClick={onOpen} className={cn("flex flex-col gap-1.5 border-b border-border px-4 py-3 last:border-b-0", CLICKABLE_ROW_CLASS)}>
       <div className="flex items-center justify-between gap-2">
@@ -906,22 +955,22 @@ function TaskCompactRow({ task, onOpen }: { task: TaskRow; onOpen: () => void })
         <span className="shrink-0 text-xs text-muted-foreground">{plural(task.sessionCount, "session")} · {relativeTime(task.updatedAt)}</span>
       </div>
       <div className="flex items-center justify-between gap-2">
-        {task.completed ? <LabelPill label="Done" /> : task.isDraft ? <LabelPill label="Draft" /> : <PhaseStripMini task={task} />}
-        {task.attentionCount > 0 ? <AttentionCountChip n={task.attentionCount} /> : null}
+        <TaskPhaseCell task={task} extras={extras} />
+        {attention > 0 ? <AttentionCountChip n={attention} /> : null}
         <TaskActionsMenu task={task} />
       </div>
     </div>
   );
 }
 
-function TaskTable({ tasks, compact }: { tasks: TaskRow[]; compact: boolean }) {
+function TaskTable({ tasks, compact, extras }: { tasks: TaskRow[]; compact: boolean; extras: TaskListExtras }) {
   const navigate = useBbNavigate();
   const open = (taskId: string) => navigate.toPluginPanel("rpi", { subPath: `tasks/${taskId}` });
 
   if (compact) {
     return (
       <div className="overflow-hidden rounded-xl border border-border bg-card">
-        {tasks.map((task) => <TaskCompactRow key={task.id} task={task} onOpen={() => open(task.id)} />)}
+        {tasks.map((task) => <TaskCompactRow key={task.id} task={task} onOpen={() => open(task.id)} extras={extras} />)}
       </div>
     );
   }
@@ -940,7 +989,9 @@ function TaskTable({ tasks, compact }: { tasks: TaskRow[]; compact: boolean }) {
           </tr>
         </thead>
         <tbody>
-          {tasks.map((task) => (
+          {tasks.map((task) => {
+            const attention = taskAttentionCount(task, extras.childrenByEpic);
+            return (
             <tr key={task.id} onClick={() => open(task.id)} className={cn("border-b border-border last:border-b-0", CLICKABLE_ROW_CLASS)}>
               <td className="px-4 py-3">
                 <div className="flex flex-col items-start gap-1">
@@ -949,23 +1000,24 @@ function TaskTable({ tasks, compact }: { tasks: TaskRow[]; compact: boolean }) {
                 </div>
               </td>
               <td className="px-4 py-3">
-                {task.completed ? <LabelPill label="Done" /> : task.isDraft ? <LabelPill label="Draft" /> : <PhaseStripMini task={task} />}
+                <TaskPhaseCell task={task} extras={extras} />
               </td>
               <td className="px-4 py-3">
-                {task.attentionCount > 0 ? <AttentionCountChip n={task.attentionCount} /> : <span className="text-xs text-muted-foreground">0</span>}
+                {attention > 0 ? <AttentionCountChip n={attention} /> : <span className="text-xs text-muted-foreground">0</span>}
               </td>
               <td className="px-4 py-3 text-muted-foreground">{task.sessionCount}</td>
               <td className="px-4 py-3 text-muted-foreground">{relativeTime(task.updatedAt)}</td>
               <td className="px-2 py-3"><TaskActionsMenu task={task} /></td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>
   );
 }
 
-function TaskBoard({ tasks, width }: { tasks: TaskRow[]; width: number }) {
+function TaskBoard({ tasks, width, extras }: { tasks: TaskRow[]; width: number; extras: TaskListExtras }) {
   const navigate = useBbNavigate();
   const groups = useMemo(() => {
     const base = {
@@ -1000,6 +1052,7 @@ function TaskBoard({ tasks, width }: { tasks: TaskRow[]; width: number }) {
           <div className="space-y-2">
             {groups[column.id].map((task) => {
               const open = () => navigate.toPluginPanel("rpi", { subPath: `tasks/${task.id}` });
+              const attention = taskAttentionCount(task, extras.childrenByEpic);
               return (
               <article key={task.id} onClick={open} className="cursor-pointer rounded-lg border border-border bg-background/70 p-3 transition hover:border-foreground/40">
                 <div className="space-y-2">
@@ -1010,9 +1063,9 @@ function TaskBoard({ tasks, width }: { tasks: TaskRow[]; width: number }) {
                     </span>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    {task.completed ? <LabelPill label="Done" /> : task.isDraft ? <LabelPill label="Draft" /> : <TaskStepPill task={task} />}
+                    <TaskPhaseCell task={task} extras={extras} pill />
                     <span className="text-xs text-muted-foreground">{plural(task.sessionCount, "session")}</span>
-                    {task.attentionCount > 0 ? <AttentionCountChip n={task.attentionCount} /> : null}
+                    {attention > 0 ? <AttentionCountChip n={attention} /> : null}
                     <TaskActionsMenu task={task} />
                   </div>
                 </div>
@@ -1031,13 +1084,15 @@ function TaskListView({
   boardMode,
   compact,
   boardWidth,
+  extras,
 }: {
   tasks: TaskRow[];
   boardMode: boolean;
   compact: boolean;
   boardWidth: number;
+  extras: TaskListExtras;
 }) {
-  return boardMode ? <TaskBoard tasks={tasks} width={boardWidth} /> : <TaskTable tasks={tasks} compact={compact} />;
+  return boardMode ? <TaskBoard tasks={tasks} width={boardWidth} extras={extras} /> : <TaskTable tasks={tasks} compact={compact} extras={extras} />;
 }
 
 function ComposerToolbarSelect({
@@ -1401,7 +1456,7 @@ function NewTaskPage({
               <Checkbox checked={e2eMode} onCheckedChange={(checked) => setE2eMode(checked === true)} aria-describedby={e2eHintId} />
               Full auto
             </label>
-            <span id={e2eHintId} className="block">Runs to an open pull request with permission prompts bypassed. You approve the design and the plan.</span>
+            <span id={e2eHintId} className="block">Runs to an open pull request with permission prompts bypassed. You approve the design and the plan.{workflowType === "epic" ? " Child tasks inherit auto-advance and full auto." : ""}</span>
           </div>
           <Button type="button" variant="outline" disabled={busy} onClick={saveDraft}>
             <Icon name="EditFile" className="size-4" />
@@ -3254,7 +3309,7 @@ function PhaseStrip({
 // The task's newest still-relevant session: needsHuman ones first, then running, then anything
 // else live (settled/interrupted); a superseded session is never a candidate. Backs the header's
 // "Open current session" button.
-function currentSessionFor(sessions: SessionView[], task: TaskRecord): SessionView | null {
+function currentSessionFor(sessions: SessionView[], task: Pick<TaskRecord, "workflowType" | "worktreeTiming">): SessionView | null {
   const live = sessions
     .map((session) => ({ session, effective: effectiveStatus(session, sessions, task) }))
     .filter(({ session, effective }) => !session.completed && effective !== SUPERSEDED);
@@ -3270,6 +3325,256 @@ function currentSessionFor(sessions: SessionView[], task: TaskRecord): SessionVi
   return live[0]!.session;
 }
 
+// Epic page pieces. Children are ordinary TaskRows linked by parentTaskId; sessions come from the
+// flat listSessions fetch grouped per child. Row text: Done, Queued: waiting on {names}, Ready, or
+// the current session's what-it-wants line; Idle when a started child has no live session.
+function childSessionsStarted(sessions: SessionView[]): number | null {
+  if (sessions.length === 0) return null;
+  return Math.min(...sessions.map((session) => session.createdAt));
+}
+
+function EpicSummaryRow({ epic, rollup, startedAt, onUpdated }: { epic: TaskRecord; rollup: ReturnType<typeof epicRollup>; startedAt: number | null; onUpdated: () => void }) {
+  const rpc = useRpc<RpcContract>();
+  const [saving, setSaving] = useState(false);
+  const togglePause = async () => {
+    setSaving(true);
+    try {
+      await rpc.call("updateTask", { taskId: epic.id, patch: { epicPaused: !epic.epicPaused } });
+      toast.success(epic.epicPaused ? "Epic resumed. Ready children start at the next check." : "Epic paused. Running children finish; nothing new starts.");
+      onUpdated();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not update epic.");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const facts = [
+    `${rollup.done} of ${rollup.total} done`,
+    `${rollup.running} running`,
+    `${rollup.waiting} need you`,
+    startedAt === null ? null : relativeTime(startedAt) === "now" ? "started now" : `started ${relativeTime(startedAt)} ago`,
+  ].filter((fact): fact is string => fact !== null);
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3">
+      <span className="text-sm text-foreground">{facts.join(" \u00b7 ")}</span>
+      <Button type="button" size="sm" variant="outline" disabled={saving} onClick={togglePause}>
+        <Icon name={epic.epicPaused ? "Play" : "Pause"} className="size-3.5" />
+        {epic.epicPaused ? "Resume epic" : "Pause epic"}
+      </Button>
+    </div>
+  );
+}
+
+function EpicChildRow({
+  child,
+  sessions,
+  childById,
+  completedIds,
+  compact,
+  onDismiss,
+  onUpdated,
+}: {
+  child: TaskRow;
+  sessions: SessionView[];
+  childById: ReadonlyMap<string, TaskRow>;
+  completedIds: ReadonlySet<string>;
+  compact: boolean;
+  onDismiss: (threadId: string) => void;
+  onUpdated: () => void;
+}) {
+  const rpc = useRpc<RpcContract>();
+  const navigate = useBbNavigate();
+  const [saving, setSaving] = useState(false);
+  const current = currentSessionFor(sessions, child);
+  const effective = current ? effectiveStatus(current, sessions, child) : null;
+  const unmet = child.dependsOn.filter((id) => !completedIds.has(id));
+  const step = labelStep(child.currentLabel);
+  let text: string;
+  let tone: StatusTone;
+  if (child.completed) {
+    text = "Done";
+    tone = "success";
+  } else if (child.isDraft && unmet.length > 0) {
+    text = `Queued: waiting on ${unmet.map((id) => childById.get(id)?.name ?? id).join(", ")}`;
+    tone = "muted";
+  } else if (child.isDraft) {
+    text = "Ready";
+    tone = "muted";
+  } else if (current && effective) {
+    text = sessionWhatItWants(current, effective);
+    tone = statusMeta(effective).tone;
+  } else {
+    text = "Idle";
+    tone = "muted";
+  }
+  const danger = effective === "failed" || effective === "lost";
+  const startedAt = childSessionsStarted(sessions);
+  const canMarkDone = !child.completed && (step === "PR" || step === "PR review");
+  const markDone = async () => {
+    setSaving(true);
+    try {
+      const result = await rpc.call("updateTask", { taskId: child.id, patch: { completed: true } });
+      if (!result.task) throw new Error("Task no longer exists.");
+      toast.success(`${child.name} marked done. Dependents start at the next check.`);
+      onUpdated();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not update task.");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const open = () => navigate.toPluginPanel("rpi", { subPath: `tasks/${child.id}` });
+  const meta = [step ?? child.stepLabel, child.model ?? "default model", startedAt === null ? null : relativeTime(startedAt)].filter((entry): entry is string => Boolean(entry));
+  return (
+    <div onClick={open} className={cn("flex gap-3 border-b border-border px-3 py-2.5 last:border-b-0", compact ? "flex-col" : "items-center", CLICKABLE_ROW_CLASS)}>
+      <div className="flex min-w-0 flex-1 items-center gap-2.5">
+        <Dot tone={tone} pulse={tone === "active"} />
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+            <RowLink onOpen={open} className="truncate text-sm">{child.name}</RowLink>
+            {child.attentionCount > 0 ? <AttentionCountChip n={child.attentionCount} /> : null}
+          </div>
+          <span className="truncate text-sm text-foreground">{text}</span>
+          <span className="text-xs text-muted-foreground">{meta.join(" \u00b7 ")}</span>
+        </div>
+      </div>
+      {child.isDraft || child.completed ? null : <PhaseStripMini task={child} />}
+      <span className="flex shrink-0 items-center gap-1" onClick={stopRowClick}>
+        {danger && current ? <SessionRecoveryActions threadId={current.threadId} onDismiss={onDismiss} /> : null}
+        {!danger && current ? (
+          <Button type="button" size="sm" variant="outline" onClick={() => navigate.toThread(current.threadId)}>
+            Open
+            <Icon name="ArrowUpRight" className="size-3.5" />
+          </Button>
+        ) : null}
+        {canMarkDone ? (
+          <Button type="button" size="sm" variant="outline" disabled={saving} onClick={markDone}>
+            <Icon name="Check" className="size-3.5" />
+            Mark done
+          </Button>
+        ) : null}
+        <TaskActionsMenu task={child} />
+      </span>
+    </div>
+  );
+}
+
+function EpicTasksPanel({
+  epic,
+  children,
+  sessionsByChild,
+  compact,
+  onUpdated,
+}: {
+  epic: TaskRecord;
+  children: TaskRow[];
+  sessionsByChild: ReadonlyMap<string, SessionView[]>;
+  compact: boolean;
+  onUpdated: () => void;
+}) {
+  const archive = useArchiveThread(DISMISS_SESSION_COPY);
+  const statusByChild = currentStatusByTask([...sessionsByChild.values()].flat(), children);
+  const rollup = epicRollup(children, statusByChild);
+  const childById = new Map(children.map((child) => [child.id, child]));
+  const completedIds = new Set(children.filter((child) => child.completed).map((child) => child.id));
+  const waves = childrenByDepth(children);
+  const startedAt = childSessionsStarted([...sessionsByChild.values()].flat());
+  return (
+    <div className="space-y-3">
+      {archive.dialog}
+      <EpicSummaryRow epic={epic} rollup={rollup} startedAt={startedAt} onUpdated={onUpdated} />
+      {waves.map((wave, index) => {
+        const settled = wave.filter((child) => child.completed).length;
+        return (
+          <details key={index} open={wave.some((child) => !child.completed)} className="group rounded-xl border border-border bg-card">
+            <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm font-medium text-foreground marker:content-none">
+              <Icon name="ChevronRight" className="size-3.5 shrink-0 transition-transform group-open:rotate-90" />
+              <span>Wave {index + 1}</span>
+              <span className="text-muted-foreground">{settled} of {wave.length} settled</span>
+            </summary>
+            <div className="border-t border-border">
+              {wave.map((child) => (
+                <EpicChildRow
+                  key={child.id}
+                  child={child}
+                  sessions={sessionsByChild.get(child.id) ?? []}
+                  childById={childById}
+                  completedIds={completedIds}
+                  compact={compact}
+                  onDismiss={archive.request}
+                  onUpdated={onUpdated}
+                />
+              ))}
+            </div>
+          </details>
+        );
+      })}
+    </div>
+  );
+}
+
+// Settings > Delivery for an epic: Paused and the per-epic parallel cap (blank restores the
+// constant default).
+function EpicSettingsPanel({ task, onUpdated }: { task: TaskRecord; onUpdated: () => void }) {
+  const rpc = useRpc<RpcContract>();
+  const [maxParallel, setMaxParallel] = useState(task.maxParallel === null ? "" : String(task.maxParallel));
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    setMaxParallel(task.maxParallel === null ? "" : String(task.maxParallel));
+  }, [task.maxParallel]);
+  const save = async (patch: { epicPaused?: boolean; maxParallel?: number | null }) => {
+    setSaving(true);
+    try {
+      await rpc.call("updateTask", { taskId: task.id, patch });
+      onUpdated();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not update epic.");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const commitMaxParallel = () => {
+    const trimmed = maxParallel.trim();
+    if (trimmed === "") {
+      if (task.maxParallel !== null) void save({ maxParallel: null });
+      return;
+    }
+    const value = Number(trimmed);
+    if (!Number.isInteger(value) || value < 1 || value > 20) {
+      toast.error("Max parallel tasks must be a whole number from 1 to 20.");
+      setMaxParallel(task.maxParallel === null ? "" : String(task.maxParallel));
+      return;
+    }
+    if (value !== task.maxParallel) void save({ maxParallel: value });
+  };
+  const inputId = useId();
+  return (
+    <div className="space-y-3 text-xs text-muted-foreground">
+      <label className="flex w-fit cursor-pointer items-center gap-2 py-1 text-sm font-medium text-foreground">
+        <Checkbox checked={task.epicPaused} disabled={saving} onCheckedChange={(checked) => void save({ epicPaused: checked === true })} />
+        Paused
+      </label>
+      <span className="block">Running children finish; no new child starts while paused.</span>
+      <div className="space-y-1">
+        <label htmlFor={inputId} className="block">Max parallel tasks</label>
+        <Input
+          id={inputId}
+          type="number"
+          min={1}
+          max={20}
+          className="h-8 w-24"
+          value={maxParallel}
+          disabled={saving}
+          placeholder={String(DEFAULT_EPIC_MAX_PARALLEL)}
+          onChange={(event) => setMaxParallel(event.currentTarget.value)}
+          onBlur={commitMaxParallel}
+        />
+        <span className="block">Default {DEFAULT_EPIC_MAX_PARALLEL}. Blank restores the default.</span>
+      </div>
+    </div>
+  );
+}
+
 function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifactFileName?: string | null }) {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
@@ -3278,7 +3583,12 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
   const [workspace, setWorkspace] = useState<TaskWorkspaceState | null>(null);
   const [sessions, setSessions] = useState<SessionView[]>([]);
   const [artifactCount, setArtifactCount] = useState<number | null>(null);
-  const [tab, setTab] = useState<"sessions" | "artifacts" | "settings">(artifactFileName ? "artifacts" : "sessions");
+  const [tab, setTab] = useState<"tasks" | "sessions" | "artifacts" | "settings">(artifactFileName ? "artifacts" : "sessions");
+  // Epic page data: every task and every session, fetched only when this task is an epic or a
+  // child (the child header links to its epic). Realtime on tasks and rpi:sessions refetches.
+  const [epicTasks, setEpicTasks] = useState<TaskRow[]>([]);
+  const [epicSessions, setEpicSessions] = useState<SessionView[]>([]);
+  const epicTabInitializedRef = useRef<string | null>(null);
   const [uiState, setUiState] = useState<TaskUiState | null>(null);
   // Which workflow step the sessions table is filtered to; null shows every session. Set from
   // PhaseStrip clicks, and once from the current step on first load (see the effect below).
@@ -3297,6 +3607,13 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
       setWorkspace(taskResult.workspace);
       setSessions(sessionResult.sessions);
       setLoadError(null);
+      const isEpic = taskResult.task?.workflowType === "epic";
+      if (isEpic || taskResult.task?.parentTaskId) {
+        rpc.call("listTasks", { archived: false, completed: null }).then(({ tasks }) => setEpicTasks(tasks)).catch(() => undefined);
+      }
+      if (isEpic) {
+        rpc.call("listSessions", { taskId: null }).then(({ sessions: all }) => setEpicSessions(all)).catch(() => undefined);
+      }
     }).catch((error) => {
       setTask(null);
       setLoadError(error instanceof Error ? error.message : "Could not load task.");
@@ -3322,6 +3639,24 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
   });
   useRealtime("artifacts", refetchArtifactCount);
   useRealtime("rpi:artifacts", refetchArtifactCount);
+
+  const epicChildren = useMemo(() => epicTasks.filter((row) => row.parentTaskId === taskId), [epicTasks, taskId]);
+  const sessionsByChild = useMemo(() => {
+    const map = new Map<string, SessionView[]>();
+    for (const session of epicSessions) {
+      const list = map.get(session.taskId);
+      if (list) list.push(session);
+      else map.set(session.taskId, [session]);
+    }
+    return map;
+  }, [epicSessions]);
+  const epicName = task?.parentTaskId ? epicTasks.find((row) => row.id === task.parentTaskId)?.name ?? null : null;
+  useEffect(() => {
+    if (epicChildren.length === 0 || artifactFileName) return;
+    if (epicTabInitializedRef.current === taskId) return;
+    epicTabInitializedRef.current = taskId;
+    setTab("tasks");
+  }, [epicChildren.length, taskId, artifactFileName]);
 
   useEffect(() => {
     if (!workspace) return;
@@ -3349,7 +3684,8 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
 
   // The tab shows the total session count; the heading under the strip (below) already says how
   // many of those are live or phase-filtered, so this is not effectiveStatus-filtered.
-  const tabs: Array<{ id: "sessions" | "artifacts" | "settings"; label: string }> = [
+  const tabs: Array<{ id: "tasks" | "sessions" | "artifacts" | "settings"; label: string }> = [
+    ...(epicChildren.length > 0 ? [{ id: "tasks" as const, label: `Tasks ${epicChildren.length}` }] : []),
     { id: "sessions", label: `Sessions ${sessions.length}` },
     { id: "artifacts", label: artifactCount === null ? "Artifacts" : `Artifacts ${artifactCount}` },
     { id: "settings", label: "Settings" },
@@ -3385,6 +3721,12 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
           <h2 className="text-2xl font-semibold tracking-tight text-foreground">{task.name}</h2>
           {task.completed ? <LabelPill label="Done" /> : null}
           <p className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+            {task.parentTaskId ? <>
+              <RowLink onOpen={() => navigate.toPluginPanel("rpi", { subPath: `tasks/${task.parentTaskId}` })} className="text-xs font-normal text-muted-foreground hover:text-foreground">
+                Part of {epicName ?? "epic"}
+              </RowLink>
+              <span aria-hidden="true">·</span>
+            </> : null}
             <span className="font-mono">{task.slug}</span>
             <span aria-hidden="true">·</span>
             <span>{WORKFLOW_GRAPH_LABELS[task.workflowType]} workflow</span>
@@ -3478,12 +3820,20 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
         ))}
       </div>
       <div id={`rpi-task-tabpanel-${tab}`} role="tabpanel" aria-labelledby={`rpi-task-tab-${tab}`} className="flex min-h-0 flex-1 flex-col">
-        {tab === "artifacts" ? (
+        {tab === "tasks" ? (
+          <EpicTasksPanel epic={task} children={epicChildren} sessionsByChild={sessionsByChild} compact={compact} onUpdated={refetch} />
+        ) : tab === "artifacts" ? (
           <div className="flex min-h-0 flex-1 flex-col">
             <ArtifactsPanel taskId={taskId} initialFileName={artifactFileName} />
           </div>
         ) : tab === "settings" ? (
           <div className="space-y-6">
+            {task.workflowType === "epic" ? (
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold text-foreground">Delivery</h3>
+                <EpicSettingsPanel task={task} onUpdated={refetch} />
+              </div>
+            ) : null}
             <div className="space-y-3">
               <h3 className="text-sm font-semibold text-foreground">Model</h3>
               <TaskModelPanel task={task} onUpdated={refetch} />
@@ -4017,6 +4367,9 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
   const threadIsBusy = (thread: PluginSidebarThread) =>
     thread.hasPendingInteraction || Object.values(thread.activity).some((n) => n > 0) || thread.indicator === "runtime" || thread.indicator === "background-agent" || thread.indicator === "workflow";
 
+  // An epic child's sessions group under the epic (parentTaskId), so the sidebar shows one group
+  // per epic holding the epic's own live sessions plus every child's live sessions.
+  const groupKeyFor = (session: SessionView) => taskMeta.get(session.taskId)?.parentTaskId ?? session.taskId;
   const groups = new Map<string, { taskName: string; threads: PluginSidebarThread[] }>();
   const nested = new Set<string>();
   const other: PluginSidebarThread[] = [];
@@ -4033,9 +4386,10 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
       if (!nested.has(thread.id)) other.push(thread);
       continue;
     }
-    const group = groups.get(session.taskId) ?? { taskName, threads: [] };
+    const key = groupKeyFor(session);
+    const group = groups.get(key) ?? { taskName: taskMeta.get(key)?.name ?? taskName, threads: [] };
     group.threads.push(thread);
-    groups.set(session.taskId, group);
+    groups.set(key, group);
   }
   const sortedOther = [...other].sort((a, b) => b.createdAt - a.createdAt);
   // Sentinel id (not a real task id, task ids come from the RPC and never start with "__") so
@@ -4093,24 +4447,30 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
   // the group's needs-human flag, its default expand/collapse, and its sort position among groups.
   const groupEntries = [...groups.entries()].map(([taskId, group]) => {
     const task = taskMeta.get(taskId);
-    const taskSessions = sessionsByTaskId.get(taskId) ?? [];
+    const isEpic = task?.workflowType === "epic";
+    // Effective status is computed against the session's own task (a child's sessions supersede
+    // each other, never the epic's), so the lookup uses session.taskId, not the group key.
     const rows = group.threads.map((thread) => {
       const session = sessionsByThread.get(thread.id)!;
-      const effective = task ? effectiveStatus(session, taskSessions, task) : session.rpiStatus;
-      return { thread, session, effective };
+      const owner = taskMeta.get(session.taskId);
+      const effective = owner ? effectiveStatus(session, sessionsByTaskId.get(session.taskId) ?? [session], owner) : session.rpiStatus;
+      return { thread, session, effective, ownerCompleted: owner?.completed ?? false };
     });
     // Stable order only: newest session first by creation time. Status rank, last-update time,
     // and the selected thread are deliberately not sort keys; using them made rows jump on click.
     const byCreated = (a: { session: SessionView }, b: { session: SessionView }) => b.session.createdAt - a.session.createdAt;
     const live = rows.filter((row) => row.effective !== SUPERSEDED && !row.session.completed).sort(byCreated);
-    const done = rows.filter((row) => row.effective === SUPERSEDED || row.session.completed).sort(byCreated);
-    const needsHumanCount = task?.completed ? 0 : live.filter((row) => needsHuman(row.effective)).length;
+    // An epic group lists live sessions only; its done fold never renders.
+    const done = isEpic ? [] : rows.filter((row) => row.effective === SUPERSEDED || row.session.completed).sort(byCreated);
+    const needsHumanCount = task?.completed ? 0 : live.filter((row) => !row.ownerCompleted && needsHuman(row.effective)).length;
+    const epicChildren = isEpic ? [...taskMeta.values()].filter((row) => row.parentTaskId === taskId) : [];
+    const epicProgress = isEpic ? { done: epicChildren.filter((row) => row.completed).length, total: epicChildren.length } : null;
     const hasActive =
       rows.some((row) => row.thread.id === activeThreadId) ||
       rows.some((row) => descendantsOf(row.thread.id).some((child) => child.id === activeThreadId || threadIsBusy(child)));
     const firstCreated = Math.min(...rows.map((row) => row.session.createdAt));
     const latestThreadId = (live[0] ?? done[0])?.thread.id ?? null;
-    return { taskId, taskName: group.taskName, projectId: task?.projectId ?? null, completed: task?.completed ?? false, e2eMode: task?.e2eMode ?? false, live, done, needsHumanCount, hasActive, firstCreated, latestThreadId };
+    return { taskId, taskName: group.taskName, projectId: task?.projectId ?? null, completed: task?.completed ?? false, e2eMode: task?.e2eMode ?? false, live, done, needsHumanCount, hasActive, firstCreated, latestThreadId, epicProgress };
   });
   // One flat list of tasks, newest task first by its first session's creation time. Nothing that
   // changes on click or as work progresses (active project, needs-you, last update) is a sort
@@ -4156,13 +4516,14 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
     thread: PluginSidebarThread,
     session: SessionView,
     effective: string,
-    taskId: string,
     selection?: { selected: boolean; onChange: (checked: boolean) => void },
   ) => {
     const meta = statusMeta(effective);
-    const ordinal = ordinalsFor(taskId).get(session.threadId);
+    const ordinal = ordinalsFor(session.taskId).get(session.threadId);
     const attemptSuffix = ordinal && ordinal.total > 1 ? `, attempt ${ordinal.ordinal}` : "";
-    const title = session.label ? `${capitalize(labelStep(session.label) ?? "Session")}${attemptSuffix}` : (thread.title ?? thread.titleFallback ?? "Session");
+    const owner = taskMeta.get(session.taskId);
+    const childPrefix = owner?.parentTaskId ? `${owner.name}: ` : "";
+    const title = session.label ? `${childPrefix}${capitalize(labelStep(session.label) ?? "Session")}${attemptSuffix}` : (thread.title ?? thread.titleFallback ?? "Session");
     const children = descendantsOf(thread.id);
     const busyChildren = children.filter(threadIsBusy).length;
     return (
@@ -4233,6 +4594,7 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
           <Icon name={collapsed ? "ChevronRight" : "ChevronDown"} className="size-3.5 shrink-0" />
           <span className="flex min-w-0 flex-1 flex-col">
             <span className="truncate">{entry.taskName}</span>
+            {entry.epicProgress ? <span className="text-[11px] font-normal text-muted-foreground">{entry.epicProgress.done} of {plural(entry.epicProgress.total, "task")}</span> : null}
             {entry.completed ? <span className="text-[11px] font-normal text-muted-foreground">Done</span> : null}
             {showProjectNames ? <span className="truncate text-[11px] font-normal text-muted-foreground">{projectLabel(entry.projectId)}</span> : null}
           </span>
@@ -4262,7 +4624,7 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
         {groupHeader(entry)}
         {collapsed ? null : (
           <div className="ml-3 space-y-0.5 border-l border-border pl-1.5">
-            {entry.live.map((row) => sessionRow(row.thread, row.session, row.effective, entry.taskId))}
+            {entry.live.map((row) => sessionRow(row.thread, row.session, row.effective))}
             {entry.done.length > 0 ? (() => {
               const selectingDone = selectingDoneTaskId === entry.taskId;
               const selectedDone = entry.done.filter((row) => selectedDoneThreadIds.has(row.thread.id));
@@ -4311,7 +4673,6 @@ export function RpiThreadList({ activeThreadId, activeProjectId, isCompactViewpo
                     row.thread,
                     row.session,
                     row.effective,
-                    entry.taskId,
                     selectingDone ? { selected: selectedDoneThreadIds.has(row.thread.id), onChange: (checked) => toggleDoneThread(row.thread.id, checked) } : undefined,
                   ))}
                 </>
@@ -5346,12 +5707,14 @@ function needsYouEmptyMessage(runningCount: number, hasTasks: boolean): string {
 function NeedsYouRow({
   session,
   task,
+  epicName,
   compact,
   onOpen,
   onDismiss,
 }: {
   session: SessionView;
   task: TaskRow;
+  epicName?: string | null;
   compact: boolean;
   onOpen: () => void;
   onDismiss: (threadId: string) => void;
@@ -5376,12 +5739,18 @@ function NeedsYouRow({
       {labelStep(session.label) ?? session.label ?? "session"} · {relativeTime(session.threadUpdatedAt ?? session.updatedAt)}
     </>
   );
+  const nameCell = (
+    <>
+      {epicName ? <span className="text-muted-foreground">{epicName} › </span> : null}
+      {task.name}
+    </>
+  );
   if (compact) {
     return (
       <div onClick={onOpen} className={cn("flex flex-col gap-1.5 px-3.5 py-2.5", CLICKABLE_ROW_CLASS, tint)}>
         <div className="flex items-center gap-2">
           <StatusPill tone={meta.tone} label={meta.text} icon={meta.icon} hint={meta.hint || undefined} />
-          <RowLink onOpen={onOpen} className="min-w-0 flex-1 truncate text-sm">{task.name}</RowLink>
+          <RowLink onOpen={onOpen} className="min-w-0 flex-1 truncate text-sm">{nameCell}</RowLink>
           {danger ? null : openAffordance("h-9 w-9 p-0", <Icon name="ArrowUpRight" className="size-4" />)}
         </div>
         <div className="text-xs text-muted-foreground">{metaLine}</div>
@@ -5396,7 +5765,7 @@ function NeedsYouRow({
         <StatusPill tone={meta.tone} label={meta.text} icon={meta.icon} hint={meta.hint || undefined} />
       </span>
       <span className="flex w-[260px] shrink-0 flex-col items-start gap-0.5">
-        <RowLink onOpen={onOpen} className="truncate text-sm">{task.name}</RowLink>
+        <RowLink onOpen={onOpen} className="truncate text-sm">{nameCell}</RowLink>
         <span className="text-xs text-muted-foreground">{metaLine}</span>
       </span>
       <span className="min-w-0 flex-1 truncate text-sm">{textCell}</span>
@@ -5417,12 +5786,14 @@ const NEEDS_YOU_BAND_CAP = 8;
 
 function NeedsYouBand({
   queue,
+  taskById,
   runningCount,
   hasTasks,
   compact,
   onOpen,
 }: {
   queue: Array<{ session: SessionView; task: TaskRow }>;
+  taskById: ReadonlyMap<string, TaskRow>;
   runningCount: number;
   hasTasks: boolean;
   compact: boolean;
@@ -5455,6 +5826,7 @@ function NeedsYouBand({
               key={entry.session.threadId}
               session={entry.session}
               task={entry.task}
+              epicName={entry.task.parentTaskId ? taskById.get(entry.task.parentTaskId)?.name ?? null : null}
               compact={compact}
               onOpen={() => onOpen(entry.session.threadId)}
               onDismiss={archive.request}
@@ -5653,10 +6025,24 @@ function RpiTaskPanel({ subPath }: { subPath: string }) {
 
   const showNewTaskPage = subPath === "new" && !detailTaskId;
 
+  // Epic children stay out of the table and the draft count (the epic row carries them); the
+  // band and the running count keep every task so a waiting child still reaches the inbox.
   const visibleTasks = useMemo(() => {
-    return tasks.filter((task) => (showCompleted || !task.completed) && (view !== "drafts" || task.isDraft));
+    return tasks.filter((task) => !task.parentTaskId && (showCompleted || !task.completed) && (view !== "drafts" || task.isDraft));
   }, [tasks, view, showCompleted]);
-  const draftCount = useMemo(() => tasks.filter((task) => task.isDraft && (showCompleted || !task.completed)).length, [tasks, showCompleted]);
+  const draftCount = useMemo(() => tasks.filter((task) => !task.parentTaskId && task.isDraft && (showCompleted || !task.completed)).length, [tasks, showCompleted]);
+  const childrenByEpic = useMemo(() => {
+    const map = new Map<string, TaskRow[]>();
+    for (const task of tasks) {
+      if (!task.parentTaskId) continue;
+      const list = map.get(task.parentTaskId);
+      if (list) list.push(task);
+      else map.set(task.parentTaskId, [task]);
+    }
+    return map;
+  }, [tasks]);
+  const taskById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
+  const statusByTask = useMemo(() => currentStatusByTask(sessions, tasks), [sessions, tasks]);
   const queue = useMemo(() => attentionQueue(sessions, tasks), [sessions, tasks]);
   const runningCount = useMemo(
     () => {
@@ -5778,6 +6164,7 @@ function RpiTaskPanel({ subPath }: { subPath: string }) {
             {view === "tasks" ? (
               <NeedsYouBand
                 queue={queue}
+                taskById={taskById}
                 runningCount={runningCount}
                 hasTasks={tasks.length > 0}
                 compact={compact}
@@ -5795,7 +6182,7 @@ function RpiTaskPanel({ subPath }: { subPath: string }) {
                 boardMode={showBoard}
                 setBoardMode={setShowBoard}
               />
-              <TaskListView tasks={visibleTasks} boardMode={showBoard} compact={compact} boardWidth={panelWidth} />
+              <TaskListView tasks={visibleTasks} boardMode={showBoard} compact={compact} boardWidth={panelWidth} extras={{ childrenByEpic, statusByTask }} />
             </div>
           </div>
         )}

@@ -186,3 +186,13 @@ test("composer banner is one wrapping row of content-sized groups", () => {
   // a tap; a plain tooltip would hide it on a phone.
   assert.match(banner, /<HintTrigger hint="Open the artifact for exact checks and known limits\."/);
 });
+
+// Phase 5 of the epic plan: every epic surface exists, and children launch server-side (the
+// scheduler), so the one launchDraft call site stays the New task Create and start path.
+test("epic surfaces exist and reuse the one launch boundary", () => {
+  for (const label of ["Pause epic", "Resume epic", "Mark done", "Max parallel tasks", "Part of", "Queued: waiting on"]) {
+    assert.equal(content.includes(label), true, `missing epic surface copy ${label}`);
+  }
+  assert.equal((content.match(/rpc\.call\("launchDraft"/g) ?? []).length, 1, "the scheduler launches children server-side");
+  assert.ok((content.match(/<details/g) ?? []).length >= 1, "epic waves render as native <details>");
+});
