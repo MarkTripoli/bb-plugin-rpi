@@ -28,6 +28,15 @@ state rather than tracked separately.
 - Commit subjects and pull-request titles follow Conventional Commits: `type(scope)!: description`. The required `Semantic history / Conventional commits and PR title` check validates every commit in the pull request and the pull-request title.
 - No em dashes in prose or UI copy.
 
+## Versioning
+- Version lives only in `package.json` `version`. The first tagged release is `v0.1.0` (tag on the main commit that ships it, e.g. `git tag v0.1.0 && git push origin v0.1.0`).
+- From the first tagged release onward, bump `version` in the same PR that changes shipped behavior, following semver:
+  - **MAJOR**: breaking changes for users (task dir layout, CLI surface, RPC contract shape, DB migrations that abandon old data).
+  - **MINOR**: new user-visible features or new migrations (append-only migrations always ride a MINOR bump at minimum).
+  - **PATCH**: fixes, skill copy tweaks, UI polish with no schema or contract change.
+- Never edit a shipped migration after its release tag; ship a new one. See hard rules above.
+- Install from a tag for reproducibility; path installs from main are dev installs and may be ahead of the released version.
+
 ## Workflow per phase
 - Work in your assigned worktree branch. Commit in small, described commits. Do not touch other phases' files unless the plan row says so.
 - `npm test` (node:test) and `bb plugin build` must pass before you report done. Install live only when the plan row's reviewer checks need it: `bb plugin install .` (path install) then `bb plugin reload rpi`.
