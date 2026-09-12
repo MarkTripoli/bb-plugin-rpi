@@ -684,6 +684,94 @@ test("numeric approval carries its target and predecessor receipt into each succ
   await harness.lifecycle.dispose();
 });
 
+test("task context prefs follow the phase model", async () => {
+  const thread = makeThreadResponse({ id: "thr_phase_model", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "rpi",
+    sdk: {
+      subscribe: () => () => undefined,
+      projects: {
+        get: async ({ projectId }: { projectId: string }) => ({
+          id: projectId,
+          name: "Proj",
+          kind: "standard" as const,
+          gitRemoteUrl: null,
+          createdAt: 1,
+          updatedAt: 1,
+          sources: [{ id: "src_1", projectId, hostId: "host_seed", path: "/repo", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 }],
+        }),
+      },
+      threads: {
+        spawn: async () => thread,
+        get: async () => ({ ...thread, environment: { id: "env_1", path: "/repo", branchName: "feature/context", status: "ready" } }),
+        interactions: { list: async () => [] },
+      },
+    },
+  });
+  await plugin(bb);
+  const created = await harness.behavior.callRpc("createTask", {
+    request: { text: "prompt", projectId: "proj_1", workflowType: "rpi", worktreeTiming: "never", permissionMode: "default", autoAdvance: false },
+    name: "Task",
+    draft: true,
+  }) as { taskId: string };
+  const db = bb.storage.database();
+  await harness.behavior.callRpc("launchSkill", { taskId: created.taskId, skillId: "implement-plan" });
+  db.prepare("UPDATE sessions SET hydrated_at = 1 WHERE thread_id = 'thr_phase_model'").run();
+  await harness.behavior.emitThreadEvent("thread.active", {
+    thread: { ...thread, id: "thr_phase_model", status: "active" },
+  });
+
+  const readPrefs = async () => JSON.parse(toolText(await harness.behavior.callAgentTool("rpi_task_context", {}, { threadId: "thr_phase_model", projectId: "proj_1" }))) as {
+    prefs: { researchModel: string; researchSubagentModel: string; providerId: string | null; model: string | null };
+  };
+
+  // Without e2e mode or a phase entry, the output is the task's own model.
+  const baseline = await readPrefs();
+  assert.equal(baseline.prefs.providerId, null);
+  assert.equal(baseline.prefs.model, null);
+
+  // An explicit phase_models entry applies regardless of e2e mode.
+  db.prepare("UPDATE tasks SET phase_models = ? WHERE id = ?").run(
+    JSON.stringify({ implementation: { providerId: "codex", model: "gpt-explicit" } }),
+    created.taskId,
+  );
+  const explicit = await readPrefs();
+  assert.equal(explicit.prefs.providerId, "codex");
+  assert.equal(explicit.prefs.model, "gpt-explicit");
+  assert.equal(explicit.prefs.researchModel, "codex gpt-explicit");
+  assert.equal(explicit.prefs.researchSubagentModel, "codex gpt-explicit");
+
+  // With e2e mode on and no explicit entry, class defaults apply: implementation is fast,
+  // code-review is reasoning.
+  db.prepare("UPDATE tasks SET phase_models = NULL, e2e_mode = 1 WHERE id = ?").run(created.taskId);
+  await harness.behavior.callRpc("setPrefs", {
+    e2e: {
+      fastModel: { providerId: "pi", model: "fast-one" },
+      reasoningModel: { providerId: "pi", model: "reason-one", reasoningLevel: "high" },
+    },
+  });
+  const fast = await readPrefs();
+  assert.equal(fast.prefs.providerId, "pi");
+  assert.equal(fast.prefs.model, "fast-one");
+  assert.equal(fast.prefs.researchModel, "pi fast-one");
+
+  db.prepare("UPDATE sessions SET label = 'code-review', skill_id = 'review-code' WHERE thread_id = 'thr_phase_model'").run();
+  await harness.behavior.emitThreadEvent("thread.active", {
+    thread: { ...thread, id: "thr_phase_model", status: "active" },
+  });
+  const reasoning = await readPrefs();
+  assert.equal(reasoning.prefs.providerId, "pi");
+  assert.equal(reasoning.prefs.model, "reason-one");
+  assert.equal(reasoning.prefs.researchModel, "pi reason-one");
+
+  // With e2e mode off the class defaults never apply, even with prefs set.
+  db.prepare("UPDATE tasks SET e2e_mode = 0 WHERE id = ?").run(created.taskId);
+  const off = await readPrefs();
+  assert.equal(off.prefs.providerId, null);
+  assert.equal(off.prefs.model, null);
+  await harness.lifecycle.dispose();
+});
+
 test("saveScratchPad is compare-and-swap on revision: stale write conflicts and reloads server text", async () => {
   const { bb, harness } = createFakePluginHost({
     pluginId: "rpi",

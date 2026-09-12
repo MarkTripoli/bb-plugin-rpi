@@ -1295,7 +1295,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
   }), { auth: "local" });
 
-  registerArtifactTools(bb, db, sessionMirror, childThreadMirror, { getResearchModel: () => researchModelPreference });
+  registerArtifactTools(bb, db, sessionMirror, childThreadMirror, { getResearchModel: () => researchModelPreference, getE2ePrefs: () => e2ePrefs });
 
   bb.agents.configure((context) => {
     bindPendingThread(db, sessionMirror, launchBindings, context.thread.id);

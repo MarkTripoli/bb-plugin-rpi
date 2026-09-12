@@ -24,7 +24,10 @@ import {
   softDeleteComments,
 } from "./comments";
 import { TASK_ROOT_DIR } from "./constants";
+import { DEFAULT_E2E_PREFS, type E2ePrefs } from "./contract";
 import { parseJson, readRow } from "./db";
+import { phaseModelFor } from "./e2e";
+import { parsePhaseModels } from "./tasks";
 import { ingest, hydrate } from "./mirror";
 import { mirrorSession, resolveResearchModel, type ChildThreadMirrorRow, type SessionMirrorRow } from "./sessions";
 import { lintWriting } from "./writing";
@@ -193,7 +196,7 @@ export function registerArtifactTools(
   db: Database,
   mirror: Map<string, SessionMirrorRow>,
   childThreads = new Map<string, ChildThreadMirrorRow>(),
-  options: { getResearchModel?: () => string | null } = {},
+  options: { getResearchModel?: () => string | null; getE2ePrefs?: () => E2ePrefs } = {},
 ) {
   const hydrationByTask = new Map<string, Promise<void>>();
 
@@ -243,11 +246,19 @@ export function registerArtifactTools(
       const researchContext = row.label?.replace(/^rpi:/, "") === "research";
       const taskWorkspace = db.prepare(`
         SELECT default_directory AS defaultDirectory, base_environment_id AS baseEnvironmentId,
-          worktree_environment_id AS worktreeEnvironmentId, worktree_timing AS worktreeTiming
+          worktree_environment_id AS worktreeEnvironmentId, worktree_timing AS worktreeTiming,
+          e2e_mode AS e2eMode, phase_models AS phaseModelsJson
         FROM tasks WHERE id = ?
-      `).get(row.taskId) as { defaultDirectory: string | null; baseEnvironmentId: string | null; worktreeEnvironmentId: string | null; worktreeTiming: string } | undefined;
+      `).get(row.taskId) as { defaultDirectory: string | null; baseEnvironmentId: string | null; worktreeEnvironmentId: string | null; worktreeTiming: string; e2eMode: number | null; phaseModelsJson: string | null } | undefined;
       const thread = await bb.sdk.threads.get({ threadId, include: "environment" }).catch(() => null) as { environment?: { id?: string | null; path?: string | null; branchName?: string | null } | null; environmentId?: string | null } | null;
-      const researchModel = resolveResearchModel(row, options.getResearchModel?.() ?? null);
+      const e2ePrefs = options.getE2ePrefs?.() ?? DEFAULT_E2E_PREFS;
+      const phaseModel = phaseModelFor(
+        { e2eMode: taskWorkspace?.e2eMode ?? 0, phaseModels: parsePhaseModels(taskWorkspace?.phaseModelsJson ?? null) },
+        row.label?.replace(/^rpi:/, "") ?? null,
+        e2ePrefs,
+      );
+      const phaseModelString = phaseModel ? `${phaseModel.providerId} ${phaseModel.model}` : null;
+      const researchModel = phaseModelString ?? resolveResearchModel(row, options.getResearchModel?.() ?? null);
       const output = hlTaskContextOutputSchema.parse({
         task: {
           id: row.taskId,
@@ -271,8 +282,8 @@ export function registerArtifactTools(
         prefs: {
           researchModel,
           researchSubagentModel: researchModel,
-          providerId: row.providerId,
-          model: row.model,
+          providerId: phaseModel?.providerId ?? row.providerId,
+          model: phaseModel?.model ?? row.model,
         },
         assignment: {
           skillId: row.skillId,
