@@ -20,6 +20,7 @@ All phase and child-thread skills load the [RPI writing guide](WRITING.md). It g
 | rpi-iterate-structure-outline | structure | /rpi-implement-outline, or /rpi-setup-worktree when worktree_timing is later | yes |
 | rpi-create-plan | plan | /rpi-setup-worktree | yes |
 | rpi-iterate-plan | plan | /rpi-setup-worktree | yes |
+| rpi-create-epic-plan | epic-plan | /rpi-start-epic-delivery (materializes children; no session) | yes |
 | rpi-configure-workspaces | worktree-setup | /rpi-setup-worktree | yes |
 | rpi-setup-worktree | worktree-setup | /rpi-implement-plan or /rpi-implement-outline by workflow type | no |
 | rpi-implement-plan | implementation | same implementation command between numeric phases, then /rpi-describe-pr | yes |
@@ -33,4 +34,4 @@ All phase and child-thread skills load the [RPI writing guide](WRITING.md). It g
 | rpi-review-artifact-comments | review | /rpi-iterate-implementation | no |
 | rpi-show-me | helper | no Proceed target | no |
 
-Human gates: design, design-prd, design-tdd, structure, plan, implementation, describe-pr, and pr-review. Auto-advance flags are `aa_questions_to_research`, `aa_research_to_design`, `aa_plan_to_worktree`, `aa_worktree_to_implementation`, and `aa_implementation_to_pr`; only transitions with one of those flags can launch automatically. The code-review loop reuses `aa_implementation_to_pr`. Pull request review remains manual because approval and new comments are external events.
+Human gates: design, design-prd, design-tdd, structure, plan, epic-plan, implementation, describe-pr, and pr-review. Auto-advance flags are `aa_questions_to_research`, `aa_research_to_design`, `aa_plan_to_worktree`, `aa_worktree_to_implementation`, and `aa_implementation_to_pr`; only transitions with one of those flags can launch automatically. The code-review loop reuses `aa_implementation_to_pr`. Pull request review remains manual because approval and new comments are external events.
