@@ -199,12 +199,19 @@ export function extractPrimaryReviewArtifact(
   liveArtifactNames: ReadonlySet<string>,
 ): PrimaryReviewArtifact | null {
   let fence: { marker: "`" | "~"; length: number } | null = null;
+  const openingFence = /^ {0,3}(`{3,}|~{3,})/;
+  const closingFence = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
   for (const line of text.split(/\r?\n/)) {
-    const fenceMatch = /^ {0,3}(`{3,}|~{3,})/.exec(line);
-    if (fenceMatch) {
-      const run = fenceMatch[1]!;
-      if (!fence) fence = { marker: run[0] as "`" | "~", length: run.length };
-      else if (run[0] === fence.marker && run.length >= fence.length) fence = null;
+    if (fence) {
+      const closingMatch = closingFence.exec(line);
+      const run = closingMatch?.[1];
+      if (run && run[0] === fence.marker && run.length >= fence.length) fence = null;
+      continue;
+    }
+    const openingMatch = openingFence.exec(line);
+    if (openingMatch) {
+      const run = openingMatch[1]!;
+      fence = { marker: run[0] as "`" | "~", length: run.length };
       continue;
     }
     if (fence || /^(?: {4}|\t)/.test(line)) continue;

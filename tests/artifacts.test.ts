@@ -131,6 +131,20 @@ test("primary review extraction accepts only the first live standalone task dire
   );
 });
 
+test("primary review extraction ignores directives after malformed fence text", () => {
+  const live = new Set(["01-review.md", "02-review.md"]);
+  for (const marker of ["```", "~~~"] as const) {
+    const input = [
+      `${marker}text`,
+      `${marker}not-a-closing-fence`,
+      `::rpi-artifact{task="task-1" file="01-review.md"}`,
+      marker,
+      `::rpi-artifact{task="task-1" file="02-review.md"}`,
+    ].join("\n");
+    assert.deepEqual(extractPrimaryReviewArtifact(input, "task-1", live), { fileName: "02-review.md" });
+  }
+});
+
 test("file validation rejects case-insensitive live collisions", () => {
   const db = makeDb();
   const taskId = seedTask(db);

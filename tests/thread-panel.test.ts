@@ -25,9 +25,10 @@ test("app exposes one consolidated RPI thread panel action", () => {
   assert.doesNotMatch(uiSource, /RPI_WORKFLOW_ACTIONS/);
   assert.doesNotMatch(uiSource, /Workflow actions/);
   for (const label of ["Review code", "Create pull request", "Resolve pull request reviews"]) {
-    assert.doesNotMatch(uiSource, new RegExp(`Workflow actions[\\s\\S]{0,400}${label}`));
+    assert.equal(uiSource.includes(label), true, `missing localized review action ${label}`);
   }
   assert.doesNotMatch(uiSource, /rpc\.call\("launchSkill"/);
+  assert.match(uiSource, /buildManualLaunchRoute\(\{ kind: "skill", taskId: session\.taskId, skillId \}\)/);
   assert.match(uiSource, /function openRpiArtifact\(/);
-  assert.match(uiSource, /openRpiArtifact\(navigate, session\.taskId, phaseHandoff\.reviewArtifact\.fileName\)/);
+  assert.match(uiSource, /openRpiArtifact\(navigate, session\.taskId, reviewArtifact\.fileName\)/);
 });

@@ -16,6 +16,7 @@ Coordinate an approved plan artifact in `.rpi/tasks/<slug>/`. Launch focused chi
 - If the user supplied a specific plan path or `@file`, use that file.
 - Otherwise use the selected plan in `rpi_task_context`; if none is selected, page `rpi_artifacts_list` and resolve ambiguity before reading one.
 - Use `rpi_artifact_read` on the selected plan version: headings first, then the implementation overview, shared constraints, first incomplete phase, and that phase's acceptance checks. Do not load completed or later phase bodies unless the current phase depends on them. Read `task.md` or `ticket.md` only when needed for ticket identity, manual checks, or acceptance language.
+- Use `assignment.approvedPhase` and `assignment.primaryReviewArtifact` from `rpi_task_context` as authoritative; ignore inferred phase markers.
 - If no plan is found, ask for the plan path and stop.
 
 ### 2. Launch the implementer child thread

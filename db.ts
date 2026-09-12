@@ -280,6 +280,7 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE sessions ADD COLUMN completed INTEGER NOT NULL DEFAULT 0 CHECK (completed IN (0, 1))`,
   `CREATE TABLE deleted_task_slugs (slug TEXT PRIMARY KEY)`,
   `ALTER TABLE launch_attempts ADD COLUMN request_json TEXT`,
+  `ALTER TABLE launch_attempts ADD COLUMN target_phase INTEGER`,
 ];
 
 // `bb.storage.migrate` tracks applied migrations by statement index/count, not by content, so an

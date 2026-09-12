@@ -19,6 +19,8 @@ Companion documents when present: research, design discussion, PRD, TDD, `task.m
 
 Use `rpi_artifact_read` on the selected outline version: headings, implementation overview, shared constraints, first incomplete phase, and that phase's validation. Read only the complete companion sections that influence the current phase.
 
+When `rpi_task_context.assignment.approvedPhase` is present, implement exactly that server-approved step and use the selected predecessor receipt named by `assignment.primaryReviewArtifact`. Do not infer a different step from checkboxes, headings, or the newest receipt.
+
 When artifacts disagree, the structure outline wins; mention the conflict in the child assignment or user report.
 
 ### Progress tracking

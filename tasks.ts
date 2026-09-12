@@ -341,6 +341,7 @@ export function getTask(db: Database, taskId: string) {
     threadId: string | null;
     retriedFrom: string | null;
     retryMarker: string | null;
+    targetPhase: number | null;
     createdAt: number;
   }>(
     db,
@@ -358,6 +359,7 @@ export function getTask(db: Database, taskId: string) {
       thread_id AS threadId,
       retried_from AS retriedFrom,
       retry_marker AS retryMarker,
+      target_phase AS targetPhase,
       created_at AS createdAt
     FROM launch_attempts
     WHERE task_id = ?

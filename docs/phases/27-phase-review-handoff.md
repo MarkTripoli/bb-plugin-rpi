@@ -80,5 +80,25 @@
 ## Reviewer checks
 
 - Use a compliant numeric implementation session to verify the bound receipt opener, unresolved-comment count and realtime update, cancel side-effect freedom, exact approval label, and single successor launch.
-- Confirm a legacy or malformed session exposes only artifact navigation and Iterate, with no guessed numeric phase action.
+- Confirm a legacy or malformed session retains Review code and Iterate for repair, while hiding guessed numeric and terminal PR actions.
 - After these checks, hand off to `/rpi-ci-commit`; no commit was created here.
+
+# Phase 4: Live layout repairs
+
+## Shipped
+
+- The composer banner is one wrapping row of content-sized groups. The earlier `flex-1` groups had a zero hypothetical size, so all of them shared one line and squeezed below their content, and their `shrink-0` children painted over the neighboring group. A wide composer now keeps the review handoff, the actions, and the next-model label on one line; a narrow one stacks them. The duplicate `Phase complete` heading is the group's accessible name only, and the review instruction is a `HintTrigger` on the heading it qualifies.
+- `RpiThreadHeaderAction` renders one inline control, as the thread-header contract asks. The phase pill, status pill, and context gauge left the 48px row, which the plugin shares with bb's own model picker, Commit, and panel buttons, and are the popover's first line. Phase and status already render on the session's own sidebar row.
+- Banner controls and the header trigger use the vendored coarse-pointer sizing, so the same controls are 36px under a coarse pointer.
+
+## Verification
+
+- `node --test --import tsx tests/ui-conventions.test.ts` against the pre-fix file restored from `.backups/`: the banner and header assertions fail; every other check passes.
+- `npm test`: passed; 314 tests, 0 failures.
+- `bb plugin types --check`, `bb plugin build`, `git diff --check`: passed.
+- `bb plugin install . --yes` and `bb plugin reload rpi`: passed.
+
+## Reviewer checks
+
+- Widen and narrow the composer. The banner fills one line when there is room and stacks with no overlap and no truncated action label when there is not.
+- Open the header popover. Its first line reads the phase, the session status, and the context percentage, and the row itself holds only the one button beside bb's own header controls.

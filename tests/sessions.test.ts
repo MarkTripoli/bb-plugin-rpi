@@ -5,6 +5,7 @@ import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/tes
 import plugin from "../server";
 import { MIGRATIONS, parseJson } from "../db";
 import { createDraftTask } from "../tasks";
+import { upsertArtifact } from "../artifacts";
 import {
   onCompletedTurn,
   proceed,
@@ -367,6 +368,8 @@ test("system-injected initiating messages append summary without overwriting an 
   const db = makeDb();
   const mirror = new Map();
   seedSession(db);
+  const taskId = (db.prepare("SELECT task_id AS taskId FROM sessions WHERE thread_id = 'thr_1'").get() as { taskId: string }).taskId;
+  upsertArtifact(db, taskId, "01-review.md", "---\ntype: design-discussion\n---\n# Review\n", { createdBy: "test", operation: "test" });
   const priorNext = JSON.stringify({ parsedAt: 1, extraction: { type: "next_step_found", nextStepPrompt: "/rpi-create-research", nextStepSummary: "next", nextStepType: "create-research", taskReference: null, suggestedDirectory: null } });
   db.prepare("UPDATE sessions SET label = 'research-questions', rpi_status = 'ready_for_input', next_step_json = ?, summary_json = ?, next_step_turn_key = 'turn_old', completed_turn_key = 'turn_old', last_summarized_turn_key = 'turn_old' WHERE thread_id = 'thr_1'").run(
     priorNext,

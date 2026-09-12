@@ -344,6 +344,7 @@ export const launchAttemptRowSchema = z
     threadId: z.string().nullable(),
     retriedFrom: z.string().nullable(),
     retryMarker: z.string().nullable(),
+    targetPhase: z.number().int().positive().nullable(),
     createdAt: z.number().int(),
     adoptionCandidates: z.array(z.object({
       threadId: z.string(),

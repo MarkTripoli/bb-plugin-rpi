@@ -21,7 +21,7 @@ export type PhaseHandoff<T extends PhaseArtifact = PhaseArtifact> =
   | { ok: true; reviewArtifact: T; completedPhase: number; nextPhase: PlanPhaseHint | null }
   | { ok: false; error: "missing_review_artifact" | "missing_phase_completion" | "phase_not_in_plan" };
 
-const PHASE_HEADING = /^##\s+Phase\s+(\d+)\s*:?\s*(.*)$/;
+const PHASE_HEADING = /^##\s+(?:Phase|Step)\s+(\d+)\s*:?\s*(.*)$/;
 const UNCHECKED_ITEM = /^(\s*[-*]\s*)\[ \]/;
 const MAX_SUMMARY_JSON_LENGTH = 1024 * 1024;
 
@@ -57,14 +57,30 @@ export type LatestPlanArtifactInput = {
   fileName: string;
 };
 
-export function latestPlanArtifact<T extends LatestPlanArtifactInput>(artifacts: T[]): T | null {
-  const plans = artifacts.filter((artifact) => artifact.groupType === "plan");
-  if (plans.length === 0) return null;
-  return plans.reduce((latest, artifact) => {
+function latestArtifactInGroup<T extends LatestPlanArtifactInput>(artifacts: readonly T[], groupType: "plan" | "structure-outline"): T | null {
+  const candidates = artifacts.filter((artifact) => artifact.groupType === groupType);
+  if (candidates.length === 0) return null;
+  return candidates.reduce((latest, artifact) => {
     if (artifact.updatedAt > latest.updatedAt) return artifact;
     if (artifact.updatedAt < latest.updatedAt) return latest;
     return parseArtifactNumber(artifact.fileName) > parseArtifactNumber(latest.fileName) ? artifact : latest;
   });
+}
+
+export function latestPlanArtifact<T extends LatestPlanArtifactInput>(artifacts: readonly T[]): T | null {
+  return latestArtifactInGroup(artifacts, "plan");
+}
+
+export function latestStructureOutlineArtifact<T extends LatestPlanArtifactInput>(artifacts: readonly T[]): T | null {
+  return latestArtifactInGroup(artifacts, "structure-outline");
+}
+
+export function phaseArtifactGroup(workflowType: string): "plan" | "structure-outline" {
+  return workflowType === "outline_only" ? "structure-outline" : "plan";
+}
+
+export function latestPhaseArtifact<T extends LatestPlanArtifactInput>(artifacts: readonly T[], workflowType: string): T | null {
+  return latestArtifactInGroup(artifacts, phaseArtifactGroup(workflowType));
 }
 
 export function parsePrimaryReviewArtifact(summaryJson: string | null): PrimaryReviewArtifact | null {

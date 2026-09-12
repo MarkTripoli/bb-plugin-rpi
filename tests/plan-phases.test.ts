@@ -1,13 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import {
   derivePhaseHandoff,
+  latestPhaseArtifact,
   latestPlanArtifact,
+  latestStructureOutlineArtifact,
   parsePlanPhases,
   parsePrimaryReviewArtifact,
   type PhaseArtifact,
 } from "../plan-phases";
 
+const root = path.resolve(import.meta.dirname, "..");
 const PLAN = `## Phase 1: Scaffold
 
 - [x] done
@@ -20,6 +25,7 @@ const PLAN = `## Phase 1: Scaffold
 
 - [ ] todo
 `;
+const OUTLINE = fs.readFileSync(path.join(root, "skills/rpi-create-structure-outline/references/structure_outline_template.md"), "utf8");
 
 function artifact(fileName: string, completedPhase: unknown = 1, type: unknown = "implementation"): PhaseArtifact {
   return { fileName, frontmatter: { type, completed_phase: completedPhase } as PhaseArtifact["frontmatter"] };
@@ -36,6 +42,13 @@ test("parsePlanPhases preserves phase headings and checkbox state for plan displ
   ]);
 });
 
+test("parsePlanPhases accepts the shipped outline Step headings", () => {
+  assert.deepEqual(parsePlanPhases(OUTLINE), [
+    { phase: 1, title: "[Work area]", complete: false },
+    { phase: 2, title: "[Work area]", complete: false },
+  ]);
+});
+
 test("latestPlanArtifact keeps plan selection deterministic", () => {
   const artifacts = [
     { fileName: "01-plan-a.md", groupType: "plan", updatedAt: 10 },
@@ -45,6 +58,17 @@ test("latestPlanArtifact keeps plan selection deterministic", () => {
   ];
   assert.equal(latestPlanArtifact(artifacts)?.fileName, "03-plan-c.md");
   assert.equal(latestPlanArtifact([{ fileName: "05-research-y.md", groupType: "research", updatedAt: 5 }]), null);
+});
+
+test("latestPhaseArtifact selects plans for plan workflows and outlines for outline workflows", () => {
+  const artifacts = [
+    { fileName: "01-structure-outline.md", groupType: "structure-outline", updatedAt: 10 },
+    { fileName: "02-structure-outline.md", groupType: "structure-outline", updatedAt: 20 },
+    { fileName: "03-plan.md", groupType: "plan", updatedAt: 30 },
+  ];
+  assert.equal(latestPhaseArtifact(artifacts, "outline_only")?.fileName, "02-structure-outline.md");
+  assert.equal(latestPhaseArtifact(artifacts, "rpi")?.fileName, "03-plan.md");
+  assert.equal(latestStructureOutlineArtifact(artifacts)?.fileName, "02-structure-outline.md");
 });
 
 test("primary review artifact parsing is bounded and fail closed", () => {

@@ -260,7 +260,10 @@ test("implement-phase action leads the implementation catalog and forces a compl
     nextPlanPhase: { phase: 2, title: "Wire server" },
   });
   assert.ok(outline);
-  assert.deepEqual(outline.actions.map((action) => action.id), ["review", "create-pr", "iterate"]);
+  assert.deepEqual(outline.actions.map((action) => action.id), ["implement-phase", "review", "create-pr", "iterate"]);
+  assert.equal(outline.actions[0]?.label, "Proceed to Phase 2");
+  assert.deepEqual(outline.actions[0]?.intent, { kind: "completion", threadId: "thr_source", skillId: "implement-outline", phase: 2 });
+  assert.equal(outline.actions.some((action) => action.id === "agent-suggestion"), false);
 });
 
 test("completion catalog preserves matching Proceed and adds a bounded agent suggestion", () => {  const matching = completionActionsForSession(baseCompletionSession({

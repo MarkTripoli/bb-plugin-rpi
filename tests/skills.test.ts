@@ -138,6 +138,13 @@ test("numeric implementation templates and phase answers bind explicit completed
   assertExtractsSkill(iterateOutline, "implement-outline", "iterate implementation outline handoff");
 });
 
+test("iteration handoff keeps nonterminal phases out of the terminal PR path", () => {
+  const content = fs.readFileSync(path.join(root, "skills/rpi-iterate-implementation/SKILL.md"), "utf8");
+  const closing = content.slice(content.indexOf("## When Iteration Is Complete"));
+  assert.match(closing, /If another numbered phase remains[\s\S]*implementation_phase_final_answer\.md/);
+  assert.match(closing, /Only when the completed phase is the highest numbered phase[\s\S]*implementation_final_answer\.md/);
+});
+
 test("human-gate answers expose one review artifact, concrete checks, feedback, approval semantics, and one final command", () => {
   for (const relativePath of humanGateAnswerTemplates) {
     const content = fillTemplate(fs.readFileSync(path.join(root, relativePath), "utf8"));

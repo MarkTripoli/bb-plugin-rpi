@@ -67,8 +67,7 @@ Fetch artifact comments only for files involved in the iteration. Work one comme
 
 ## When Iteration Is Complete
 
-When the feedback is addressed, checks have run, and no further implementation edits are known:
+When the feedback is addressed, checks have run, and no further implementation edits are known, choose exactly one handoff:
 
-1. Save any changed task artifact with `rpi_artifact_save`.
-2. Read `references/implementation_final_answer.md`.
-3. Respond with that template only. The next step is `/rpi-describe-pr`; use `/rpi-ci-commit` only when the user asks for an in-loop commit gate.
+1. If another numbered phase remains in the selected plan or outline, save any changed task artifact with `rpi_artifact_save`, read `references/implementation_phase_final_answer.md`, and point its command back to the same implementation skill. Do not use the pull-request handoff at this boundary.
+2. Only when the completed phase is the highest numbered phase, save any changed task artifact with `rpi_artifact_save`, read `references/implementation_final_answer.md`, and respond with that terminal template. The next step is `/rpi-describe-pr`; use `/rpi-ci-commit` only when the user asks for an in-loop commit gate.
