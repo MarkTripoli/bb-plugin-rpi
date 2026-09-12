@@ -101,6 +101,45 @@ export function autoAdvanceAccepts(label: PhaseLabel, workflowType: string, skil
   return transition?.next === skillId || AUTO_ADVANCE_ALTERNATIVES[label]?.includes(skillId) === true;
 }
 
+// Full-auto override rows, keyed by phase label then the skill the session's final answer named.
+// `next` is the skill to launch; `chain: "phase"` launches it with target_phase from the source
+// session's implementation receipt. Labels with no entry are human gates in full auto.
+export const E2E_AUTO_ADVANCE = {
+  "research-questions": { "create-research": { next: "create-research", to: "research" } },
+  research: {
+    "create-design-discussion": { next: "create-design-discussion", to: "design" },
+    "create-structure-outline": { next: "create-structure-outline", to: "structure" },
+    "create-prd": { next: "create-prd", to: "design-prd" },
+  },
+  "worktree-setup": {
+    "implement-plan": { next: "implement-plan", to: "implementation" },
+    "implement-outline": { next: "implement-outline", to: "implementation" },
+  },
+  implementation: {
+    "implement-plan": { next: "implement-plan", to: "implementation", chain: "phase" },
+    "implement-outline": { next: "implement-outline", to: "implementation", chain: "phase" },
+    "describe-pr": { next: "review-code", to: "code-review" },
+  },
+  "code-review": {
+    "fix-code-review": { next: "fix-code-review", to: "review-fixes" },
+    "describe-pr": { next: "describe-pr", to: "describe-pr" },
+  },
+  "review-fixes": { "review-code": { next: "review-code", to: "code-review" } },
+} as const satisfies Partial<Record<PhaseLabel, Record<string, { next: SkillId; to: PhaseLabel; chain?: "phase" }>>>;
+
+export type E2eTransition = { next: SkillId; to: PhaseLabel; chain?: "phase" };
+
+export function e2eTransition(label: PhaseLabel | null, workflowType: string, skillId: string): E2eTransition | undefined {
+  if (!label) return undefined;
+  const row = (E2E_AUTO_ADVANCE as Partial<Record<PhaseLabel, Record<string, E2eTransition>>>)[label]?.[skillId];
+  if (!row) return undefined;
+  // research must land on the workflow's own design entry (rpi: design discussion, outline_only: structure, prd_tdd: PRD).
+  if (label === "research" && !autoAdvanceAccepts(label, workflowType, skillId)) return undefined;
+  // numeric chaining only for the workflow's own phase skill.
+  if (row.chain === "phase" && phaseImplementationSkill(workflowType) !== skillId) return undefined;
+  return row;
+}
+
 export const WORKFLOW_GRAPHS = {
   rpi: ["questions", "research", "design", "plan", "worktree", "implementation", "review", "PR", "PR review"],
   outline_only: ["questions", "research", "structure", "implementation", "review", "PR", "PR review"],
