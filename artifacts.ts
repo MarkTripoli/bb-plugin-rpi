@@ -15,6 +15,7 @@ export const ARTIFACT_TYPE_ORDER = [
   "tdd",
   "structure-outline",
   "plan",
+  "epic-plan",
   "pr-description",
   "other",
 ] as const;
@@ -60,6 +61,8 @@ const CONTEXT_TYPES_BY_PHASE: Record<string, readonly string[]> = {
   "design-tdd": ["prd", "design-discussion", "research", "tdd"],
   structure: ["tdd", "prd", "design-discussion", "research", "structure-outline"],
   plan: ["structure-outline", "tdd", "prd", "design-discussion", "plan"],
+  "epic-plan": ["research", "epic-plan"],
+  delivery: [],
   "worktree-setup": ["plan", "structure-outline"],
   implementation: ["plan", "structure-outline"],
   "code-review": ["plan", "structure-outline"],

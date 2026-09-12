@@ -504,6 +504,7 @@ export const artifactGroupSchema = z.enum([
   "tdd",
   "structure-outline",
   "plan",
+  "epic-plan",
   "pr-description",
   "other",
 ]);

@@ -12,6 +12,7 @@ import {
   markdownHeadings,
   markdownSection,
   nextArtifactNumber,
+  parseFrontmatter,
   selectContextArtifacts,
 } from "./artifacts";
 import {
@@ -27,6 +28,7 @@ import { TASK_ROOT_DIR } from "./constants";
 import { DEFAULT_E2E_PREFS, type E2ePrefs } from "./contract";
 import { parseJson, readRow } from "./db";
 import { phaseModelFor } from "./e2e";
+import { parseEpicChildren } from "./epic";
 import { parsePhaseModels } from "./tasks";
 import { ingest, hydrate } from "./mirror";
 import { mirrorSession, resolveResearchModel, type ChildThreadMirrorRow, type SessionMirrorRow } from "./sessions";
@@ -417,7 +419,9 @@ export function registerArtifactTools(
         throw new Error(`artifact not found: ${file_name}${directory}. Write the file into the task artifact directory reported by rpi_task_context, using a bare name, then call rpi_artifact_save again.`);
       }
       const saved = fileName.endsWith(".md") ? getArtifactVersion(db, row.taskId, fileName) : null;
-      const writingIssues = saved ? lintWriting(saved.version.content.toString("utf8")) : [];
+      const savedText = saved ? saved.version.content.toString("utf8") : null;
+      const writingIssues = savedText ? lintWriting(savedText) : [];
+      const children = savedText && parseFrontmatter(savedText).type === "epic-plan" ? parseEpicChildren(savedText) : null;
       return JSON.stringify({
         version: artifact.currentVersion,
         ingested: result.ingested,
@@ -427,6 +431,12 @@ export function registerArtifactTools(
           ? {
               writing_issues: writingIssues,
               writing_action: "Rewrite each listed line per the RPI writing guide (delete the filler or state the fact), then call rpi_artifact_save again before replying.",
+            }
+          : {}),
+        ...(children && !children.ok
+          ? {
+              children_issues: children.issues,
+              children_action: "Fix the ## Children json block (one object per child: name, workflow, prompt, depends_on) and call rpi_artifact_save again before replying.",
             }
           : {}),
       }, null, 2);

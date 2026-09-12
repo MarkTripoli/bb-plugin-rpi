@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin from "../server";
 import { listTasks } from "../tasks";
@@ -598,6 +599,74 @@ test("artifact context tools select a bounded manifest and page exact revisions"
   assert.equal(read.complete, true);
   assert.equal(read.currentVersion, 1);
   assert.ok(read.sha256);
+  await harness.lifecycle.dispose();
+});
+
+test("rpi_artifact_save reports children block issues for an epic plan", async () => {
+  const thread = makeThreadResponse({ id: "thr_epic_save", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
+  const files = new Map<string, string>();
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "rpi",
+    sdk: {
+      subscribe: () => () => undefined,
+      projects: {
+        get: async ({ projectId }: { projectId: string }) => ({
+          id: projectId,
+          name: "Proj",
+          kind: "standard" as const,
+          gitRemoteUrl: null,
+          createdAt: 1,
+          updatedAt: 1,
+          sources: [{ id: "src_1", projectId, hostId: "host_seed", path: "/repo", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 }],
+        }),
+      },
+      threads: {
+        spawn: async () => thread,
+        get: async () => ({ ...thread, environment: { id: "env_1", path: "/repo", branchName: "feature/epic", status: "ready" } }),
+        interactions: { list: async () => [] },
+      },
+      files: {
+        mkdir: async () => ({ outcome: "created" }),
+        write: async () => ({ outcome: "written", sha256: "next", sizeBytes: 1 }),
+        read: async ({ path }: { path: string }) => {
+          const name = path.split("/").pop() ?? "";
+          const content = files.get(name);
+          if (content === undefined) throw new Error("not found");
+          return { content, contentEncoding: "utf8", sha256: createHash("sha256").update(content).digest("hex"), sizeBytes: Buffer.byteLength(content) };
+        },
+      },
+    },
+  });
+  await plugin(bb);
+  const created = await harness.behavior.callRpc("createTask", {
+    request: { text: "prompt", projectId: "proj_1", workflowType: "epic", worktreeTiming: "never", permissionMode: "default", autoAdvance: false },
+    name: "Epic",
+    draft: true,
+  }) as { taskId: string };
+  await harness.behavior.callRpc("launchSkill", {
+    taskId: created.taskId,
+    skillId: "create-epic-plan",
+    commandLine: "/rpi-create-epic-plan",
+  });
+  bb.storage.database().prepare("UPDATE sessions SET hydrated_at = 1 WHERE thread_id = 'thr_epic_save'").run();
+  await harness.behavior.emitThreadEvent("thread.active", { thread: { ...thread, status: "active" } });
+
+  const save = async (content: string) => {
+    files.set("03-epic-plan-billing.md", content);
+    return JSON.parse(toolText(await harness.behavior.callAgentTool("rpi_artifact_save", { file_name: "03-epic-plan-billing.md" }, { threadId: "thr_epic_save" }))) as {
+      version: number;
+      children_issues?: string[];
+      children_action?: string;
+    };
+  };
+  const invalid = await save("---\ntype: epic-plan\n---\n# Epic\n\n## Children\n\n```json\n[{\"name\":\"A\",\"workflow\":\"rpi\",\"prompt\":\"p\",\"depends_on\":[\"Z\"]}]\n```\n");
+  assert.equal(invalid.version, 1);
+  assert.deepEqual(invalid.children_issues, ["A depends on unknown child: Z"]);
+  assert.match(invalid.children_action ?? "", /## Children/);
+
+  const valid = await save("---\ntype: epic-plan\n---\n# Epic\n\n## Children\n\n```json\n[{\"name\":\"A\",\"workflow\":\"rpi\",\"prompt\":\"p\"}]\n```\n");
+  assert.equal(valid.version, 2);
+  assert.equal("children_issues" in valid, false);
   await harness.lifecycle.dispose();
 });
 

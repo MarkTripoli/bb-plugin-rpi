@@ -2145,6 +2145,7 @@ const ARTIFACT_GROUP_ORDER = [
   "tdd",
   "structure-outline",
   "plan",
+  "epic-plan",
   "pr-description",
   "other",
 ] as const;
@@ -2159,6 +2160,7 @@ const ARTIFACT_GROUP_LABELS: Record<(typeof ARTIFACT_GROUP_ORDER)[number], strin
   tdd: "TDD",
   "structure-outline": "Structure outline",
   plan: "Plan",
+  "epic-plan": "Epic plan",
   "pr-description": "PR description",
   other: "Task files",
 };
