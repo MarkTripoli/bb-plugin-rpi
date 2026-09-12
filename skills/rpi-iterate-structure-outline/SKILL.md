@@ -30,4 +30,4 @@ I can revise the structure outline now. Send the phase, scope, validation, or op
 
 ## Phase Validation
 
-Use automated verification whenever the repo can check behavior. Manual verification should be specific and valuable, not filler. If a phase has no useful manual check and no automated check, reconsider whether the slice is independently verifiable.
+Use automated verification whenever the repo can check behavior. Prefer automated verification; record human-only evidence as plain bullets with pointers, never as checklist items. If a phase has no useful automated check, reconsider whether the slice is independently verifiable.

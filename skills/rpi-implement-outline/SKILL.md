@@ -28,7 +28,7 @@ When artifacts disagree, the structure outline wins; mention the conflict in the
 The outline implementer updates the outline artifact as work completes:
 
 - Validation checkboxes move from open to checked only when automated verification passes.
-- A phase title is marked complete only after all validation, including human confirmation, is done.
+- A phase title is marked complete only after all automated validation passes and the phase commit exists.
 
 ## Workflow
 
@@ -55,25 +55,21 @@ After the child finishes and automated checks have passed or failed, report the 
 **Automated verification:**
 - [command] -> [result]
 
-**Manual verification needed:**
-- [manual check]
+**Deferred human evidence (recorded, not executed):**
+- [evidence item and pointer, or None]
 
-Ready for Phase [N+1] when you confirm, or send what needs adjustment.
+Automated checks are green, so implementation continues automatically.
 ```
 
 If automated checks failed, report the failure and either fix it or ask for direction when the outline no longer matches the repository.
 
-### 3. Wait for human confirmation
+### 3. Commit and continue
 
-Pause before moving on unless the user explicitly requested several phases in one invocation. The human must confirm manual checks before the phase title is marked complete.
+When every automated validation checkbox in the phase is checked with a recorded passing result, create a focused commit and start the next phase without waiting. Do not commit `.rpi/tasks/`; it is a task mirror and may be a symlink. Use explicit `git add <path>` commands. `/rpi-ci-commit` stays the manual fallback for work outside this flow.
 
-### 4. Commit the changes
+### 4. Repeat for the next phase
 
-After confirmation, create a focused commit or hand off to `/rpi-ci-commit`. Do not commit `.rpi/tasks/`; it is a task mirror and may be a symlink. Use explicit `git add <path>` commands.
-
-### 5. Repeat for the next phase
-
-Repeat the same discovery, child implementation, verification, human gate, and commit handoff for later phases. Separate child threads keep context bounded and make phase evidence easier to audit.
+Repeat the same discovery, child implementation, verification, and commit cycle. A `human-gated: true` line in the executed phase block is the only reason to stop for confirmation; report it and wait.
 
 ## Special Instructions
 
@@ -104,12 +100,7 @@ Do not silently rewrite the outline's intent.
 
 ### Multiple Phases
 
-If the user explicitly asks for multiple phases in one run:
-
-- Use a different child thread for each phase.
-- Run validation between phases.
-- Gather manual checks and present them at the final gate.
-- Do not mark manual validation complete without the user's confirmation.
+Every phase advances automatically on green automated checks. Use a different child thread for each phase and run validation between phases. Deferred human evidence is reported with pointers and never marked executed. A `human-gated: true` line in the executed phase block stops the run for confirmation.
 
 ### Artifact and Reference Handling
 
@@ -119,7 +110,7 @@ Call `rpi_next_artifact_number` before creating a new `NN-implementation-*.md` r
 
 ## After Final Phase Completion
 
-When all outline phases are complete and verified:
+When all outline phases are complete, automated checks pass, and any phase with `human-gated: true` received its recorded confirmation:
 
 1. Save any changed task artifacts with `rpi_artifact_save`.
 2. Commit all remaining repository work before the PR handoff. Use the `/rpi-ci-commit` conventions: inspect the diff, stage explicit files, exclude `.rpi/tasks/` task mirrors unless the user specifically asks for them, and write a focused message.

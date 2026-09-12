@@ -61,11 +61,13 @@ sha: [current commit]
 
 - [ ] [runnable command]
 
-#### Manual Verification:
+human-gated: false
 
-- [ ] [specific manual step, only if useful]
+#### Deferred human evidence (recorded, not a gate):
 
-**Implementation Note**: Pause after each phase's automated checks pass and wait for human confirmation before the next phase.
+Omit this section when the phase has none.
+
+- [plain bullet, no checkbox] [evidence item and pointer to where it is recorded]
 
 ---
 

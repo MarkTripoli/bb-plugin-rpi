@@ -13,7 +13,7 @@ Call `rpi_task_context` before reading or editing. Use its selected artifacts, e
 
 ## Rules
 
-Follow plan intent while adapting to code. Implement requested phase fully before expanding. Keep changes inside phase unless shared root-cause fix required. Use existing patterns, helpers, tests. Update plan checkboxes only for automated checks you ran and passed. Keep manual verification open until parent or user confirms. Report deviations. Do not implement later phases, rewrite plan, mark manual checks complete, hide failures, mutate task comments or resolve artifact comments unless assignment explicitly asks, or dump full files.
+Follow plan intent while adapting to code. Implement requested phase fully before expanding. Keep changes inside phase unless shared root-cause fix required. Use existing patterns, helpers, tests. Update plan checkboxes only for automated checks you ran and passed. List deferred human evidence with a pointer; never mark it executed. Report deviations. Do not implement later phases, rewrite plan, check a deferred-evidence item, hide failures, mutate task comments or resolve artifact comments unless assignment explicitly asks, or dump full files.
 
 If plan cannot be followed, stop and report: `Issue in Phase [N]`, `Expected: [requirement]`, `Found: [state]`, `Why: [impact]`, `Question: [decision]`. Name mechanical differences in final message.
 
@@ -23,7 +23,7 @@ With checked items: trust completed work unless branch contradicts, continue at 
 
 ## Verification
 
-Run phase criteria and narrowest check catching change breaking. Fix failures from edits. Record commands and results. Update checkboxes after passing. After artifact mutations (checkboxes, markers), call `rpi_artifact_save` and keep directive. With several phases, finish range before manual testing. Otherwise, stop and report manual checks.
+Run phase criteria and narrowest check catching change breaking. Fix failures from edits. Record commands and results. Update checkboxes after passing. After artifact mutations (checkboxes, markers), call `rpi_artifact_save` and keep directive. With several phases, finish range before final testing. Otherwise, stop and report pending evidence pointers.
 
 ## Final Output
 
@@ -39,8 +39,8 @@ Return exactly this structure:
 ## Verification
 - [command] -> [result]
 
-## Manual Verification Needed
-- [manual check or None]
+## Deferred Human Evidence
+- [evidence item and pointer, or None]
 
 ## Deviations or Blockers
 - [deviation, blocker, or None]
