@@ -10,8 +10,8 @@ repository as of phase 21, not aspirational. `status` is one of:
 
 `npm run check:features` (`scripts/features-count.ts`, covered by `tests/features.test.ts`)
 mechanically counts every `status`-column cell in this file's one table and asserts the total
-matches what's printed here, so this paragraph cannot silently drift from the table: **93
-status-bearing rows, 1 of them mixed (the palette row counts toward both N/A and full): 61
+matches what's printed here, so this paragraph cannot silently drift from the table: **96
+status-bearing rows, 1 of them mixed (the palette row counts toward both N/A and full): 64
 full, 14 partial, 7 omitted, 12 N/A**.
 
 ## Features
@@ -43,6 +43,9 @@ full, 14 partial, 7 omitted, 12 N/A**.
 | Auto-advance table (all flags) | implementation → `aa_implementation_to_pr` → describe-pr → describe-pr | full | `transitions.ts` | Default **off** (a PR is typically a manual step). |
 | Auto-advance table (all flags) | code-review → `aa_implementation_to_pr` → fix-code-review when findings remain or describe-pr when clean; review-fixes → review-code | full | `transitions.ts`, `advance.ts` | Review is entered manually. Once entered, the existing flag can drive review and fix rounds until clean. Missing extraction never guesses the branch. |
 | Auto-advance table (all flags) | describe-pr → resolve-pr-reviews and pr-review → resolve-pr-reviews are human gates | full | `transitions.ts` | External approval and new comments are re-fetched only when the user starts a round; the plugin does not poll or auto-reply. |
+| Auto-advance table (all flags) | Full auto (e2e_mode) gate term: (e2e AND E2E_AUTO_ADVANCE row AND guards) OR (master AND flag), consulted e2e-first; research advances to design, implementation completions enter review-code, numeric phases chain with target_phase, review loops until clean, describe-pr is the terminal hop | full | `transitions.ts` E2E_AUTO_ADVANCE, `advance.ts` | Design, plan, and the opened PR stay human gates. |
+| Auto-advance table (all flags) | Full auto guards: hop, review-cycle, and retry counters derived from launch_attempts anchored at the newest human launch; caps in prefs.e2e; a cap declines the hop and lets the standard ready notification fire; failed attempts auto-retry to the retry cap | full | `e2e.ts`, `launch.ts` autoRetryFailedAttempt, `server.ts` sweep | Retry depth bounds auto-retry only. |
+| Auto-advance table (all flags) | Full auto sessions: bypass permission (prefs.e2e.permissionMode), per-phase models (tasks.phase_models plus fast and reasoning class defaults) as one-shot spawn overrides and in rpi_task_context.prefs, one launch-context line asking the session not to ask | full | `launch.ts`, `e2e.ts` phaseModelFor, `tools.ts` | A session that still asks blocks until a human answers. |
 | Executor & recovery notes | Executor idempotency via CAS (`advanced_at`) plus a minimal `launch_attempts` row | full (by design, decision §2.4) | `advance.ts`, `launch.ts` | Executor runs only after a completed turn (never a `user_question` idle). |
 | Executor & recovery notes | Recover-launch for `uncertain` spawns: Adopt / Retry / Dismiss row on the Sessions tab | full | `launch.ts`, `ui/rpi.tsx` `RecoverLaunchRow` | Retry reuses the validated structured request and one-session execution settings stored with the attempt. There is no time-based auto-release of a stuck attempt because bb has no spawn idempotency key. |
 | Artifacts | Numbered task artifacts, frontmatter type, grouped viewer (Preview/Raw/versions/soft-delete/restore); SQLite is the source of truth, mirrored to `.rpi/tasks/<slug>/` | full | `artifacts.ts`, `mirror.ts`, `ui/rpi.tsx` `ArtifactsPanel` | |
