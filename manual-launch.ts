@@ -30,7 +30,11 @@ export function buildManualLaunchRoute(intent: ManualLaunchIntent): string {
   }
   if (intent.kind === "completion") {
     if (!Object.hasOwn(SKILL_BY_ID, intent.skillId)) throw new Error("Manual launch route contains an unknown skill.");
-    return `compose/completion/${encodeSegment(intent.threadId)}/${encodeSegment(intent.skillId)}`;
+    if (intent.phase !== undefined && (!Number.isSafeInteger(intent.phase) || intent.phase <= 0)) {
+      throw new Error("Manual launch route contains an invalid phase.");
+    }
+    const phase = intent.phase === undefined ? "" : `/${intent.phase}`;
+    return `compose/completion/${encodeSegment(intent.threadId)}/${encodeSegment(intent.skillId)}${phase}`;
   }
   return `compose/${intent.kind}/${encodeSegment(intent.threadId)}`;
 }
@@ -53,6 +57,15 @@ export function parseManualLaunchRoute(subPath: string): ManualLaunchIntent | nu
     const threadId = decodeSegment(segments[2]!);
     const skillId = decodeSegment(segments[3]!);
     return threadId && skillId && Object.hasOwn(SKILL_BY_ID, skillId) ? { kind: "completion", threadId, skillId } : null;
+  }
+  if (segments.length === 5 && segments[1] === "completion") {
+    const threadId = decodeSegment(segments[2]!);
+    const skillId = decodeSegment(segments[3]!);
+    const phaseText = segments[4]!;
+    const phase = /^[1-9]\d*$/.test(phaseText) ? Number(phaseText) : NaN;
+    return threadId && skillId && Object.hasOwn(SKILL_BY_ID, skillId) && Number.isSafeInteger(phase) && phase > 0
+      ? { kind: "completion", threadId, skillId, phase }
+      : null;
   }
   if (segments.length === 3 && (segments[1] === "proceed" || segments[1] === "iterate")) {
     const threadId = decodeSegment(segments[2]!);

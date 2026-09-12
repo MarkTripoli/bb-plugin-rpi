@@ -19,6 +19,8 @@ Companion documents when present: research, design discussion, PRD, TDD, `task.m
 
 Use `rpi_artifact_read` on the selected outline version: headings, implementation overview, shared constraints, first incomplete phase, and that phase's validation. Read only the complete companion sections that influence the current phase.
 
+When `rpi_task_context.assignment.approvedPhase` is present, implement exactly that server-approved step and use the selected predecessor receipt named by `assignment.primaryReviewArtifact`. Do not infer a different step from checkboxes, headings, or the newest receipt.
+
 When artifacts disagree, the structure outline wins; mention the conflict in the child assignment or user report.
 
 ### Progress tracking
@@ -37,6 +39,10 @@ Spawn `/rpi-agent-outline-implementer` for the current phase. Include paths to t
 The final message is the deliverable. Compare it to the outline before reporting success.
 
 ### 2. Report to the human
+
+After a numeric phase passes automated verification, call `rpi_next_artifact_number`, write one implementation receipt from `references/implementation_template.md`, and save it with `rpi_artifact_save`. Set `completed_phase` to the highest outline phase the receipt proves complete. Populate `Human Review` with the exact review targets, checks, and known limits for that phase. Save a receipt at every numeric phase boundary, including when later phases remain.
+
+Read `references/implementation_phase_final_answer.md` when another numeric phase remains. Its directive names the receipt as the primary review artifact, and its final command invokes this skill with the same outline. Read `references/implementation_final_answer.md` only after the terminal phase. In both answers, populate `Check` from the receipt's `Human Review` section and keep the final command fence last.
 
 After the child finishes and automated checks have passed or failed, report the phase:
 
@@ -107,7 +113,7 @@ If the user explicitly asks for multiple phases in one run:
 
 ### Artifact and Reference Handling
 
-Read `references/implementation_template.md` when writing an implementation receipt and `references/implementation_final_answer.md` for the final answer.
+Read `references/implementation_template.md`, `references/implementation_phase_final_answer.md`, and `references/implementation_final_answer.md` before reporting a phase boundary.
 
 Call `rpi_next_artifact_number` before creating a new `NN-implementation-*.md` receipt.
 

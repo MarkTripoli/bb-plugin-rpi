@@ -244,23 +244,26 @@ test("implement-phase action leads the implementation catalog and forces a compl
   });
   assert.ok(withPhase);
   assert.deepEqual(withPhase.actions.map((action) => action.id), ["implement-phase", "review", "create-pr", "iterate"]);
-  assert.equal(withPhase.actions[0]?.label, "Implement Phase 2");
+  assert.equal(withPhase.actions[0]?.label, "Proceed to Phase 2");
   assert.equal(withPhase.actions[0]?.emphasis, "primary");
   assert.equal(withPhase.actions[1]?.emphasis, "secondary");
-  assert.deepEqual(withPhase.actions[0]?.intent, { kind: "completion", threadId: "thr_source", skillId: "implement-plan" });
+  assert.deepEqual(withPhase.actions[0]?.intent, { kind: "completion", threadId: "thr_source", skillId: "implement-plan", phase: 2 });
 
   const matchedExtraction = completionActionsForSession(baseCompletionSession({
     label: "implementation",
     nextStepJson: JSON.stringify({ extraction: { type: "next_step_found", nextStepType: "implement-plan", nextStepPrompt: "/rpi-implement-plan" } }),
   }), { nextPlanPhase: { phase: 3, title: "Ship" } });
   assert.ok(matchedExtraction);
-  assert.deepEqual(matchedExtraction.actions[0]?.intent, { kind: "completion", threadId: "thr_source", skillId: "implement-plan" });
+  assert.deepEqual(matchedExtraction.actions[0]?.intent, { kind: "completion", threadId: "thr_source", skillId: "implement-plan", phase: 3 });
 
   const outline = completionActionsForSession(baseCompletionSession({ workflowType: "outline_only", label: "implementation" }), {
     nextPlanPhase: { phase: 2, title: "Wire server" },
   });
   assert.ok(outline);
-  assert.deepEqual(outline.actions.map((action) => action.id), ["review", "create-pr", "iterate"]);
+  assert.deepEqual(outline.actions.map((action) => action.id), ["implement-phase", "review", "create-pr", "iterate"]);
+  assert.equal(outline.actions[0]?.label, "Proceed to Phase 2");
+  assert.deepEqual(outline.actions[0]?.intent, { kind: "completion", threadId: "thr_source", skillId: "implement-outline", phase: 2 });
+  assert.equal(outline.actions.some((action) => action.id === "agent-suggestion"), false);
 });
 
 test("completion catalog preserves matching Proceed and adds a bounded agent suggestion", () => {  const matching = completionActionsForSession(baseCompletionSession({

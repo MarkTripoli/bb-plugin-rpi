@@ -3,7 +3,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type * as BetterSqlite3 from "better-sqlite3";
 import { parseJson, readRow, writeRow } from "./db";
 import { getArtifactVersion, listArtifacts } from "./artifacts";
-import { latestImplementationReceipt, latestPlanArtifact, nextImplementablePlanPhase, type PlanPhaseHint } from "./plan-phases";
+import { derivePhaseHandoff, latestPhaseArtifact, parsePrimaryReviewArtifact, type PhaseHandoff } from "./plan-phases";
 import { manualLaunchRequestSchema, type ManualLaunchIntent, type ManualLaunchRequest, type ModelOverride, type PreparedManualLaunch, type SessionRow, type TaskRecord } from "./contract";
 import type { NextStepSuggestions } from "./extraction";
 import {
@@ -19,7 +19,7 @@ import {
   withTaskLock,
 } from "./launch";
 import { getTask } from "./tasks";
-import { AUTO_ADVANCE, ITERATE_SKILL_BY_LABEL, autoAdvanceAccepts, autoAdvanceTransition, completedTurnIsProcessed, completionActionsForSession, normalizePhaseLabel, skillInfo, type PhaseLabel } from "./transitions";
+import { AUTO_ADVANCE, ITERATE_SKILL_BY_LABEL, autoAdvanceAccepts, autoAdvanceTransition, completedTurnIsProcessed, completionActionsForSession, isNumericImplementationSkill, isReviewEntrySkill, normalizePhaseLabel, phaseImplementationSkill, skillInfo, type PhaseLabel } from "./transitions";
 import type { LaunchBindingMirror, SessionMirrorRow } from "./sessions";
 
 type Database = BetterSqlite3.Database;
@@ -187,7 +187,7 @@ type ResolvedManualLaunch = {
   displayPrompt: string;
   launchedBy: string;
   fromThreadId: string | null;
-  advance?: { session: SessionRow; target: { skillId: string; commandLine: string } };
+  advance?: { session: SessionRow; target: { skillId: string; commandLine: string; phase?: number } };
 };
 
 export async function prepareManualLaunch(
@@ -360,10 +360,24 @@ async function resolveManualIntent(bb: BbPluginApi, db: Database, intent: Manual
     const task = manualTaskRecord(db, session.taskId);
     const sourceError = await validateCompletionSource(bb, db, task, session);
     if (sourceError) throw sourceError;
-    const nextPlanPhase = taskNextPlanPhase(db, task.id);
+    const reviewEntry = isReviewEntrySkill(intent.skillId);
+    if (!reviewEntry) requirePrimaryReviewArtifact(db, session);
+    const needsNumericPhaseHandoff = requiresNumericPhaseHandoff(task, session) && !reviewEntry;
+    const handoff = needsNumericPhaseHandoff ? phaseHandoffForSession(db, session, task.workflowType) : null;
+    const nextPlanPhase = handoff?.ok ? handoff.nextPhase : null;
+    if (needsNumericPhaseHandoff) {
+      if (!handoff || !handoff.ok) {
+        throw new LaunchRejectedError("stale_intent", "Phase review metadata is unavailable.");
+      }
+      if (intent.skillId === phaseImplementationSkill(task.workflowType) && intent.phase !== handoff.nextPhase?.phase) {
+        throw new LaunchRejectedError("stale_intent", "This phase action is no longer available.");
+      }
+    }
     const projection = completionActionsForSession({ ...session, workflowType: task.workflowType }, { activeAttempt: false, successorThreadId: successorFor(db, session.threadId), nextPlanPhase });
     const action = projection?.actions.find((candidate) =>
-      candidate.intent.kind === "completion" && candidate.intent.skillId === intent.skillId,
+      candidate.intent.kind === "completion"
+      && candidate.intent.skillId === intent.skillId
+      && candidate.intent.phase === intent.phase,
     );
     const info = skillInfo(intent.skillId);
     if (!action || !info) throw new LaunchRejectedError("stale_intent", "This phase action is no longer available.");
@@ -374,7 +388,14 @@ async function resolveManualIntent(bb: BbPluginApi, db: Database, intent: Manual
       displayPrompt: info.command,
       launchedBy: "completion",
       fromThreadId: session.threadId,
-      advance: { session, target: { skillId: info.skillId, commandLine: info.command } },
+      advance: {
+        session,
+        target: {
+          skillId: info.skillId,
+          commandLine: info.command,
+          ...(intent.phase !== undefined ? { phase: intent.phase } : {}),
+        },
+      },
     };
   } else {
     try {
@@ -412,22 +433,35 @@ function manualTaskRecord(db: Database, taskId: string) {
   return result.task;
 }
 
-// Server-side mirror of the banner's own derivation: reads the task's newest plan artifact and
-// parses its phase markers, so launchCompletion validates the same "Implement Phase N" action
-// the UI computed. Any read/parse failure degrades to null (no phase action), never throws.
-function taskNextPlanPhase(db: Database, taskId: string): PlanPhaseHint | null {
+export function phaseHandoffForSession(
+  db: Database,
+  session: Pick<SessionRow, "taskId" | "summaryJson">,
+  workflowType: string,
+): PhaseHandoff {
   try {
-    const artifacts = listArtifacts(db, taskId);
-    const plan = latestPlanArtifact(artifacts);
-    if (!plan) return null;
-    const planContent = getArtifactVersion(db, taskId, plan.fileName)?.version.content.toString("utf8") ?? null;
-    if (planContent === null) return null;
-    const receipt = latestImplementationReceipt(artifacts);
-    const receiptContent = receipt ? getArtifactVersion(db, taskId, receipt.fileName)?.version.content.toString("utf8") ?? null : null;
-    return nextImplementablePlanPhase(planContent, receiptContent);
+    const artifacts = listArtifacts(db, session.taskId);
+    const phaseArtifact = latestPhaseArtifact(artifacts, workflowType);
+    if (!phaseArtifact) return { ok: false, error: "phase_not_in_plan" };
+    const phaseContent = getArtifactVersion(db, session.taskId, phaseArtifact.fileName)?.version.content.toString("utf8");
+    if (phaseContent === undefined) return { ok: false, error: "phase_not_in_plan" };
+    return derivePhaseHandoff(phaseContent, parsePrimaryReviewArtifact(session.summaryJson), artifacts);
   } catch {
-    return null;
+    return { ok: false, error: "missing_review_artifact" };
   }
+}
+
+function requirePrimaryReviewArtifact(db: Database, session: Pick<SessionRow, "taskId" | "label" | "summaryJson">) {
+  if (!session.label) return;
+  const primary = parsePrimaryReviewArtifact(session.summaryJson);
+  if (!primary || !listArtifacts(db, session.taskId).some((artifact) => artifact.fileName === primary.fileName)) {
+    throw new LaunchRejectedError("stale_intent", "Phase review metadata is unavailable.");
+  }
+}
+
+function requiresNumericPhaseHandoff(task: Pick<TaskRecord, "workflowType">, session: Pick<SessionRow, "label" | "skillId">) {
+  return normalizePhaseLabel(session.label) === "implementation"
+    && isNumericImplementationSkill(session.skillId)
+    && phaseImplementationSkill(task.workflowType) !== null;
 }
 
 function manualLaunchStateToken(db: Database, intent: ManualLaunchIntent, resolved: ResolvedManualLaunch) {
@@ -549,6 +583,21 @@ async function validateAdvance(
   if (session.nextStepTurnKey !== session.completedTurnKey) return { ok: false, error: new LaunchRejectedError("stale_extraction", "stale extraction") };
   const nextStep = parseJson<NextStepSuggestions | null>(session.nextStepJson, null);
   if (nextStep?.extraction.type !== "next_step_found") return { ok: false, error: new LaunchRejectedError("invalid_next_step", "No next step is available.") };
+  if (mode === "proceed") {
+    const nextSkillId = nextStep.extraction.nextStepType;
+    try {
+      if (!isReviewEntrySkill(nextSkillId)) requirePrimaryReviewArtifact(db, session);
+    } catch (error) {
+      return { ok: false, error: error as LaunchRejectedError };
+    }
+    if (requiresNumericPhaseHandoff(task, session) && !isReviewEntrySkill(nextSkillId)) {
+      const handoff = phaseHandoffForSession(db, session, task.workflowType);
+      if (!handoff.ok) return { ok: false, error: new LaunchRejectedError("stale_intent", "Phase review metadata is unavailable.") };
+      if (nextSkillId === phaseImplementationSkill(task.workflowType)) {
+        return { ok: false, error: new LaunchRejectedError("stale_intent", "This phase action is no longer available.") };
+      }
+    }
+  }
   const label = normalizePhaseLabel(session.label) as PhaseLabel | null;
   const transition = label ? autoAdvanceTransition(label, task.workflowType) : undefined;
   return { ok: true, nextStep: nextStep as ValidNextStep, transition };
@@ -584,7 +633,7 @@ function claimAdvanceAndAttempt(
   db: Database,
   task: TaskRecord,
   session: SessionRow,
-  target: { skillId: string; commandLine: string },
+  target: { skillId: string; commandLine: string; phase?: number },
   mode: AdvanceMode,
   request?: ManualLaunchRequest,
 ) {
@@ -609,6 +658,7 @@ function claimAdvanceAndAttempt(
       environmentRole: environmentRoleForAttempt(task, target.skillId),
       launchedBy: mode,
       request,
+      targetPhase: target.phase,
     });
     if (mode === "auto_advance" && session.completedTurnKey) {
       writeRow(

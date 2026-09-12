@@ -38,6 +38,7 @@ export type LaunchAttemptRow = {
   threadId: string | null;
   retriedFrom: string | null;
   retryMarker: string | null;
+  targetPhase: number | null;
   createdAt: number;
   adoptionCandidates?: LaunchAdoptionCandidate[];
 };
@@ -111,6 +112,7 @@ export function activeLaunchAttempt(db: Database, taskId: string) {
 	      thread_id AS threadId,
 	      retried_from AS retriedFrom,
 	      retry_marker AS retryMarker,
+	      target_phase AS targetPhase,
 	      created_at AS createdAt
 	    FROM launch_attempts
 	    WHERE task_id = ? AND status IN ('pending', 'uncertain', 'retrying')
@@ -138,6 +140,7 @@ function readLaunchAttempt(db: Database, id: string) {
       thread_id AS threadId,
       retried_from AS retriedFrom,
       retry_marker AS retryMarker,
+      target_phase AS targetPhase,
       request_json AS requestJson,
       created_at AS createdAt
     FROM launch_attempts
@@ -168,6 +171,7 @@ export function insertAttempt(
     launchedBy: string;
     retriedFrom?: string | null;
     request?: ManualLaunchRequest;
+    targetPhase?: number | null;
   },
 ) {
   const id = input.id ?? randomUUID();
@@ -176,8 +180,8 @@ export function insertAttempt(
     `
     INSERT INTO launch_attempts (
       id, task_id, from_thread_id, skill_id, command_line, label,
-      environment_role, launched_by, status, thread_id, retried_from, retry_marker, request_json, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, NULL, ?, ?)
+      environment_role, launched_by, status, thread_id, retried_from, retry_marker, request_json, target_phase, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, NULL, ?, ?, ?)
     `,
     id,
     task.id,
@@ -189,6 +193,7 @@ export function insertAttempt(
     input.launchedBy,
     input.retriedFrom ?? null,
     input.request ? JSON.stringify(input.request) : null,
+    input.targetPhase ?? null,
     nowMs(),
   );
   return id;
@@ -416,13 +421,14 @@ export function visibleLaunchText(task: TaskRecord, input: { skillId: string | n
   return command ?? input.prompt ?? task.draftPrompt;
 }
 
-function taskLaunchContext(db: Database, task: TaskRecord, input: { skillId: string | null; fromThreadId: string | null }) {
+function taskLaunchContext(db: Database, task: TaskRecord, input: { skillId: string | null; fromThreadId: string | null; targetPhase?: number | null }) {
   const suffix = `Task artifact directory: ${TASK_ROOT_DIR}/tasks/${task.slug}`;
   const continuation = continuationNote(db, task, input.fromThreadId, input.skillId);
-  return `${suffix}${continuation ? `\n\n${continuation}` : ""}`;
+  const target = input.targetPhase ? `Approved continuation target: Phase ${input.targetPhase}. Treat rpi_task_context.assignment.approvedPhase as authoritative.` : null;
+  return `${suffix}${continuation ? `\n\n${continuation}` : ""}${target ? `\n\n${target}` : ""}`;
 }
 
-function legacyPrompt(db: Database, task: TaskRecord, input: { skillId: string | null; prompt?: string; commandLine?: string | null; fromThreadId: string | null }, attemptId: string) {
+function legacyPrompt(db: Database, task: TaskRecord, input: { skillId: string | null; prompt?: string; commandLine?: string | null; fromThreadId: string | null; targetPhase?: number | null }, attemptId: string) {
   return `${TASK_CONTEXT_FIRST_ACTION}\n${visibleLaunchText(task, input)}\n\n${taskLaunchContext(db, task, input)}\n\n${launchMarker(attemptId)}`;
 }
 
@@ -472,6 +478,7 @@ export function listLaunchAttempts(db: Database, taskId: string) {
 	      thread_id AS threadId,
 	      retried_from AS retriedFrom,
 	      retry_marker AS retryMarker,
+	      target_phase AS targetPhase,
 	      created_at AS createdAt
 	    FROM launch_attempts
     WHERE task_id = ?
@@ -529,6 +536,7 @@ export async function launchPhase(
     launchedBy: string;
     fromThreadId: string | null;
     attemptId?: string;
+    targetPhase?: number | null;
     selectedEnvironment?: Awaited<ReturnType<typeof selectEnvironment>>;
   },
 ) {
@@ -552,12 +560,15 @@ export async function launchPhase(
       environmentRole,
       launchedBy: input.launchedBy,
       request,
+      targetPhase: input.targetPhase,
     });
   })();
+  let targetPhase = input.targetPhase ?? null;
   if (input.attemptId) {
     const attempt = readLaunchAttempt(db, input.attemptId);
     if (!attempt) throw new Error(`No launch attempt found for id ${input.attemptId}`);
     environmentRole = attempt.environmentRole;
+    targetPhase = attempt.targetPhase;
     if (attempt.requestJson !== null) request = parseStoredRequest(attempt.requestJson);
   }
 
@@ -584,14 +595,14 @@ export async function launchPhase(
           ...request,
           projectId: task.projectId,
           environment: selected.environment,
-          input: wrapManualInput(request, taskLaunchContext(db, task, input), attemptId, draftLaunchInstruction(commandLine)),
+          input: wrapManualInput(request, taskLaunchContext(db, task, { ...input, targetPhase }), attemptId, draftLaunchInstruction(commandLine)),
           title: `${labelTitle(input.skillId)}: ${task.name}`,
           visibility: "visible",
         }
       : {
           projectId: task.projectId,
           environment: selected.environment,
-          prompt: legacyPrompt(db, task, input, attemptId),
+          prompt: legacyPrompt(db, task, { ...input, targetPhase }, attemptId),
           title: `${labelTitle(input.skillId)}: ${task.name}`,
           visibility: "visible",
           executionInputSources: {
@@ -853,6 +864,7 @@ export async function resolveLaunchAttempt(
         launchedBy: fresh.launchedBy,
         retriedFrom: id,
         request,
+        targetPhase: fresh.targetPhase,
       });
       writeRow(db, "UPDATE launch_attempts SET status = 'failed' WHERE id = ? AND status = 'retrying' AND retry_marker = ?", id, retryMarker);
       return true;

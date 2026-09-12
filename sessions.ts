@@ -3,6 +3,7 @@ import type * as BetterSqlite3 from "better-sqlite3";
 import { TASK_ROOT_DIR } from "./constants";
 import { nowMs, parseJson, readRow, readRows, stringifyJson, writeRow } from "./db";
 import { extractNextStep } from "./extraction";
+import { extractPrimaryReviewArtifact } from "./artifacts";
 import { hydrate, ingest } from "./mirror";
 import type { SessionRow } from "./contract";
 import { TASK_CONTEXT_FIRST_ACTION } from "./instructions";
@@ -558,17 +559,18 @@ export function appendSessionSummary(
   if (!row) return false;
   const key = turnKey(thread);
   if (row.lastSummarizedTurnKey === key) return false;
-  const summary = parseJson<{ summaryHistory?: string[] }>(row.summaryJson, {});
+  const summary = parseJson<{ summaryHistory?: string[]; primaryReviewArtifact?: { fileName: string } | null }>(row.summaryJson, {});
   const summaryHistory = Array.isArray(summary.summaryHistory) ? summary.summaryHistory : [];
   summaryHistory.push(lastAssistantText.slice(0, 600));
   const liveArtifactNames = liveArtifacts(db, row.taskId);
   const taskSlug = (row as Partial<SessionMirrorRow>).taskSlug ?? null;
   const nextStep = extractNextStep(lastAssistantText, { liveArtifactNames, taskSlug });
+  const primaryReviewArtifact = extractPrimaryReviewArtifact(lastAssistantText, row.taskId, new Set(liveArtifactNames));
   const relevantRPIDocuments = relevantDocuments(lastAssistantText, row.taskId, taskSlug, liveArtifactNames);
   writeRow(
     db,
     "UPDATE sessions SET summary_json = ?, next_step_json = ?, last_summarized_turn_key = ?, completed_turn_key = ?, next_step_turn_key = ?, ingest_error = NULL, updated_at = ? WHERE thread_id = ?",
-    stringifyJson({ ...summary, summaryHistory, ...(relevantRPIDocuments.length > 0 ? { relevantRPIDocuments } : {}) }),
+    stringifyJson({ ...summary, summaryHistory, primaryReviewArtifact, ...(relevantRPIDocuments.length > 0 ? { relevantRPIDocuments } : {}) }),
     stringifyJson(nextStep),
     key,
     key,

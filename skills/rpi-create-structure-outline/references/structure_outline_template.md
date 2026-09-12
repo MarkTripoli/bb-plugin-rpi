@@ -69,3 +69,17 @@ interface TargetShape {
 ## Open Questions
 
 - [Question that affects phase structure or scope]
+
+## Human Review
+
+### Review targets
+
+- [Phase boundaries, order, and changed-file ownership to inspect.]
+
+### Verify
+
+- [ ] [Exact phase or validation check required before implementation.]
+
+### Known limits
+
+- [Known limit, or `None.`]

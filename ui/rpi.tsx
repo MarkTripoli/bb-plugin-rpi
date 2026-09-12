@@ -38,8 +38,8 @@ import type {
   WorkspaceViewRecord,
   CommentThreadRecord,
 } from "../contract";
-import { AUTO_ADVANCE, BOARD_COLUMNS, FIRST_SKILL_BY_WORKFLOW, SKILL_BY_ID, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS, completionActionsForSession, normalizePhaseLabel, type CompletionAction } from "../transitions";
-import { latestImplementationReceipt, latestPlanArtifact, nextImplementablePlanPhase, type PlanPhaseHint } from "../plan-phases";
+import { AUTO_ADVANCE, BOARD_COLUMNS, FIRST_SKILL_BY_WORKFLOW, SKILL_BY_ID, WORKFLOW_GRAPH_LABELS, WORKFLOW_GRAPHS, completionActionsForSession, isNumericImplementationSkill, normalizePhaseLabel, phaseImplementationSkill, type CompletionAction } from "../transitions";
+import { derivePhaseHandoff, latestPhaseArtifact, parsePrimaryReviewArtifact, type PhaseHandoff } from "../plan-phases";
 import { ARTIFACT_COMMENTS_WIDTH_RANGE, ARTIFACT_LIST_WIDTH_RANGE, ARTIFACT_PANEL_STACK_BREAKPOINT, artifactLayoutMode, clampWidth } from "../artifact-layout";
 import {
   PHASE_DESCRIPTIONS,
@@ -70,7 +70,13 @@ import { Icon, type IconName } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { COARSE_POINTER_CHILD_ICON_BUTTON_CLASS, COARSE_POINTER_COMPACT_ICON_SIZE_CLASS } from "@/components/ui/coarse-pointer-sizing";
+import {
+  COARSE_POINTER_CHILD_ICON_BUTTON_CLASS,
+  COARSE_POINTER_COMPACT_ICON_SIZE_CLASS,
+  COARSE_POINTER_COMPACT_ROW_HEIGHT_CLASS,
+  COARSE_POINTER_HEADER_ICON_BUTTON_CLASS,
+  COARSE_POINTER_TEXT_SM_CLASS,
+} from "@/components/ui/coarse-pointer-sizing";
 import { cn } from "@/lib/utils";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 
@@ -339,11 +345,6 @@ function StatusPill({ tone, label, icon, hint }: { tone: StatusTone; label: stri
   );
   if (!hint) return pill;
   return <HintTrigger hint={hint} className="rounded-full">{pill}</HintTrigger>;
-}
-
-function SessionStatus({ status }: { status: string }) {
-  const meta = statusMeta(status);
-  return <StatusPill tone={meta.tone} label={meta.text} icon={meta.icon} hint={meta.hint || undefined} />;
 }
 
 // Replaces pillClassName's three-variant badge (draft/step/ghost) with one filled/outline
@@ -3459,6 +3460,12 @@ const RPI_THREAD_PANEL_LINKS: ReadonlyArray<{ id: Exclude<RpiThreadPanelView, "a
   { id: "settings", label: "Settings", description: "Choose the next model and auto-advance", icon: "Settings" },
 ];
 
+const RPI_REVIEW_ACTIONS = [
+  { skillId: "review-code", label: "Review code", description: "Review the complete task diff and cycle through fixes until clean." },
+  { skillId: "describe-pr", label: "Create pull request", description: "Create or update the pull request from a fresh session." },
+  { skillId: "resolve-pr-reviews", label: "Resolve pull request reviews", description: "Re-check review threads, fix feedback, and repeat until approved." },
+] as const;
+
 export function RpiThreadPanel({ threadId, params }: { threadId: string; params?: unknown }) {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
@@ -3467,6 +3474,11 @@ export function RpiThreadPanel({ threadId, params }: { threadId: string; params?
   const [session, setSession] = useState<SessionView | null | undefined>(undefined);
   const [task, setTask] = useState<TaskRecord | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  const launchReviewAction = (skillId: (typeof RPI_REVIEW_ACTIONS)[number]["skillId"]) => {
+    if (!session) return;
+    navigate.toPluginPanel("rpi", { subPath: buildManualLaunchRoute({ kind: "skill", taskId: session.taskId, skillId }) });
+  };
 
   const refetchTask = () => {
     if (!session) return;
@@ -3543,6 +3555,25 @@ export function RpiThreadPanel({ threadId, params }: { threadId: string; params?
   return (
     <div className="h-full min-h-0 overflow-auto p-3">
       <div className="space-y-5">
+        <section className="space-y-3">
+          <div className="space-y-1">
+            <h2 className="text-sm font-semibold text-foreground">Review and pull request</h2>
+            <p className="text-xs text-muted-foreground">Start a fresh session from this task. Review the prompt and settings before submitting.</p>
+          </div>
+          <div className="space-y-2">
+            {RPI_REVIEW_ACTIONS.map((action) => (
+              <button
+                key={action.skillId}
+                type="button"
+                onClick={() => launchReviewAction(action.skillId)}
+                className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-left hover:bg-muted"
+              >
+                <span className="block text-sm font-medium text-foreground">{action.label}</span>
+                <span className="mt-0.5 block text-xs text-muted-foreground">{action.description}</span>
+              </button>
+            ))}
+          </div>
+        </section>
         <div className="space-y-2">
           <h2 className="text-sm font-semibold text-foreground">Task tools</h2>
           <div className="grid gap-2">
@@ -3570,20 +3601,22 @@ export function RpiArtifactDirective({ attributes, source }: { attributes: Reado
   const taskId = attributes.task;
   const fileName = attributes.file;
   if (!taskId || !fileName || fileName.includes("..") || fileName.includes("/") || fileName.includes("\\")) return <code>{source}</code>;
-  const open = () => {
-    const accepted = navigate.openThreadPanel({
-      actionId: "rpi",
-      title: "RPI",
-      params: { view: "artifacts", fileName },
-    });
-    if (!accepted) navigate.toPluginPanel("rpi", { subPath: `tasks/${taskId}/artifacts/${encodeURIComponent(fileName)}` });
-  };
+  const open = () => openRpiArtifact(navigate, taskId, fileName);
   return (
     <button type="button" onClick={open} className="inline-flex items-center gap-2 rounded-md border border-border bg-card px-2 py-1 text-sm font-medium text-foreground">
       <Icon name="Code" className="size-4" />
       {fileName}
     </button>
   );
+}
+
+function openRpiArtifact(navigate: ReturnType<typeof useBbNavigate>, taskId: string, fileName: string) {
+  const accepted = navigate.openThreadPanel({
+    actionId: "rpi",
+    title: "RPI",
+    params: { view: "artifacts", fileName },
+  });
+  if (!accepted) navigate.toPluginPanel("rpi", { subPath: `tasks/${taskId}/artifacts/${encodeURIComponent(fileName)}` });
 }
 
 // Sidebar thread-list replacement (Fable §11, shipped last/optional per plan §2.7). Groups this
@@ -4579,12 +4612,15 @@ export function RpiDefaultsSettings() {
 
 // Thread-header contract (frontend-registration.md "A control in the thread header"): the row is
 // 48px chrome with 28px controls, and it wants ONE inline control with taller content in a
-// portalled popover. This renders exactly that: phase pill + status + context gauge + a single
-// `h-7` "⋯" button opening a portalled Popover (components/ui/popover.tsx) for Iterate/Fork/Interrupt.
-// Completion actions and the context-high notice belong in RpiComposerBanner (registered via
-// app.composer.customize in app.tsx) since those need more room than a 28px
-// control has, per the same contract's "put taller content in a portalled popover" (a composer
-// banner, not the header, is where a wide button belongs).
+// portalled popover. This renders exactly that: a single "⋯" button opening a portalled Popover
+// (components/ui/popover.tsx) for localized review, Iterate, Fork, and Interrupt. The phase pill,
+// status pill, and context gauge that used to sit beside it are now the popover's first line: the
+// header shares its row with bb's own model picker, Commit, and panel buttons, and four plugin
+// items crowded them off a narrow window entirely. Phase and status also already render on this
+// session's own sidebar row, so only the context reading lost a home.
+// Completion actions and the context-high notice belong in
+// RpiComposerBanner (registered via app.composer.customize in app.tsx) since those need more room
+// than a 28px control has, per the same contract's "put taller content in a portalled popover".
 export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectId: string; isCompactViewport: boolean }) {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
@@ -4602,6 +4638,10 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
     runIterate();
   };
   const { session } = useRpiSessionState(threadId);
+  const launchReviewAction = (skillId: "review-code" | "describe-pr" | "resolve-pr-reviews") => {
+    if (!session) return;
+    navigate.toPluginPanel("rpi", { subPath: buildManualLaunchRoute({ kind: "skill", taskId: session.taskId, skillId }) });
+  };
   const runArchive = () => {
     if (!session) return;
     void rpc.call("archiveTask", { taskId: session.taskId }).then(() => navigate.toPluginPanel("rpi", { subPath: "" }));
@@ -4634,27 +4674,49 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
   }, [session, jumpHotkeyForArchive]);
 
   if (!session) return null;
+  const phase = normalizePhaseLabel(session.label);
+
+  const gauge = contextGaugeText(session.contextUsage, session.contextWarnThreshold);
+  const sessionFacts = [
+    settings?.showTaskPhaseLabels === false ? null : session.label ?? "freeform",
+    statusMeta(session.rpiStatus).text,
+    gauge ? `${gauge.percent}% context` : null,
+  ].filter((fact): fact is string => fact !== null);
 
   return (
-    <TooltipProvider delayDuration={300}>
-    <div ref={actionRootRef} className="flex h-7 items-center gap-2">
+    <div ref={actionRootRef} className="flex h-7 items-center">
       <RpiNotificationBridge />
-      {settings?.showTaskPhaseLabels === false ? null : (
-        <LabelPill label={session.label ?? "freeform"} emphasis={Boolean(session.label)} />
-      )}
-      <SessionStatus status={session.rpiStatus} />
-      <ContextGauge usage={session.contextUsage} threshold={session.contextWarnThreshold} />
       <Popover>
         <PopoverTrigger asChild>
           <button
             type="button"
             aria-label="RPI session actions"
-            className="flex size-7 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-foreground"
+            className={cn(COARSE_POINTER_HEADER_ICON_BUTTON_CLASS, "flex shrink-0 items-center justify-center border border-border text-muted-foreground hover:text-foreground")}
           >
-            <Icon name="MoreHorizontal" className="size-4" />
+            <Icon name="MoreHorizontal" />
           </button>
         </PopoverTrigger>
-        <PopoverContent>
+        {/* Wider than the default w-40 so the facts line and "Resolve pull request reviews" each
+            sit on one line instead of wrapping to three. */}
+        <PopoverContent className="w-56">
+          <p className={cn(COARSE_POINTER_TEXT_SM_CLASS, "mb-1 border-b border-border px-2 pb-1.5", gauge?.warn ? "text-warning" : "text-muted-foreground")} title={gauge?.title}>
+            {sessionFacts.join(" · ")}
+          </p>
+          {session.workflowType === "freeform" || session.workflowType === "oneshot" || phase === "implementation" || phase === "code-review" || phase === "review-fixes" ? (
+            <>
+              <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted" onClick={() => launchReviewAction("review-code")}>
+                Review code
+              </button>
+              <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted" onClick={() => launchReviewAction("describe-pr")}>
+                Create pull request
+              </button>
+            </>
+          ) : null}
+          {phase === "describe-pr" || phase === "pr-review" ? (
+            <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted" onClick={() => launchReviewAction("resolve-pr-reviews")}>
+              Resolve pull request reviews
+            </button>
+          ) : null}
           <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted" onClick={iterate}>
             Iterate
           </button>
@@ -4694,7 +4756,6 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
         onConfirm={runArchive}
       />
     </div>
-    </TooltipProvider>
   );
 }
 
@@ -4704,6 +4765,17 @@ export function RpiThreadHeaderAction({ threadId }: { threadId: string; projectI
 // composer scope kind and for a non-RPI
 // thread (`getSession` returns null), and hides entirely when neither completion actions nor the
 // independent context warning applies.
+// Banner controls follow BB's own compact toolbar sizing: 28px tall next to a mouse, 36px and one
+// text step larger under a coarse pointer, so the same row stays tappable on a phone.
+const BANNER_CONTROL_CLASS = cn(COARSE_POINTER_COMPACT_ROW_HEIGHT_CLASS, COARSE_POINTER_TEXT_SM_CLASS);
+// One wrapping row, so a wide composer keeps the review handoff, the actions, and the next-model
+// label on a single line and a narrow one stacks them. Groups are content sized: the earlier
+// `flex-1` gave them a zero hypothetical size, which forced all of them onto one line and then
+// squeezed each below its content, so their `shrink-0` children overflowed into the neighbor and
+// painted as overlapping text. Without it, a group that does not fit wraps instead of collapsing.
+const BANNER_ROW_CLASS = "flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-2";
+const BANNER_GROUP_CLASS = "flex min-w-0 flex-wrap items-center gap-2";
+
 export function RpiComposerBanner() {
   const rpc = useRpc<RpcContract>();
   const navigate = useBbNavigate();
@@ -4716,10 +4788,11 @@ export function RpiComposerBanner() {
   // Banner action awaiting the in-place launch prompt: a CompletionAction, or "iterate" from the
   // context-high notice. Null means no dialog is open.
   const [pendingAction, setPendingAction] = useState<CompletionAction | "iterate" | null>(null);
-  // The task's next incomplete plan phase, derived from the newest plan artifact. Non-null only
-  // when the plan marks earlier phases complete with checked acceptance boxes, so the banner can
-  // offer "Implement Phase N" as a one-click continuation of /rpi-implement-plan.
-  const [nextPlanPhase, setNextPlanPhase] = useState<PlanPhaseHint | null>(null);
+  // The completed phase and review artifact proved by this session's primary receipt.
+  const [phaseHandoff, setPhaseHandoff] = useState<PhaseHandoff<ArtifactRecord> | null>(null);
+  const [reviewArtifact, setReviewArtifact] = useState<ArtifactRecord | null>(null);
+  const [reviewLoaded, setReviewLoaded] = useState(false);
+  const [phaseArtifactRevision, setPhaseArtifactRevision] = useState(0);
   // The session view (getSession) does not carry the task's providerId/model/reasoningLevel, so
   // the compact model control below fetches the task itself; "tasks" is the same realtime channel
   // updateTask publishes on, so a change from the task Settings tab shows up here too.
@@ -4737,35 +4810,58 @@ export function RpiComposerBanner() {
   useRealtime("tasks", () => {
     if (bannerTaskId) rpc.call("getTask", { taskId: bannerTaskId }).then(({ task }) => setBannerTask(task));
   });
+  useRealtime("rpi:artifacts", (payload) => {
+    if (!payload || typeof payload !== "object" || (payload as { taskId?: unknown }).taskId !== bannerTaskId) return;
+    setPhaseArtifactRevision((revision) => revision + 1);
+  });
 
   const phaseLabel = session ? normalizePhaseLabel(session.label) : null;
-  const planPhaseWorkflow = session?.workflowType === "rpi" || session?.workflowType === "prd_tdd";
+  const needsPhaseReview = phaseLabel === "implementation"
+    && isNumericImplementationSkill(session?.skillId ?? null)
+    && phaseImplementationSkill(session?.workflowType ?? "") !== null;
   useEffect(() => {
-    setNextPlanPhase(null);
-    if (!threadId || !session || phaseLabel !== "implementation" || !planPhaseWorkflow) return;
+    setReviewArtifact(null);
+    setReviewLoaded(false);
+    setPhaseHandoff(null);
+    if (!threadId || !session) return;
+    if (!phaseLabel) {
+      setReviewLoaded(true);
+      return;
+    }
     let cancelled = false;
     void (async () => {
       try {
         const { artifacts } = await rpc.call("listArtifacts", { taskId: session.taskId });
-        const plan = latestPlanArtifact(artifacts);
-        if (!plan || cancelled) return;
-        const { content } = await rpc.call("getArtifact", { taskId: session.taskId, fileName: plan.fileName });
-        if (cancelled || !content) return;
-        const receipt = latestImplementationReceipt(artifacts);
-        const receiptContent = receipt
-          ? (await rpc.call("getArtifact", { taskId: session.taskId, fileName: receipt.fileName })).content
-          : null;
+        const primary = parsePrimaryReviewArtifact(session.summaryJson);
+        const review = primary ? artifacts.find((artifact) => artifact.fileName === primary.fileName) ?? null : null;
+        if (!cancelled) {
+          setReviewArtifact(review);
+          setReviewLoaded(true);
+        }
+        if (!needsPhaseReview) return;
+        const phaseArtifact = latestPhaseArtifact(artifacts, session.workflowType);
+        if (!phaseArtifact) {
+          if (!cancelled) setPhaseHandoff({ ok: false, error: "phase_not_in_plan" });
+          return;
+        }
+        const { content } = await rpc.call("getArtifact", { taskId: session.taskId, fileName: phaseArtifact.fileName });
         if (cancelled) return;
-        setNextPlanPhase(nextImplementablePlanPhase(content, receiptContent));
+        setPhaseHandoff(content
+          ? derivePhaseHandoff(content, primary, artifacts)
+          : { ok: false, error: "phase_not_in_plan" });
       } catch {
-        if (!cancelled) setNextPlanPhase(null);
+        if (!cancelled) {
+          setReviewArtifact(null);
+          setReviewLoaded(true);
+          if (needsPhaseReview) setPhaseHandoff({ ok: false, error: "missing_review_artifact" });
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threadId, session?.taskId, phaseLabel, session?.workflowType, session?.rpiStatus, session?.completedTurnKey]);
+  }, [threadId, session?.taskId, session?.summaryJson, phaseLabel, session?.workflowType, session?.rpiStatus, session?.completedTurnKey, phaseArtifactRevision]);
 
   if (!threadId || !session) return null;
 
@@ -4779,12 +4875,27 @@ export function RpiComposerBanner() {
   const successorThreadId = taskAttempts.find((attempt) =>
     attempt.fromThreadId === threadId && attempt.status === "spawned" && attempt.threadId,
   )?.threadId ?? null;
-  const completion = completionActionsForSession(session, {
-    activeAttempt: Boolean(activeAttempt),
-    successorThreadId,
-    nextPlanPhase,
-  });
-  if (!completion && (!contextWarn || contextWarningDismissed)) return null;
+  const reviewStateLoaded = reviewLoaded && (!needsPhaseReview || phaseHandoff !== null);
+  const completionBase = reviewStateLoaded
+    ? completionActionsForSession(session, {
+      activeAttempt: Boolean(activeAttempt),
+      successorThreadId,
+      nextPlanPhase: phaseHandoff?.ok ? phaseHandoff.nextPhase : null,
+    })
+    : null;
+  const reviewIsValid = Boolean(reviewArtifact) && (!needsPhaseReview || phaseHandoff?.ok === true);
+  const completion = completionBase && phaseLabel && !reviewIsValid && completionBase.state !== "replaced"
+    ? {
+        ...completionBase,
+        // Review-entry actions are recovery paths, not approval of the current phase. Keep them
+        // available for legacy sessions whose review artifact was not captured.
+        actions: completionBase.actions.filter((action) =>
+          action.id === "iterate" || action.id === "review" || action.id === "fix-review" || action.id === "resolve-pr",
+        ),
+      }
+    : completionBase;
+  const showReviewState = phaseLabel !== null && reviewStateLoaded && completionBase !== null && completionBase.state !== "replaced";
+  if (!completion && !showReviewState && (!contextWarn || contextWarningDismissed)) return null;
 
   const launchIterateDirect = async (override?: ModelOverride | null) => {
     setLaunchingActionId("iterate");
@@ -4822,7 +4933,7 @@ export function RpiComposerBanner() {
     setLaunchingActionId(pending === "iterate" ? "iterate" : pending.id);
     setPendingAction(null);
     try {
-      if (pending === "iterate") {
+      if (pending === "iterate" || pending.intent.kind === "iterate") {
         await launchIterateDirect(override);
       } else if (pending.intent.kind === "proceed") {
         const result = await rpc.call("proceed", { threadId: pending.intent.threadId, ...patch });
@@ -4840,19 +4951,49 @@ export function RpiComposerBanner() {
 
   return (
     <TooltipProvider delayDuration={300}>
-    <div className="flex w-full min-w-0 flex-wrap items-center gap-2">
+    <div className={cn(BANNER_ROW_CLASS, COARSE_POINTER_TEXT_SM_CLASS)}>
+      {showReviewState ? (
+        reviewArtifact && (!needsPhaseReview || phaseHandoff?.ok) ? (
+          <div role="group" aria-label="Phase review" className={BANNER_GROUP_CLASS}>
+            {/* The review instruction is a hint on the heading it qualifies, not a second line of
+                banner prose. HintTrigger keeps it reachable by keyboard and by tap, which a plain
+                Radix tooltip is not on a phone. */}
+            <HintTrigger hint="Open the artifact for exact checks and known limits." className="font-semibold text-foreground underline decoration-dotted decoration-muted-foreground/60 underline-offset-2">
+              {needsPhaseReview && phaseHandoff?.ok
+                ? `Phase ${phaseHandoff.completedPhase} ready for review`
+                : `${phaseLabel!.split("-").map((word) => word[0]!.toUpperCase() + word.slice(1)).join(" ")} ready for review`}
+            </HintTrigger>
+            <Button
+              type="button"
+              variant="outline"
+              className={cn(BANNER_CONTROL_CLASS, "shrink-0 px-2")}
+              onClick={() => openRpiArtifact(navigate, session.taskId, reviewArtifact.fileName)}
+            >
+              Open review artifact
+            </Button>
+            <span className="shrink-0 text-muted-foreground">{plural(reviewArtifact.commentCount, "unresolved comment")}</span>
+          </div>
+        ) : (
+          <div role="status" aria-label="Phase review metadata unavailable" className={BANNER_GROUP_CLASS}>
+            <span className="font-semibold text-foreground">Phase review metadata unavailable</span>
+            <Button
+              type="button"
+              variant="outline"
+              className={cn(BANNER_CONTROL_CLASS, "shrink-0 px-2")}
+              onClick={() => navigate.toPluginPanel("rpi", { subPath: `tasks/${session.taskId}/artifacts` })}
+            >
+              Open task artifacts
+            </Button>
+          </div>
+        )
+      ) : null}
       {completion ? (
-        <div
-          role="group"
-          aria-label="Phase complete"
-          className="flex min-w-0 flex-1 flex-wrap items-center gap-2"
-        >
-          <span className="shrink-0 text-xs font-semibold text-foreground">Phase complete</span>
+        <div role="group" aria-label="Phase complete" className={BANNER_GROUP_CLASS}>
           {completion.state === "replaced" && completion.successorThreadId ? (
             <Button
               type="button"
               variant="outline"
-              className="h-7 shrink-0 px-2 text-xs"
+              className={cn(BANNER_CONTROL_CLASS, "shrink-0 px-2")}
               onClick={() => navigate.toThread(completion.successorThreadId!)}
             >
               Open successor session
@@ -4864,24 +5005,24 @@ export function RpiComposerBanner() {
                   key={action.id}
                   type="button"
                   variant={action.emphasis === "primary" ? "default" : "outline"}
-                  className="h-7 max-w-full px-2 text-xs"
+                  className={cn(BANNER_CONTROL_CLASS, "max-w-full px-2")}
                   disabled={completion.state === "blocked" || launchingActionId !== null}
                   aria-label={action.id === "agent-suggestion" ? "Agent suggestion" : action.label}
                   onClick={() => runAction(action)}
                 >
-                  <span className="truncate" title={action.id === "implement-phase" && nextPlanPhase?.title ? nextPlanPhase.title : undefined}>
+                  <span className="truncate" title={action.id === "implement-phase" && phaseHandoff?.ok && phaseHandoff.nextPhase?.title ? phaseHandoff.nextPhase.title : undefined}>
                     {action.id === "agent-suggestion" ? "Agent suggestion" : action.label}
                   </span>
                 </Button>
               ))}
               {completion.state === "blocked" && activeAttempt ? (
-                <span role="status" className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                <span role="status" className="flex min-w-0 flex-wrap items-center gap-2 text-muted-foreground">
                   <span className="truncate">Launch {activeAttempt.status}: {activeAttempt.id}</span>
                   {activeAttempt.status === "uncertain" || activeAttempt.status === "retrying" ? (
                     <Button
                       type="button"
                       variant="link"
-                      className="h-auto shrink-0 p-0 text-xs"
+                      className={cn(COARSE_POINTER_TEXT_SM_CLASS, "h-auto shrink-0 p-0")}
                       onClick={() => navigate.toPluginPanel("rpi", { subPath: `tasks/${session.taskId}` })}
                     >
                       Open recovery
@@ -4894,9 +5035,9 @@ export function RpiComposerBanner() {
         </div>
       ) : null}
       {contextWarn && !contextWarningDismissed ? (
-        <span className="inline-flex h-7 items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-2 text-xs text-warning">
+        <span className={cn(BANNER_CONTROL_CLASS, "inline-flex max-w-full items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-2 text-warning")}>
           Context high
-          <button type="button" className="font-semibold underline" onClick={iterate}>
+          <button type="button" className="truncate font-semibold underline" onClick={iterate}>
             Iterate in fresh session
           </button>
           <button
@@ -4904,12 +5045,14 @@ export function RpiComposerBanner() {
             aria-label="Dismiss context warning"
             onClick={async () => setUiState(await rpc.call("dismissContextWarning", { taskId: session.taskId, threadId }))}
           >
-            <Icon name="X" className="size-3" />
+            <Icon name="X" className={COARSE_POINTER_COMPACT_ICON_SIZE_CLASS} />
           </button>
         </span>
       ) : null}
+      {/* Secondary detail: it hugs the right edge while the line has room and falls in with the
+          stack once the groups above it need the full width. */}
       {bannerTask ? (
-        <span className="shrink-0 text-xs text-muted-foreground" title="Model the next launch uses unless you pick another in the launch prompt">
+        <span className="min-w-0 truncate text-muted-foreground md:ms-auto" title="Model the next launch uses unless you pick another in the launch prompt">
           {bannerTask.providerId && bannerTask.model ? `Next: ${modelLabel(providers, bannerTask.providerId, bannerTask.model)}` : "Next: default model"}
         </span>
       ) : null}
@@ -4960,6 +5103,13 @@ function LaunchActionDialog({
   const description = pendingAction === "iterate"
     ? "The current session keeps running."
     : "Starts the next session for this task.";
+  const launchLabel = pendingAction === "iterate"
+    ? "Iterate"
+    : pendingAction?.id === "implement-phase" && pendingAction.intent.kind === "completion" && pendingAction.intent.phase !== undefined
+      ? `Approve Phase ${pendingAction.intent.phase - 1} and start Phase ${pendingAction.intent.phase}`
+      : pendingAction
+        ? `Approve and ${pendingAction.label}`
+        : "Launch";
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
@@ -4995,7 +5145,7 @@ function LaunchActionDialog({
             disabled={launching}
             onClick={() => onLaunch(useDefault ? null : { providerId: value.providerId!, model: value.model!, ...(value.reasoningLevel ? { reasoningLevel: value.reasoningLevel as ModelOverride["reasoningLevel"] } : {}) })}
           >
-            {pendingAction === "iterate" ? "Iterate" : "Launch"}
+            {launchLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

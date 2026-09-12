@@ -9,6 +9,7 @@ import {
   artifactType,
   assertSafeArtifactFileName,
   deleteArtifact,
+  extractPrimaryReviewArtifact,
   getArtifact,
   getArtifactVersion,
   groupByType,
@@ -109,6 +110,39 @@ test("artifact size cap and path confinement reject unsafe writes", () => {
   assert.throws(() => assertSafeArtifactFileName("bad\uD800name.md"), /invalid artifact file name/);
   assert.throws(() => assertSafeArtifactFileName(`${"x".repeat(256)}.md`), /invalid artifact file name/);
   db.close();
+});
+
+test("primary review extraction accepts only the first live standalone task directive outside code", () => {
+  const live = new Set(["01-review.md", "02-review.md"]);
+  const ignored = [
+    "[::rpi-artifact{task=\"task-1\" file=\"01-review.md\"}](https://example.test)",
+    "`::rpi-artifact{task=\"task-1\" file=\"01-review.md\"}`",
+    "```text\n::rpi-artifact{task=\"task-1\" file=\"01-review.md\"}\n```",
+    "    ::rpi-artifact{task=\"task-1\" file=\"01-review.md\"}",
+    "::rpi-artifact{task=\"other-task\" file=\"01-review.md\"}",
+    "::rpi-artifact{task=\"task-1\" file=\"../escape.md\"}",
+    "::rpi-artifact{task=\"task-1\" file=\"deleted.md\"}",
+    "::rpi-artifact{task=\"task-1\" file=\"unknown.md\"}",
+  ];
+  assert.equal(extractPrimaryReviewArtifact(ignored.join("\n"), "task-1", live), null);
+  assert.deepEqual(
+    extractPrimaryReviewArtifact(`${ignored.join("\n")}\n::rpi-artifact{task="task-1" file="02-review.md"}\n::rpi-artifact{task="task-1" file="01-review.md"}`, "task-1", live),
+    { fileName: "02-review.md" },
+  );
+});
+
+test("primary review extraction ignores directives after malformed fence text", () => {
+  const live = new Set(["01-review.md", "02-review.md"]);
+  for (const marker of ["```", "~~~"] as const) {
+    const input = [
+      `${marker}text`,
+      `${marker}not-a-closing-fence`,
+      `::rpi-artifact{task="task-1" file="01-review.md"}`,
+      marker,
+      `::rpi-artifact{task="task-1" file="02-review.md"}`,
+    ].join("\n");
+    assert.deepEqual(extractPrimaryReviewArtifact(input, "task-1", live), { fileName: "02-review.md" });
+  }
 });
 
 test("file validation rejects case-insensitive live collisions", () => {

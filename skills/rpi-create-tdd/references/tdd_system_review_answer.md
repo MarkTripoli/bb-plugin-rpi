@@ -1,9 +1,13 @@
-Artifact saved:
+The system design needs human review before program design.
+
+Review artifact:
 {artifact_directive}
 
-The system design is ready for review. Do not begin program design until the user approves it.
+Check:
+- {review_check}
+- Known limits: {known_limits}
 
-Auto-advance does not apply at this human gate. Continue manually with:
+Comment on the artifact and send the comments to the iteration session. Starting iteration records requested changes, not approval.
 
 ```text
 /rpi-iterate-tdd{artifact_arg}

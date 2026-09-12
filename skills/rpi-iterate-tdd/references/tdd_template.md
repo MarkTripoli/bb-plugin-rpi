@@ -61,3 +61,17 @@ entrypoint
 ### Local Patterns
 
 [Relevant repository examples, cited with paths and compact excerpts.]
+
+## Human Review
+
+### Review targets
+
+- [System and program design boundaries the human should inspect.]
+
+### Verify
+
+- [ ] [Exact architecture, failure-path, or implementation-readiness check.]
+
+### Known limits
+
+- [Known limit, or `None.`]

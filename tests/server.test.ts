@@ -290,7 +290,7 @@ test("RPI launch RPC and CLI paths are enabled", async () => {
       thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
       rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason,
       next_step_json, completed_turn_key, next_step_turn_key, created_at, updated_at
-    ) VALUES ('thr_source', ?, 'research-questions', 'create-research-questions', 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, ?, 'turn_1', 'turn_1', 1, 1)
+    ) VALUES ('thr_source', ?, NULL, NULL, 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, ?, 'turn_1', 'turn_1', 1, 1)
   `).run(createdForProceed.taskId, JSON.stringify({ parsedAt: 1, extraction: { type: "next_step_found", nextStepPrompt: "/rpi-create-research", nextStepSummary: "next", nextStepType: "create-research", taskReference: null, suggestedDirectory: null } }));
   const proceeded = await harness.behavior.callRpc("proceed", { threadId: "thr_source" }) as { threadId: string };
   assert.equal(proceeded.threadId, "thr_internal_2");
@@ -357,13 +357,24 @@ test("launchCompletion RPC one-click launches a completion action with task exec
     INSERT INTO sessions (
       thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
       rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason,
-      next_step_json, completed_turn_key, next_step_turn_key, last_summarized_turn_key, created_at, updated_at
-    ) VALUES ('thr_source', ?, 'implementation', 'implement-plan', 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, ?, 'turn_1', 'turn_1', 'turn_1', 1, 1)
-  `).run(created.taskId, JSON.stringify({ parsedAt: 1, extraction: { type: "next_step_found", nextStepPrompt: "/rpi-describe-pr", nextStepSummary: "next", nextStepType: "describe-pr", taskReference: null, suggestedDirectory: null } }));
+      next_step_json, summary_json, completed_turn_key, next_step_turn_key, last_summarized_turn_key, created_at, updated_at
+    ) VALUES ('thr_source', ?, 'implementation', 'implement-plan', 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, ?, ?, 'turn_1', 'turn_1', 'turn_1', 1, 1)
+  `).run(
+    created.taskId,
+    JSON.stringify({ parsedAt: 1, extraction: { type: "next_step_found", nextStepPrompt: "/rpi-describe-pr", nextStepSummary: "next", nextStepType: "describe-pr", taskReference: null, suggestedDirectory: null } }),
+    JSON.stringify({ primaryReviewArtifact: { fileName: "02-implementation-receipt.md" } }),
+  );
   await import("../artifacts").then(({ upsertArtifact }) => upsertArtifact(db, created.taskId, "01-plan-demo.md", `---\ntype: plan\n---\n\n## Phase 1: Scaffold\n\n- [x] done\n\n## Phase 2: Wire server\n\n- [ ] todo\n`, { createdBy: "test", operation: "test" }));
+  await import("../artifacts").then(({ upsertArtifact }) => upsertArtifact(db, created.taskId, "02-implementation-receipt.md", `---\ntype: implementation\ncompleted_phase: 1\n---\n`, { createdBy: "test", operation: "test" }));
+
+  await assert.rejects(harness.behavior.callRpc("launchCompletion", {
+    intent: { kind: "completion", threadId: "thr_source", skillId: "implement-plan", phase: 3 },
+  }), /no longer available/);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts WHERE task_id = ?").get(created.taskId) as { count: number }).count, 0);
+  assert.equal((db.prepare("SELECT advanced_at AS advancedAt FROM sessions WHERE thread_id = 'thr_source'").get() as { advancedAt: number | null }).advancedAt, null);
 
   const launched = await harness.behavior.callRpc("launchCompletion", {
-    intent: { kind: "completion", threadId: "thr_source", skillId: "implement-plan" },
+    intent: { kind: "completion", threadId: "thr_source", skillId: "implement-plan", phase: 2 },
   }) as { threadId: string };
   assert.equal(launched.threadId, "thr_quick_1");
   const spawnInput = spawnInputs[0]!;
@@ -587,6 +598,89 @@ test("artifact context tools select a bounded manifest and page exact revisions"
   assert.equal(read.complete, true);
   assert.equal(read.currentVersion, 1);
   assert.ok(read.sha256);
+  await harness.lifecycle.dispose();
+});
+
+test("numeric approval carries its target and predecessor receipt into each successor context", async () => {
+  const spawnInputs: Array<Record<string, unknown>> = [];
+  let spawnNumber = 0;
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "rpi",
+    sdk: {
+      subscribe: () => () => undefined,
+      projects: {
+        get: async ({ projectId }: { projectId: string }) => ({
+          id: projectId,
+          name: "Proj",
+          kind: "standard" as const,
+          gitRemoteUrl: null,
+          createdAt: 1,
+          updatedAt: 1,
+          sources: [{ id: "src_1", projectId, hostId: "host_seed", path: "/repo", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 }],
+        }),
+      },
+      threads: {
+        spawn: async (input) => {
+          spawnInputs.push(input as unknown as Record<string, unknown>);
+          spawnNumber += 1;
+          return makeThreadResponse({ id: `thr_successor_${spawnNumber}`, environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
+        },
+        get: async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" }),
+        interactions: { list: async () => [] },
+      },
+    },
+  });
+  await plugin(bb);
+  const created = await harness.behavior.callRpc("createTask", {
+    request: { text: "prompt", projectId: "proj_1", workflowType: "rpi", worktreeTiming: "never", permissionMode: "default", autoAdvance: false },
+    name: "Task",
+    draft: true,
+  }) as { taskId: string };
+  const db = bb.storage.database();
+  await harness.behavior.callRpc("saveArtifact", {
+    taskId: created.taskId,
+    fileName: "01-plan.md",
+    content: "---\ntype: plan\n---\n## Phase 1: One\n## Phase 2: Two\n## Phase 3: Three",
+  });
+  for (const [threadId, fileName, phase] of [["thr_source_one", "02-receipt-one.md", 1], ["thr_source_two", "03-receipt-two.md", 2]] as const) {
+    await harness.behavior.callRpc("saveArtifact", {
+      taskId: created.taskId,
+      fileName,
+      content: `---\ntype: implementation\ncompleted_phase: ${phase}\n---\n`,
+    });
+    db.prepare(`
+      INSERT INTO sessions (
+        thread_id, task_id, label, skill_id, launched_by, rpi_status, rpi_status_at,
+        had_turn, hydrated_at, summary_json, completed_turn_key, next_step_turn_key,
+        last_summarized_turn_key, created_at, updated_at
+      ) VALUES (?, ?, 'implementation', 'implement-plan', 'user', 'ready_for_input', 1, 1, 1, ?, 'turn_1', 'turn_1', 'turn_1', 1, 1)
+    `).run(threadId, created.taskId, JSON.stringify({ primaryReviewArtifact: { fileName } }));
+  }
+
+  const first = await harness.behavior.callRpc("launchCompletion", {
+    intent: { kind: "completion", threadId: "thr_source_one", skillId: "implement-plan", phase: 2 },
+  }) as { threadId: string };
+  const second = await harness.behavior.callRpc("launchCompletion", {
+    intent: { kind: "completion", threadId: "thr_source_two", skillId: "implement-plan", phase: 3 },
+  }) as { threadId: string };
+  assert.deepEqual([first.threadId, second.threadId], ["thr_successor_1", "thr_successor_2"]);
+  assert.match(String(spawnInputs[0]!.prompt), /Approved continuation target: Phase 2/);
+  assert.match(String(spawnInputs[1]!.prompt), /Approved continuation target: Phase 3/);
+  assert.deepEqual(db.prepare("SELECT target_phase AS targetPhase FROM launch_attempts WHERE thread_id = 'thr_successor_1'").get(), { targetPhase: 2 });
+  assert.deepEqual(db.prepare("SELECT target_phase AS targetPhase FROM launch_attempts WHERE thread_id = 'thr_successor_2'").get(), { targetPhase: 3 });
+
+  const readContext = async (threadId: string) => JSON.parse(toolText(await harness.behavior.callAgentTool("rpi_task_context", {}, { threadId, projectId: "proj_1" }))) as {
+    assignment: { approvedPhase: number | null; primaryReviewArtifact: string | null };
+    artifacts: Array<{ name: string; reason: string }>;
+  };
+  const firstContext = await readContext(first.threadId);
+  const secondContext = await readContext(second.threadId);
+  assert.equal(firstContext.assignment.approvedPhase, 2);
+  assert.equal(firstContext.assignment.primaryReviewArtifact, "02-receipt-one.md");
+  assert.equal(secondContext.assignment.approvedPhase, 3);
+  assert.equal(secondContext.assignment.primaryReviewArtifact, "03-receipt-two.md");
+  assert.equal(firstContext.artifacts.find((artifact) => artifact.name === "02-receipt-one.md")?.reason, "previous-session");
+  assert.equal(secondContext.artifacts.find((artifact) => artifact.name === "03-receipt-two.md")?.reason, "previous-session");
   await harness.lifecycle.dispose();
 });
 

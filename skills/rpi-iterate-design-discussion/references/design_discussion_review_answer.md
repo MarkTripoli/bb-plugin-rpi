@@ -1,9 +1,13 @@
-Artifact saved:
+The updated design discussion still needs human review.
+
+Review artifact:
 {artifact_directive}
 
-The design discussion has been updated and still has open questions. Work through those before moving to the outline.
+Check:
+- {review_check}
+- Known limits: {known_limits}
 
-Auto-advance does not apply at this human gate. Continue manually with:
+Comment on the artifact and send the comments to another iteration session. Starting iteration records requested changes, not approval.
 
 ```text
 /rpi-iterate-design-discussion{artifact_arg}

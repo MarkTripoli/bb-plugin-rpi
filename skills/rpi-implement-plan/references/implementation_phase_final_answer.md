@@ -1,4 +1,4 @@
-The plan is ready for review.
+Phase {completed_phase} is ready for review.
 
 Review artifact:
 {artifact_directive}
@@ -8,7 +8,7 @@ Check:
 - Known limits: {known_limits}
 
 If changes are needed, comment on the artifact and send the comments to an iteration session.
-If approved, choose **Proceed to implementation**. Starting implementation records approval of the plan; check out the task branch first.
+If approved, choose **Proceed to Phase {next_phase}**. Starting Phase {next_phase} records approval of Phase {completed_phase}.
 
 ```text
 /rpi-implement-plan{artifact_arg}

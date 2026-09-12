@@ -46,8 +46,11 @@ const finalTemplateExpectations = [
   ["skills/rpi-configure-workspaces/references/workspace_final_answer.md", "setup-worktree"],
   ["skills/rpi-setup-worktree/references/worktree_final_answer.md", "implement-plan"],
   ["skills/rpi-implement-plan/references/implementation_final_answer.md", "describe-pr"],
+  ["skills/rpi-implement-plan/references/implementation_phase_final_answer.md", "implement-plan"],
   ["skills/rpi-implement-outline/references/implementation_final_answer.md", "describe-pr"],
+  ["skills/rpi-implement-outline/references/implementation_phase_final_answer.md", "implement-outline"],
   ["skills/rpi-iterate-implementation/references/implementation_final_answer.md", "describe-pr"],
+  ["skills/rpi-iterate-implementation/references/implementation_phase_final_answer.md", "implement-plan"],
   ["skills/rpi-review-code/references/code_review_findings_answer.md", "fix-code-review"],
   ["skills/rpi-review-code/references/code_review_clean_answer.md", "describe-pr"],
   ["skills/rpi-review-code/references/code_review_blocked_answer.md", null],
@@ -59,6 +62,28 @@ const finalTemplateExpectations = [
   ["skills/rpi-review-artifact-comments/references/comments_final_answer.md", "iterate-implementation"],
   ["skills/rpi-show-me/references/show_me_final_answer.md", null],
 ] as const;
+
+const humanReviewArtifactTemplates = [
+  "skills/rpi-create-design-discussion/references/design_discussion_template.md",
+  "skills/rpi-iterate-design-discussion/references/design_discussion_template.md",
+  "skills/rpi-create-prd/references/prd_template.md",
+  "skills/rpi-iterate-prd/references/prd_template.md",
+  "skills/rpi-create-tdd/references/tdd_template.md",
+  "skills/rpi-iterate-tdd/references/tdd_template.md",
+  "skills/rpi-create-structure-outline/references/structure_outline_template.md",
+  "skills/rpi-iterate-structure-outline/references/structure_outline_template.md",
+  "skills/rpi-create-plan/references/plan_template.md",
+  "skills/rpi-iterate-plan/references/plan_template.md",
+  "skills/rpi-implement-plan/references/implementation_template.md",
+  "skills/rpi-implement-outline/references/implementation_template.md",
+  "skills/rpi-iterate-implementation/references/implementation_template.md",
+  "skills/rpi-describe-pr/references/pr_description_template.md",
+  "skills/rpi-resolve-pr-reviews/references/pr_review_template.md",
+] as const;
+
+const humanGateAnswerTemplates = finalTemplateExpectations
+  .map(([file]) => file)
+  .filter((file) => /rpi-(?:create|iterate)-(?:design-discussion|prd|tdd|structure-outline|plan)|rpi-(?:implement-plan|implement-outline|iterate-implementation)|rpi-(?:describe-pr|resolve-pr-reviews)\/(?:references)\/(?:pr_description_final_answer|pr_review_pending_answer)/.test(file));
 
 test("every final-answer template parses to the expected next skill", () => {
   for (const [relativePath, expectedSkill] of finalTemplateExpectations) {
@@ -89,6 +114,47 @@ test("all shipped final-answer templates are covered", () => {
     .filter((file) => file.endsWith("answer.md"))
     .sort();
   assert.deepEqual(found, finalTemplateExpectations.map(([file]) => file).sort());
+});
+
+test("human-gate artifact templates carry one complete review checklist", () => {
+  for (const relativePath of humanReviewArtifactTemplates) {
+    const content = fs.readFileSync(path.join(root, relativePath), "utf8");
+    for (const heading of ["## Human Review", "### Review targets", "### Verify", "### Known limits"]) {
+      assert.equal(content.split(heading).length - 1, 1, `${relativePath} must contain one ${heading}`);
+    }
+  }
+});
+
+test("numeric implementation templates and phase answers bind explicit completed phases", () => {
+  for (const skill of ["rpi-implement-plan", "rpi-implement-outline", "rpi-iterate-implementation"]) {
+    const template = fs.readFileSync(path.join(root, `skills/${skill}/references/implementation_template.md`), "utf8");
+    assert.match(template, /^---\r?\n[\s\S]*^type: implementation\r?$[\s\S]*^completed_phase: \[positive integer\]\r?$[\s\S]*^---\r?$/m, skill);
+    const phaseAnswer = fillTemplate(fs.readFileSync(path.join(root, `skills/${skill}/references/implementation_phase_final_answer.md`), "utf8"));
+    assertExtractsSkill(phaseAnswer, skill === "rpi-implement-outline" ? "implement-outline" : "implement-plan", skill);
+    assertFinalTextFenceOnly(phaseAnswer, skill);
+  }
+  const iterateOutline = fillTemplate(fs.readFileSync(path.join(root, "skills/rpi-iterate-implementation/references/implementation_phase_final_answer.md"), "utf8"))
+    .replace("/rpi-implement-plan", "/rpi-implement-outline");
+  assertExtractsSkill(iterateOutline, "implement-outline", "iterate implementation outline handoff");
+});
+
+test("iteration handoff keeps nonterminal phases out of the terminal PR path", () => {
+  const content = fs.readFileSync(path.join(root, "skills/rpi-iterate-implementation/SKILL.md"), "utf8");
+  const closing = content.slice(content.indexOf("## When Iteration Is Complete"));
+  assert.match(closing, /If another numbered phase remains[\s\S]*implementation_phase_final_answer\.md/);
+  assert.match(closing, /Only when the completed phase is the highest numbered phase[\s\S]*implementation_final_answer\.md/);
+});
+
+test("human-gate answers expose one review artifact, concrete checks, feedback, approval semantics, and one final command", () => {
+  for (const relativePath of humanGateAnswerTemplates) {
+    const content = fillTemplate(fs.readFileSync(path.join(root, relativePath), "utf8"));
+    const directives = content.split(/\r?\n/).filter((line) => /^::rpi-artifact\{task="task-id" file="01-artifact\.md"\}$/.test(line));
+    assert.equal(directives.length, 1, `${relativePath} must contain one standalone primary directive`);
+    assert.match(content, /\nCheck:\r?\n- Review the named behavior and evidence\./, `${relativePath} must copy a concrete review check`);
+    assert.match(content, /[Cc]omment on the artifact/, `${relativePath} must explain the feedback path`);
+    assert.match(content, /approval/, `${relativePath} must state approval semantics`);
+    assertFinalTextFenceOnly(content, relativePath);
+  }
 });
 
 test("every skill references the shared writing guide relative to its installed directory", () => {
@@ -162,7 +228,11 @@ function fillTemplate(input: string) {
     .replaceAll("{summary}", "Saved the requested artifact.")
     .replaceAll("{artifact_file}", "01-artifact.md")
     .replaceAll("{artifact_arg}", " @01-artifact.md")
-    .replaceAll("{implementation_command}", "/rpi-implement-plan");
+    .replaceAll("{implementation_command}", "/rpi-implement-plan")
+    .replaceAll("{review_check}", "Review the named behavior and evidence.")
+    .replaceAll("{known_limits}", "None.")
+    .replaceAll("{completed_phase}", "1")
+    .replaceAll("{next_phase}", "2");
 }
 
 function renderWorkflowVariant(input: string, workflowType: string) {

@@ -1,9 +1,14 @@
-Artifact saved:
+The updated implementation outline is ready for review.
+
+Review artifact:
 {artifact_directive}
 
-The implementation outline has been updated. Check the phase order and validation before starting worktree setup.
+Check:
+- {review_check}
+- Known limits: {known_limits}
 
-Auto-advance does not apply at this human gate. Continue manually with:
+If changes are needed, comment on the artifact and send the comments to another iteration session.
+If approved, choose **Proceed to worktree setup**. Starting worktree setup records approval of the outline.
 
 ```text
 /rpi-setup-worktree{artifact_arg}

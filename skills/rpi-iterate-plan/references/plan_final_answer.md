@@ -1,7 +1,14 @@
-Artifact saved:
+The updated plan is ready for review.
+
+Review artifact:
 {artifact_directive}
 
-The plan has been updated. The next phase sets up the task worktree before implementation.
+Check:
+- {review_check}
+- Known limits: {known_limits}
+
+If changes are needed, comment on the artifact and send the comments to another iteration session.
+If approved, choose **Proceed to worktree setup**. Starting worktree setup records approval of the plan.
 
 ```text
 /rpi-setup-worktree{artifact_arg}

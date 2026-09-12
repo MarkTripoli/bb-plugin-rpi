@@ -48,13 +48,27 @@ function seed(db: Database.Database, label: string | null, nextStepType: string 
   const nextStepJson = nextStepType
     ? stringifyJson({ parsedAt: 1, extraction: { type: "next_step_found", nextStepPrompt: `/rpi-${nextStepType}`, nextStepSummary: "next", nextStepType, taskReference: "task", suggestedDirectory: null } })
     : stringifyJson({ parsedAt: 1, extraction: { type: "no_next_step", reason: "no command block" } });
+  const reviewFileName = "01-implementation-receipt.md";
+  upsertArtifact(db, taskId, reviewFileName, "---\ntype: implementation\ncompleted_phase: 1\n---\n", {
+    createdBy: "test",
+    operation: "test",
+  });
+  if (label === "implementation" && (workflowType === "rpi" || workflowType === "prd_tdd")) {
+    upsertArtifact(db, taskId, "02-plan-demo.md", "---\ntype: plan\n---\n\n## Phase 1: Scaffold\n\n## Phase 2: Continue\n", {
+      createdBy: "test",
+      operation: "test",
+    });
+  }
+  const sourceSkillId = label === "implementation"
+    ? workflowType === "outline_only" ? "implement-outline" : workflowType === "rpi" || workflowType === "prd_tdd" ? "implement-plan" : null
+    : null;
   db.prepare(`
     INSERT INTO sessions (
       thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
-      rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason, next_step_json,
+      rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason, next_step_json, summary_json,
       completed_turn_key, next_step_turn_key, last_summarized_turn_key, created_at, updated_at
-    ) VALUES ('thr_source', ?, ?, NULL, 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, ?, 'turn_1', 'turn_1', 'turn_1', 1, 1)
-  `).run(taskId, label, nextStepJson);
+    ) VALUES ('thr_source', ?, ?, ?, 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, ?, ?, 'turn_1', 'turn_1', 'turn_1', 1, 1)
+  `).run(taskId, label, sourceSkillId, nextStepJson, stringifyJson({ primaryReviewArtifact: { fileName: reviewFileName } }));
   return { taskId, session: mirrorSession(db, new Map<string, SessionMirrorRow>(), "thr_source")! };
 }
 
@@ -213,6 +227,87 @@ test("outline-only research auto-advance expects structure", async () => {
     assert.equal(spawns.length, 1);
     db.close();
   }
+});
+
+test("manual Proceed requires a bound review artifact for ordinary labeled gates", async () => {
+  const db = makeDb();
+  const { session } = seed(db, "design", "create-structure-outline");
+  db.prepare("UPDATE sessions SET summary_json = '{}' WHERE thread_id = 'thr_source'").run();
+  const { bb, spawns } = fakeBb();
+  await assert.rejects(
+    () => proceed(bb as never, db, new Map(), createLaunchBindingMirror(), session.threadId),
+    /Phase review metadata is unavailable/,
+  );
+  assert.equal(spawns.length, 0);
+  assert.equal((db.prepare("SELECT advanced_at AS advancedAt FROM sessions WHERE thread_id = 'thr_source'").get() as { advancedAt: number | null }).advancedAt, null);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts").get() as { count: number }).count, 0);
+  db.close();
+});
+
+test("outline implementation completion uses its bound receipt and structure outline", async () => {
+  const db = makeDb();
+  const { taskId } = seed(db, "implementation", "describe-pr", { auto_advance: 0 }, "outline_only");
+  upsertArtifact(db, taskId, "02-structure-outline.md", "---\ntype: structure-outline\n---\n\n## Step 1: Scaffold\n\n## Step 2: Continue\n", {
+    createdBy: "test",
+    operation: "test",
+  });
+  const { bb, spawns } = fakeBb();
+  await assert.rejects(
+    () => launchCompletion(bb as never, db, new Map(), createLaunchBindingMirror(), {
+      kind: "completion",
+      threadId: "thr_source",
+      skillId: "implement-outline",
+      phase: 3,
+    }),
+    /no longer available/,
+  );
+  assert.equal(spawns.length, 0);
+  assert.equal((db.prepare("SELECT advanced_at AS advancedAt FROM sessions WHERE thread_id = 'thr_source'").get() as { advancedAt: number | null }).advancedAt, null);
+
+  const launched = await launchCompletion(bb as never, db, new Map(), createLaunchBindingMirror(), {
+    kind: "completion",
+    threadId: "thr_source",
+    skillId: "implement-outline",
+    phase: 2,
+  });
+  assert.equal(launched.threadId, "thr_next_1");
+  assert.deepEqual(db.prepare("SELECT skill_id AS skillId, command_line AS commandLine FROM launch_attempts WHERE task_id = ?").get(taskId), {
+    skillId: "implement-outline",
+    commandLine: "/rpi-implement-outline",
+  });
+  db.close();
+});
+
+test("direct Proceed cannot bypass an outline phase approval action", async () => {
+  const db = makeDb();
+  const { taskId, session } = seed(db, "implementation", "implement-outline", { auto_advance: 0 }, "outline_only");
+  upsertArtifact(db, taskId, "02-structure-outline.md", "---\ntype: structure-outline\n---\n\n## Step 1: Scaffold\n\n## Step 2: Continue\n", {
+    createdBy: "test",
+    operation: "test",
+  });
+  const { bb, spawns } = fakeBb();
+  await assert.rejects(
+    () => proceed(bb as never, db, new Map(), createLaunchBindingMirror(), session.threadId),
+    /no longer available/,
+  );
+  assert.equal(spawns.length, 0);
+  assert.equal((db.prepare("SELECT advanced_at AS advancedAt FROM sessions WHERE thread_id = 'thr_source'").get() as { advancedAt: number | null }).advancedAt, null);
+  db.close();
+});
+
+test("ci-commit completion uses the general review path", async () => {
+  const db = makeDb();
+  const { taskId } = seed(db, "implementation", "describe-pr", { auto_advance: 0 });
+  db.prepare("UPDATE sessions SET skill_id = 'ci-commit' WHERE thread_id = 'thr_source'").run();
+  db.prepare("UPDATE artifacts SET frontmatter_json = ? WHERE task_id = ? AND file_name = '01-implementation-receipt.md'").run(
+    stringifyJson({ type: "commit" }),
+    taskId,
+  );
+  const { bb, spawns } = fakeBb();
+  const launched = await proceed(bb as never, db, new Map(), createLaunchBindingMirror(), "thr_source");
+  assert.equal(launched.threadId, "thr_next_1");
+  assert.equal(spawns.length, 1);
+  db.close();
 });
 
 test("proceed and auto-advance racing create one launch", async () => {
@@ -406,7 +501,7 @@ test("launchCompletion one-click launches the catalog action and claims the sour
     operation: "test",
   });
   const { bb, spawns } = fakeBb();
-  const intent = { kind: "completion", threadId: "thr_source", skillId: "implement-plan" } as const;
+  const intent = { kind: "completion", threadId: "thr_source", skillId: "implement-plan", phase: 2 } as const;
   const launched = await launchCompletion(bb as never, db, new Map(), createLaunchBindingMirror(), intent);
   assert.equal(launched.threadId, "thr_next_1");
   assert.equal(spawns.length, 1);
@@ -421,12 +516,116 @@ test("launchCompletion one-click launches the catalog action and claims the sour
   db.close();
 });
 
-test("launchCompletion rejects a phase action the recomputed catalog no longer offers", async () => {
+test("numeric phase authority stays bound to each source session in the same task", async () => {
+  const db = makeDb();
+  const { taskId } = seed(db, "implementation", null, { auto_advance: 0 });
+  upsertArtifact(db, taskId, "02-plan-demo.md", "---\ntype: plan\n---\n\n## Phase 1: One\n\n## Phase 2: Two\n\n## Phase 3: Three\n", {
+    createdBy: "test",
+    operation: "test",
+  });
+  upsertArtifact(db, taskId, "03-implementation-receipt.md", "---\ntype: implementation\ncompleted_phase: 2\n---\n", {
+    createdBy: "test",
+    operation: "test",
+  });
+  db.prepare(`
+    INSERT INTO sessions (
+      thread_id, task_id, label, skill_id, launched_by, forked_from_thread_id,
+      rpi_status, rpi_status_at, had_turn, interrupted, blocked_reason, next_step_json, summary_json,
+      completed_turn_key, next_step_turn_key, last_summarized_turn_key, created_at, updated_at
+    ) VALUES ('thr_second', ?, 'implementation', 'implement-plan', 'user', NULL, 'ready_for_input', 1, 1, 0, NULL, ?, ?, 'turn_2', 'turn_2', 'turn_2', 2, 2)
+  `).run(
+    taskId,
+    stringifyJson({ parsedAt: 1, extraction: { type: "no_next_step", reason: "done" } }),
+    stringifyJson({ primaryReviewArtifact: { fileName: "03-implementation-receipt.md" } }),
+  );
+  const { bb } = fakeBb();
+  const first = await prepareManualLaunch(bb as never, db, {
+    kind: "completion",
+    threadId: "thr_source",
+    skillId: "implement-plan",
+    phase: 2,
+  });
+  const second = await prepareManualLaunch(bb as never, db, {
+    kind: "completion",
+    threadId: "thr_second",
+    skillId: "implement-plan",
+    phase: 3,
+  });
+  assert.equal(first.displayPrompt, "/rpi-implement-plan");
+  assert.equal(second.displayPrompt, "/rpi-implement-plan");
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts").get() as { count: number }).count, 0);
+  db.close();
+});
+
+test("manual completion keeps review-entry actions available when the source artifact is missing", async () => {
+  for (const remove of ["reference", "artifact"] as const) {
+    const db = makeDb();
+    const { taskId } = seed(db, "implementation", null, { auto_advance: 0 });
+    if (remove === "reference") db.prepare("UPDATE sessions SET summary_json = '{}' WHERE thread_id = 'thr_source'").run();
+    else db.prepare("UPDATE artifacts SET is_deleted = 1 WHERE task_id = ? AND file_name = '01-implementation-receipt.md'").run(taskId);
+    const { bb, spawns } = fakeBb();
+    const review = await prepareManualLaunch(bb as never, db, { kind: "completion", threadId: "thr_source", skillId: "review-code" });
+    assert.equal(review.displayPrompt, "/rpi-review-code");
+    await assert.rejects(
+      prepareManualLaunch(bb as never, db, { kind: "completion", threadId: "thr_source", skillId: "describe-pr" }),
+      /Phase review metadata is unavailable/,
+    );
+    assert.equal(spawns.length, 0);
+    assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts").get() as { count: number }).count, 0);
+    assert.equal((db.prepare("SELECT advanced_at AS advancedAt FROM sessions WHERE thread_id = 'thr_source'").get() as { advancedAt: number | null }).advancedAt, null);
+    db.close();
+  }
+});
+
+test("pull request review resolution remains available when the source artifact is missing", async () => {
+  const db = makeDb();
+  seed(db, "pr-review", "resolve-pr-reviews", { auto_advance: 0 });
+  db.prepare("UPDATE sessions SET summary_json = '{}' WHERE thread_id = 'thr_source'").run();
+  const { bb, spawns } = fakeBb();
+  const prepared = await prepareManualLaunch(bb as never, db, {
+    kind: "proceed",
+    threadId: "thr_source",
+  });
+  assert.equal(prepared.displayPrompt, "/rpi-resolve-pr-reviews");
+  assert.equal(spawns.length, 0);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts").get() as { count: number }).count, 0);
+  db.close();
+});
+
+test("implementation advancement fails closed when the bound receipt metadata is malformed", async () => {
   const db = makeDb();
   const { taskId } = seed(db, "implementation", "describe-pr", { auto_advance: 0 });
+  db.prepare("UPDATE artifacts SET frontmatter_json = ? WHERE task_id = ? AND file_name = '01-implementation-receipt.md'").run(
+    stringifyJson({ type: "implementation", completed_phase: "1" }),
+    taskId,
+  );
   const { bb, spawns } = fakeBb();
   await assert.rejects(
-    launchCompletion(bb as never, db, new Map(), createLaunchBindingMirror(), { kind: "completion", threadId: "thr_source", skillId: "implement-plan" }),
+    prepareManualLaunch(bb as never, db, { kind: "completion", threadId: "thr_source", skillId: "describe-pr" }),
+    /Phase review metadata is unavailable/,
+  );
+  await assert.doesNotReject(
+    prepareManualLaunch(bb as never, db, { kind: "completion", threadId: "thr_source", skillId: "review-code" }),
+  );
+  await assert.rejects(
+    proceed(bb as never, db, new Map(), createLaunchBindingMirror(), "thr_source"),
+    /Phase review metadata is unavailable/,
+  );
+  assert.equal(spawns.length, 0);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts WHERE task_id = ?").get(taskId) as { count: number }).count, 0);
+  db.close();
+});
+
+test("launchCompletion rejects a stale target phase without claiming or creating an attempt", async () => {
+  const db = makeDb();
+  const { taskId } = seed(db, "implementation", "describe-pr", { auto_advance: 0 });
+  upsertArtifact(db, taskId, "02-plan-demo.md", `---\ntype: plan\n---\n\n## Phase 1: Scaffold\n\n## Phase 2: Wire server\n`, {
+    createdBy: "test",
+    operation: "test",
+  });
+  const { bb, spawns } = fakeBb();
+  await assert.rejects(
+    launchCompletion(bb as never, db, new Map(), createLaunchBindingMirror(), { kind: "completion", threadId: "thr_source", skillId: "implement-plan", phase: 3 }),
     /no longer available/,
   );
   assert.equal(spawns.length, 0);

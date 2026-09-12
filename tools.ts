@@ -70,19 +70,27 @@ function measuredJson<T extends { metrics: { emittedBytes: number } }>(value: T)
 type SessionSummary = {
   summaryHistory?: string[];
   relevantRPIDocuments?: Array<{ localpath?: string }>;
+  primaryReviewArtifact?: { fileName?: unknown } | null;
 };
+
+function primaryReviewArtifactName(summary: SessionSummary) {
+  const fileName = summary.primaryReviewArtifact?.fileName;
+  return typeof fileName === "string" && fileName.length > 0 && fileName.length <= 255 ? fileName : null;
+}
 
 function artifactNamesFromSummary(summaryJson: string | null | undefined) {
   const summary = parseJson<SessionSummary>(summaryJson, {});
-  return (summary.relevantRPIDocuments ?? [])
+  const primary = primaryReviewArtifactName(summary);
+  return [primary, ...(summary.relevantRPIDocuments ?? [])
     .map((document) => document.localpath?.split("/").pop())
+  ]
     .filter((fileName): fileName is string => Boolean(fileName));
 }
 
 function assignmentContext(db: Database, sessionThreadId: string) {
-  const attempt = readRow<{ commandLine: string | null; fromThreadId: string | null }>(
+  const attempt = readRow<{ commandLine: string | null; fromThreadId: string | null; targetPhase: number | null }>(
     db,
-    "SELECT command_line AS commandLine, from_thread_id AS fromThreadId FROM launch_attempts WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1",
+    "SELECT command_line AS commandLine, from_thread_id AS fromThreadId, target_phase AS targetPhase FROM launch_attempts WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1",
     sessionThreadId,
   );
   const previous = attempt?.fromThreadId
@@ -92,12 +100,15 @@ function assignmentContext(db: Database, sessionThreadId: string) {
     ? readRow<{ commandLine: string | null }>(db, "SELECT command_line AS commandLine FROM launch_attempts WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1", attempt.fromThreadId)
     : undefined;
   const previousSummary = parseJson<SessionSummary>(previous?.summaryJson, {});
+  const primaryReviewArtifact = primaryReviewArtifactName(previousSummary);
   return {
     commandLine: attempt?.commandLine ?? null,
     previousCommandLine: previousAttempt?.commandLine ?? null,
     fromThreadId: attempt?.fromThreadId ?? null,
     previousArtifactNames: artifactNamesFromSummary(previous?.summaryJson),
     fallbackSummary: previousSummary.summaryHistory?.at(-1)?.slice(0, 600) ?? null,
+    approvedPhase: Number.isSafeInteger(attempt?.targetPhase) && (attempt?.targetPhase ?? 0) > 0 ? attempt!.targetPhase : null,
+    primaryReviewArtifact,
   };
 }
 
@@ -156,6 +167,8 @@ export const hlTaskContextOutputSchema = z.object({
     phase: z.string().nullable(),
     commandLine: z.string().nullable(),
     fromThreadId: z.string().nullable(),
+    approvedPhase: z.number().int().positive().nullable(),
+    primaryReviewArtifact: z.string().nullable(),
   }).strict(),
   checkpoint: z.object({
     status: z.enum(["available", "missing", "withheld"]),
@@ -266,6 +279,8 @@ export function registerArtifactTools(
           phase: row.label,
           commandLine: assignment.commandLine,
           fromThreadId: assignment.fromThreadId,
+          approvedPhase: assignment.approvedPhase,
+          primaryReviewArtifact: assignment.primaryReviewArtifact,
         },
         checkpoint: {
           status: researchContext ? "withheld" : handoff ? "available" : "missing",

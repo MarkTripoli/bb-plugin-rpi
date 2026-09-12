@@ -31,3 +31,17 @@ Ticket: [{TICKET_ID}]({TICKET_URL}) | Task: [{TASK_SLUG}]({TASK_URL}) | Walkthro
 ```
 
 {End with the one detail a reviewer needs before reading the diff.}
+
+## Human Review
+
+### Review targets
+
+- {Pull request behavior, risk, and changed files the human should inspect.}
+
+### Verify
+
+- [ ] {Exact review or hosted-check confirmation required before the next review round.}
+
+### Known limits
+
+- {Known limit, or `None.`}

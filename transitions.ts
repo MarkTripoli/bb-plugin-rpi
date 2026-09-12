@@ -294,7 +294,6 @@ export type CompletionActionsResult = {
 
 type CompletionSessionFields = SuggestedNextSessionFields & { threadId: string };
 type CompletionCatalogEntry = Omit<CompletionAction, "intent"> & { skillId: SkillId | null; forceCompletion?: boolean };
-type PlanWorkflowType = "rpi" | "prd_tdd";
 
 function titleCaseButtonText(buttonText: string) {
   return buttonText.length > 0 ? `${buttonText[0]!.toUpperCase()}${buttonText.slice(1)}` : buttonText;
@@ -304,6 +303,20 @@ export type PlanPhaseHint = {
   phase: number;
   title: string;
 };
+
+export function phaseImplementationSkill(workflowType: string): "implement-plan" | "implement-outline" | null {
+  if (workflowType === "outline_only") return "implement-outline";
+  if (workflowType === "rpi" || workflowType === "prd_tdd") return "implement-plan";
+  return null;
+}
+
+export function isNumericImplementationSkill(skillId: string | null): boolean {
+  return skillId === "implement-plan" || skillId === "implement-outline" || skillId === "iterate-implementation";
+}
+
+export function isReviewEntrySkill(skillId: string): boolean {
+  return skillId === "review-code" || skillId === "fix-code-review" || skillId === "resolve-pr-reviews";
+}
 
 function completionCatalog(
   label: PhaseLabel | null,
@@ -319,13 +332,13 @@ function completionCatalog(
   };
 
   if (label === "implementation") {
-    const planPhased = (workflowType as PlanWorkflowType) === "rpi" || (workflowType as PlanWorkflowType) === "prd_tdd";
-    const implementPhase = planPhased && nextPlanPhase
+    const phaseSkill = phaseImplementationSkill(workflowType);
+    const implementPhase = phaseSkill && nextPlanPhase
       ? [{
           id: "implement-phase" as const,
-          label: `Implement Phase ${nextPlanPhase.phase}`,
+          label: `Proceed to Phase ${nextPlanPhase.phase}`,
           emphasis: "primary" as const,
-          skillId: "implement-plan" as SkillId,
+          skillId: phaseSkill as SkillId,
           forceCompletion: true,
         }]
       : [];
@@ -395,9 +408,14 @@ export function completionActionsForSession(
       ? { kind: "proceed" as const, threadId: session.threadId }
       : descriptor.id === "iterate"
         ? { kind: "iterate" as const, threadId: session.threadId }
-        : { kind: "completion" as const, threadId: session.threadId, skillId: skillId! },
+        : descriptor.id === "implement-phase"
+          ? { kind: "completion" as const, threadId: session.threadId, skillId: skillId!, phase: nextPlanPhase!.phase }
+          : { kind: "completion" as const, threadId: session.threadId, skillId: skillId! },
   }));
-  if (extraction && skillInfo(extraction.nextStepType) && !catalog.some((entry) => entry.skillId === extraction.nextStepType)) {
+  const phaseActionAvailable = label === "implementation"
+    && phaseImplementationSkill(session.workflowType) !== null
+    && nextPlanPhase !== null;
+  if (extraction && skillInfo(extraction.nextStepType) && !catalog.some((entry) => entry.skillId === extraction.nextStepType) && !phaseActionAvailable) {
     actions.push({
       id: "agent-suggestion",
       label: "Agent suggestion",
