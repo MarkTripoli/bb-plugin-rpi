@@ -115,7 +115,16 @@ import { findLegacyTaskDirTaskIds, getWorkspaceView, legacyTaskRootDirName, reru
 const PREFS_KEY = "prefs:structured-defaults";
 const RPI_SKILL_NAMES = SKILLS.map(([, skillId]) => `rpi-${skillId}`);
 const RPI_AGENT_SKILL_NAMES = RPI_AGENT_SKILL_IDS.map((skillId) => `rpi-agent-${skillId}`);
-const NOTIFICATION_SOUND = readFileSync(new URL("./assets/notification.mp3", import.meta.url));
+// Source runs resolve ./assets next to server.ts; a prebuilt dist/server.js resolves one level
+// deeper, where the asset lives at the install checkout root (../assets).
+function loadNotificationSound(): Buffer {
+  try {
+    return readFileSync(new URL("./assets/notification.mp3", import.meta.url));
+  } catch {
+    return readFileSync(new URL("../assets/notification.mp3", import.meta.url));
+  }
+}
+const NOTIFICATION_SOUND = loadNotificationSound();
 const SECURITY_HEADERS = {
   "x-content-type-options": "nosniff",
   "cache-control": "no-store",
