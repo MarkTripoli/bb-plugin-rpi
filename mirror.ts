@@ -391,14 +391,17 @@ async function stableRead(bb: BbPluginApi, location: MirrorLocation, fileName: s
   const target = artifactPath(location, fileName);
   for (let attempt = 1; attempt <= STABILITY_ATTEMPTS; attempt += 1) {
     const first = await readFile(bb, location, target);
-    if (!first) return null;
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    const second = await readFile(bb, location, target);
-    if (!second) return null;
-    if (first.sha256 === second.sha256 && first.sizeBytes === second.sizeBytes) return second;
+    // A miss is retried rather than returned immediately: a file the agent just wrote can take a
+    // beat to become readable through the host files API, and reporting "not found" on that first
+    // transient miss makes rpi_artifact_save fail on a file that does exist.
+    if (first) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const second = await readFile(bb, location, target);
+      if (second && first.sha256 === second.sha256 && first.sizeBytes === second.sizeBytes) return second;
+    }
     if (attempt < STABILITY_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, 200));
   }
-  bb.log.warn(`RPI skipped unstable artifact write from ${loggedBy}: ${fileName}`);
+  bb.log.warn(`RPI skipped unstable or missing artifact write from ${loggedBy}: ${fileName}`);
   return null;
 }
 
@@ -439,7 +442,7 @@ export async function ingest(
   const location = await resolveLocation(bb, db, taskId, options.threadId);
   if (!location) {
     bb.log.info(`RPI ingest skipped for ${options.threadId}: no workspace path`);
-    return { ingested: 0, skipped: 0 };
+    return { ingested: 0, skipped: 0, artifactDir: null };
   }
   const listed = options.fileName
     ? []
@@ -497,7 +500,7 @@ export async function ingest(
     bb.realtime.publish("artifacts", { taskId });
     bb.realtime.publish("rpi:artifacts", { taskId });
   }
-  return { ingested, skipped };
+  return { ingested, skipped, artifactDir: location.rootPath };
 }
 
 function parseTrashCopy(fileName: string, basename: string) {

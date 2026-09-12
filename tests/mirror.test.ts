@@ -213,12 +213,36 @@ test("ingest only accepts direct child files under the task root", async () => {
       },
     },
   };
-  assert.deepEqual(await ingest(bb as never, db, taskId, "test", { threadId: "thr_1" }), { ingested: 1, skipped: 3 });
+  assert.deepEqual(await ingest(bb as never, db, taskId, "test", { threadId: "thr_1" }), { ingested: 1, skipped: 3, artifactDir: "/repo/.rpi/tasks/task" });
   assert.equal(seen.listRoot, "/repo/.rpi/tasks/task");
   assert.ok(seen.readRoots.every((root) => root === "/repo/.rpi/tasks/task"));
   assert.equal(getArtifact(db, taskId, "01-notes.md")?.currentVersion, 1);
   assert.ok(seen.warnings.some((message) => message.includes("nested artifact")));
   assert.ok(seen.warnings.some((message) => message.includes("non-file")));
+  db.close();
+});
+
+test("ingest recovers a file whose first read misses transiently", async () => {
+  const db = makeDb();
+  const taskId = seedTask(db);
+  seedSession(db, taskId);
+  let reads = 0;
+  const bb = {
+    log: { info: () => undefined, warn: () => undefined },
+    realtime: { publish: () => undefined },
+    sdk: {
+      threads: { get: async () => ({ environment: { path: "/repo", hostId: "host_1" } }) },
+      files: {
+        read: async () => {
+          reads += 1;
+          if (reads === 1) throw new Error("not found");
+          return { content: "notes", contentEncoding: "utf8", sha256: sha("notes"), sizeBytes: 5 };
+        },
+      },
+    },
+  };
+  assert.deepEqual(await ingest(bb as never, db, taskId, "test", { threadId: "thr_1", fileName: "01-notes.md" }), { ingested: 1, skipped: 0, artifactDir: "/repo/.rpi/tasks/task" });
+  assert.equal(getArtifact(db, taskId, "01-notes.md")?.currentVersion, 1);
   db.close();
 });
 
@@ -242,7 +266,7 @@ test("ingest skips files changing between two reads", async () => {
       },
     },
   };
-  assert.deepEqual(await ingest(bb as never, db, taskId, "test", { threadId: "thr_1", fileName: "01-notes.md" }), { ingested: 0, skipped: 1 });
+  assert.deepEqual(await ingest(bb as never, db, taskId, "test", { threadId: "thr_1", fileName: "01-notes.md" }), { ingested: 0, skipped: 1, artifactDir: "/repo/.rpi/tasks/task" });
   assert.equal(getArtifact(db, taskId, "01-notes.md"), null);
   assert.ok(warnings.some((message) => message.includes("unstable")));
   db.close();
@@ -270,7 +294,7 @@ test("tombstoned artifacts are not resurrected by ingest", async () => {
       },
     },
   };
-  assert.deepEqual(await ingest(bb as never, db, taskId, "test", { threadId: "thr_1", fileName: "01-notes.md" }), { ingested: 0, skipped: 1 });
+  assert.deepEqual(await ingest(bb as never, db, taskId, "test", { threadId: "thr_1", fileName: "01-notes.md" }), { ingested: 0, skipped: 1, artifactDir: "/repo/.rpi/tasks/task" });
   assert.equal(getArtifact(db, taskId, "01-notes.md")?.isDeleted, true);
   assert.equal(listArtifactVersions(db, taskId, "01-notes.md").length, 1);
   assert.equal(moves.length, 1);
