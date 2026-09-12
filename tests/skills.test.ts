@@ -83,7 +83,14 @@ const humanReviewArtifactTemplates = [
 
 const humanGateAnswerTemplates = finalTemplateExpectations
   .map(([file]) => file)
-  .filter((file) => /rpi-(?:create|iterate)-(?:design-discussion|prd|tdd|structure-outline|plan)|rpi-(?:implement-plan|implement-outline|iterate-implementation)|rpi-(?:describe-pr|resolve-pr-reviews)\/(?:references)\/(?:pr_description_final_answer|pr_review_pending_answer)/.test(file));
+  .filter((file) => /rpi-(?:create|iterate)-(?:design-discussion|prd|tdd|structure-outline|plan)|rpi-(?:implement-plan|implement-outline|iterate-implementation)|rpi-(?:describe-pr|resolve-pr-reviews)\/(?:references)\/(?:pr_description_final_answer|pr_review_pending_answer)/.test(file))
+  .filter((file) => !file.endsWith("implementation_phase_final_answer.md"));
+
+const phaseAnswerTemplates = [
+  "skills/rpi-implement-plan/references/implementation_phase_final_answer.md",
+  "skills/rpi-implement-outline/references/implementation_phase_final_answer.md",
+  "skills/rpi-iterate-implementation/references/implementation_phase_final_answer.md",
+] as const;
 
 test("every final-answer template parses to the expected next skill", () => {
   for (const [relativePath, expectedSkill] of finalTemplateExpectations) {
@@ -153,6 +160,18 @@ test("human-gate answers expose one review artifact, concrete checks, feedback, 
     assert.match(content, /\nCheck:\r?\n- Review the named behavior and evidence\./, `${relativePath} must copy a concrete review check`);
     assert.match(content, /[Cc]omment on the artifact/, `${relativePath} must explain the feedback path`);
     assert.match(content, /approval/, `${relativePath} must state approval semantics`);
+    assertFinalTextFenceOnly(content, relativePath);
+  }
+});
+
+test("phase answers are progress reports with recorded deferred evidence and no approval wording", () => {
+  for (const relativePath of phaseAnswerTemplates) {
+    const content = fillTemplate(fs.readFileSync(path.join(root, relativePath), "utf8"));
+    const directives = content.split(/\r?\n/).filter((line) => /^::rpi-artifact\{task="task-id" file="01-artifact\.md"\}$/.test(line));
+    assert.equal(directives.length, 1, `${relativePath} must contain one standalone primary directive`);
+    assert.match(content, /\nCheck:\r?\n- Review the named behavior and evidence\./, `${relativePath} must copy a concrete review check`);
+    assert.match(content, /Deferred human evidence \(recorded, not executed\):/, `${relativePath} must record deferred evidence`);
+    assert.doesNotMatch(content, /[Aa]pproved/, `${relativePath} must not carry approval wording`);
     assertFinalTextFenceOnly(content, relativePath);
   }
 });

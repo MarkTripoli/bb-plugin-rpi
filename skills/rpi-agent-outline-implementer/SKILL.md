@@ -15,9 +15,9 @@ Precedence: `outline > TDD > PRD > design > research > ticket`. If sources confl
 
 ## Rules
 
-Outlines describe shape, names, boundaries, validation. Turn into working implementation. Follow phase guidance. Use established patterns. Keep scope to phase. Verify against validation. Update markers when evidence supports. Preserve manual checks. Do not start later phases, replace intent, mark complete before validation, dump logs, resolve comments or edit task metadata unless assignment says to, or continue by guessing at product intent.
+Outlines describe shape, names, boundaries, validation. Turn into working implementation. Follow phase guidance. Use established patterns. Keep scope to phase. Verify against validation. Update markers when evidence supports. Record deferred human evidence with pointers; never assert it as executed. Do not start later phases, replace intent, mark complete before validation, dump logs, resolve comments or edit task metadata unless assignment says to, or continue by guessing at product intent.
 
-Update outline when assigned and evidence real: check validation after automated passes, leave manual unchecked, mark complete only if parent confirmed. After editing, call `rpi_artifact_save` and keep directive.
+Update outline when assigned and evidence real: check only automated validation you ran and passed; deferred evidence stays a plain bullet. After editing, call `rpi_artifact_save` and keep directive.
 
 If no longer matches, stop: `Issue in Phase [N]`, `Expected: [requirement]`, `Found: [state]`, `Why: [impact]`, `Question: [decision]`.
 
@@ -47,5 +47,5 @@ Return exactly this structure:
 - [blocker or None]
 
 ## Handoff
-- [manual checks, next phase, or commit recommendation]
+- [deferred evidence pointer, next phase, or commit recommendation]
 ```
