@@ -29,7 +29,9 @@ export type TaskCreateRequestInput = {
   providerId: string;
   model: string;
   reasoningLevel: string;
-  serviceTier: string | undefined;
+  // Omitted when the composer reports no tier: an `undefined` value is not JSON and the RPC
+  // transport rejects the whole submit before the schema can treat it as absent.
+  serviceTier?: string;
   baseEnvironmentId: string | null;
   // Set only for a provider environment; host/reuse picks stay captured by the location fields.
   composerEnvironment: ManualLaunchRequest["environment"] | null;
@@ -94,7 +96,7 @@ export function composerRequestToTaskCreate(
     providerId: request.providerId,
     model: request.model,
     reasoningLevel: request.reasoningLevel,
-    serviceTier: request.serviceTier,
+    ...(request.serviceTier === undefined ? {} : { serviceTier: request.serviceTier }),
     composerEnvironment: request.environment.type === "provider" ? request.environment : null,
     autoAdvance: extras.autoAdvance,
     e2eMode: extras.e2eMode,

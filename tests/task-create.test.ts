@@ -152,6 +152,12 @@ test("default extras keep e2e mode off", () => {
   assert.equal(mapped.e2eMode, false);
 });
 
+test("omits serviceTier when the composer reports none so the RPC input stays JSON", () => {
+  const mapped = composerRequestToTaskCreate(request(), extras);
+  assert.equal("serviceTier" in mapped, false);
+  assert.equal(JSON.stringify(mapped).includes("serviceTier"), false);
+});
+
 test("sdk permission vocabulary maps onto the task record vocabulary", () => {
   assert.equal(sdkPermissionModeToTaskPermissionMode("full"), "bypass");
   assert.equal(sdkPermissionModeToTaskPermissionMode("accept-edits"), "accept_edits");
