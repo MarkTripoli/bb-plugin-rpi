@@ -873,3 +873,124 @@ test("createTask stores a composer reuse environment as the task base environmen
   );
   await harness.lifecycle.dispose();
 });
+
+async function waitFor(check: () => boolean, what: string, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+// emitThreadEvent ships in the testing runtime but is missing from the bundled lifecycle types.
+const emitThreadEvent = (lifecycle: unknown) => lifecycle as {
+  emitThreadEvent: (event: "thread.idle", payload: { thread: Record<string, unknown>; lastAssistantText: string }) => Promise<unknown>;
+};
+
+test("advance failure on a full-auto task retries before notifying", async (t) => {
+  const spawnInputs: Array<Record<string, unknown>> = [];
+  let failProjectGet = false;
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "rpi",
+    sdk: {
+      subscribe: () => () => undefined,
+      projects: {
+        get: async ({ projectId }: { projectId: string }) => {
+          if (failProjectGet) {
+            failProjectGet = false;
+            throw new Error("host unreachable");
+          }
+          return {
+            id: projectId,
+            name: "Proj",
+            kind: "standard" as const,
+            gitRemoteUrl: null,
+            createdAt: 1,
+            updatedAt: 1,
+            sources: [{ id: "src_1", projectId, hostId: "host_seed", path: "/repo", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 }],
+          };
+        },
+      },
+      threads: {
+        spawn: async (input) => {
+          spawnInputs.push(input as unknown as Record<string, unknown>);
+          return makeThreadResponse({ id: `thr_s_${spawnInputs.length}`, environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
+        },
+        get: async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" }),
+        interactions: { list: async () => [] },
+        events: { list: async () => [] },
+        timeline: async () => ({ rows: [] }),
+      },
+    },
+  });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const db = bb.storage.database();
+
+  const createE2eTask = async () => {
+    const created = await harness.behavior.callRpc("createTask", {
+      request: {
+        text: "prompt",
+        projectId: "proj_1",
+        workflowType: "rpi",
+        worktreeTiming: "never",
+        permissionMode: "accept_edits",
+        autoAdvance: false,
+        e2eMode: true,
+      },
+      draft: true,
+    }) as { taskId: string };
+    // Launch the implementation phase through the plugin itself so the session is bound in the
+    // runtime's mirror the way a real launch is; the idle event then drives the full pipeline.
+    await harness.behavior.callRpc("launchSkill", { taskId: created.taskId, skillId: "implement-plan" });
+    return created.taskId;
+  };
+  const completedTurnCount = (taskId: string) =>
+    (db.prepare("SELECT COUNT(*) AS count FROM launch_attempts WHERE task_id = ?").get(taskId) as { count: number }).count;
+
+  // Scenario 1: the advance's pre-spawn failure is auto-retried; the recovery notification must
+  // not fire because the retry launched. The launch stored a base environment on the task, so
+  // clear it to force the advance's environment selection through the failing pre-spawn path.
+  const taskOne = await createE2eTask();
+  db.prepare("UPDATE tasks SET base_environment_id = NULL WHERE id = ?").run(taskOne);
+  failProjectGet = true;
+  await emitThreadEvent(harness.lifecycle).emitThreadEvent("thread.idle", {
+    thread: { id: "thr_s_1", numEvents: 2, updatedAt: 2 },
+    lastAssistantText: "Phase 1 done.\n```text\n/rpi-describe-pr\n```",
+  });
+  await waitFor(() => completedTurnCount(taskOne) === 3, "the auto-retried attempt");
+  const attempts = db.prepare(
+    "SELECT id, status, launched_by AS launchedBy, retried_from AS retriedFrom FROM launch_attempts WHERE task_id = ? ORDER BY created_at, rowid"
+  ).all(taskOne) as Array<{ id: string; status: string; launchedBy: string; retriedFrom: string | null }>;
+  assert.deepEqual(attempts.map((attempt) => [attempt.launchedBy, attempt.status, attempt.retriedFrom === null]), [
+    ["user", "spawned", true],
+    ["auto_advance", "failed", true],
+    ["auto_advance", "spawned", false],
+  ]);
+  assert.equal(attempts[2]!.retriedFrom, attempts[1]!.id);
+  assert.equal((spawnInputs[1] as { permissionMode?: string }).permissionMode, "full");
+  assert.equal(
+    (db.prepare("SELECT COUNT(*) AS count FROM notifications WHERE kind = 'ready_after_failed_advance'").get() as { count: number }).count,
+    0,
+  );
+
+  // Scenario 2: at the retry cap the recovery notification fires instead.
+  await harness.behavior.callRpc("setPrefs", { e2e: { maxRetries: 0 } });
+  const taskTwo = await createE2eTask();
+  db.prepare("UPDATE tasks SET base_environment_id = NULL WHERE id = ?").run(taskTwo);
+  failProjectGet = true;
+  await emitThreadEvent(harness.lifecycle).emitThreadEvent("thread.idle", {
+    thread: { id: "thr_s_3", numEvents: 2, updatedAt: 3 },
+    lastAssistantText: "Phase 1 done.\n```text\n/rpi-describe-pr\n```",
+  });
+  await waitFor(() => completedTurnCount(taskTwo) === 2, "the capped task's failed attempt");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(
+    (db.prepare("SELECT COUNT(*) AS count FROM launch_attempts WHERE task_id = ? AND status = 'failed'").get(taskTwo) as { count: number }).count,
+    1,
+  );
+  assert.equal(
+    (db.prepare("SELECT COUNT(*) AS count FROM notifications WHERE kind = 'ready_after_failed_advance' AND thread_id = 'thr_s_3'").get() as { count: number }).count,
+    1,
+  );
+});

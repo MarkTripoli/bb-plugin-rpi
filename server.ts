@@ -41,6 +41,7 @@ import {
   submitManualLaunch,
 } from "./advance";
 import {
+  autoRetryFailedAttempt,
   forkSession,
   adoptThread,
   interruptSession,
@@ -486,6 +487,11 @@ export default async function plugin(bb: BbPluginApi) {
 
   async function notifyAdvanceFailed(session: NonNullable<ReturnType<typeof sessionMirror.get>>) {
     if (!session.completedTurnKey) return;
+    // Full auto first: a launched retry keeps the source turn's suppression row unconsumed, so no
+    // ready toast fires for a hop that continued on its own. Only when nothing was retried (no
+    // failed attempt, cap reached, non-e2e task, or the retry itself failed) does the recovery
+    // notification fire.
+    if (await autoRetryFailedAttempt(bb, db, sessionMirror, launchBindings, session.taskId, e2ePrefs)) return;
     await recoverReadyAfterFailedAdvance(bb, db, await currentNotificationPrefs(), {
       threadId: session.threadId,
       completedTurnKey: session.completedTurnKey,
@@ -1327,6 +1333,21 @@ export default async function plugin(bb: BbPluginApi) {
         for (const taskId of dismissStaleUncertainAttempts(db)) {
           bb.realtime.publish("tasks", { taskId });
           bb.realtime.publish("rpi:sessions", { taskId, threadId: null });
+          // Full auto: a stale-uncertain attempt the sweep just marked failed is auto-retried
+          // while the retry chain is under the cap; at the cap (or when nothing can be retried)
+          // the source session's advance-failure recovery notification fires instead. Wrapped so
+          // one failing task never kills the sweep loop.
+          try {
+            const retried = await autoRetryFailedAttempt(bb, db, sessionMirror, launchBindings, taskId, e2ePrefs);
+            if (!retried) {
+              const task = getTask(db, taskId)?.task;
+              const attempt = listLaunchAttempts(db, taskId).find((row) => row.status === "failed");
+              const source = attempt?.fromThreadId ? sessionMirror.get(attempt.fromThreadId) : undefined;
+              if (source && task?.e2eMode) await notifyAdvanceFailed(source);
+            }
+          } catch (error) {
+            bb.log.warn(`RPI full auto sweep retry failed for task ${taskId}: ${String(error)}`);
+          }
         }
         await sleep(60_000, signal);
       }

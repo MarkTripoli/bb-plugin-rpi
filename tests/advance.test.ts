@@ -17,7 +17,7 @@ import { createDraftTask } from "../tasks";
 import { proceed } from "../advance";
 import { createLaunchBindingMirror, mirrorSession, type SessionMirrorRow } from "../sessions";
 import { DEFAULT_NOTIFICATION_PREFS, recoverReadyAfterFailedAdvance } from "../notify";
-import { resolveLaunchAttempt } from "../launch";
+import { resolveLaunchAttempt, autoRetryFailedAttempt } from "../launch";
 import { E2E_LAUNCH_CONTEXT, START_LINKED_TICKET_ACTION } from "../instructions";
 
 function makeDb() {
@@ -72,8 +72,9 @@ function seed(db: Database.Database, label: string | null, nextStepType: string 
   return { taskId, session: mirrorSession(db, new Map<string, SessionMirrorRow>(), "thr_source")! };
 }
 
-function fakeBb(options: { pendingInteraction?: boolean; spawnError?: Error; onProjectGet?: () => void } = {}) {
+function fakeBb(options: { pendingInteraction?: boolean; spawnError?: Error; onProjectGet?: () => void; projectGetFailures?: number } = {}) {
   let count = 0;
+  let projectGetCalls = 0;
   const spawns: unknown[] = [];
   return {
     bb: {
@@ -82,6 +83,8 @@ function fakeBb(options: { pendingInteraction?: boolean; spawnError?: Error; onP
       log: { warn: () => undefined },
       sdk: {
       projects: { get: async ({ projectId }: { projectId: string }) => {
+        projectGetCalls += 1;
+        if (options.projectGetFailures !== undefined && projectGetCalls <= options.projectGetFailures) throw new Error("host unreachable");
         options.onProjectGet?.();
         return { id: projectId, name: "Proj", kind: "standard" as const, gitRemoteUrl: null, createdAt: 1, updatedAt: 1, sources: [{ id: "src_1", projectId, hostId: "host_seed", path: "/repo", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 }] };
       } },
@@ -327,6 +330,78 @@ test("full auto hop spawns with bypass permission, phase model, and the launch-c
     assert.equal((db.prepare("SELECT skill_id AS skillId FROM launch_attempts WHERE task_id = ?").get(taskId) as { skillId: string }).skillId, "describe-pr");
     db.close();
   }
+});
+
+test("full auto retries a failed pre-spawn attempt once and leaves the suppression row for the continued hop", async () => {
+  const db = makeDb();
+  const { taskId } = seed(db, "implementation", "describe-pr", { auto_advance: 0, e2e_mode: 1 });
+  const { bb } = fakeBb({ projectGetFailures: 1 });
+  const bindings = createLaunchBindingMirror();
+  await assert.rejects(onCompletedTurn(bb as never, db, new Map(), bindings, mirrorSession(db, new Map(), "thr_source")!));
+  const first = db.prepare(
+    "SELECT id, status, retry_marker AS retryMarker, launched_by AS launchedBy FROM launch_attempts WHERE task_id = ?"
+  ).get(taskId) as { id: string; status: string; retryMarker: string | null; launchedBy: string };
+  assert.equal(first.status, "failed");
+  assert.equal(first.launchedBy, "auto_advance");
+  assert.equal(first.retryMarker, null);
+  const result = await autoRetryFailedAttempt(bb as never, db, new Map(), bindings, taskId, DEFAULT_E2E_PREFS);
+  assert.ok(result);
+  const rows = db.prepare(
+    "SELECT id, status, retried_from AS retriedFrom, launched_by AS launchedBy FROM launch_attempts WHERE task_id = ?"
+  ).all(taskId) as Array<{ id: string; status: string; retriedFrom: string | null; launchedBy: string }>;
+  assert.equal(rows.length, 2);
+  const retried = rows.find((row) => row.retriedFrom === first.id);
+  assert.ok(retried);
+  assert.equal(retried.status, "spawned");
+  assert.equal(retried.launchedBy, "auto_advance");
+  // The suppression row for the source turn stays unconsumed: the hop continued, so the
+  // ready_after_failed_advance recovery notification must not fire for it.
+  const suppression = db.prepare(
+    "SELECT consumed_at AS consumedAt FROM notification_suppressions WHERE thread_id = 'thr_source'"
+  ).get() as { consumedAt: number | null } | undefined;
+  assert.ok(suppression);
+  assert.equal(suppression.consumedAt, null);
+  db.close();
+});
+
+function insertFailedChainRow(db: Database.Database, taskId: string, id: string, retriedFrom: string | null, retryMarker: string | null, createdAt: number) {
+  db.prepare(
+    "INSERT INTO launch_attempts (id, task_id, from_thread_id, skill_id, label, environment_role, launched_by, status, thread_id, retried_from, retry_marker, created_at) VALUES (?, ?, 'thr_source', 'create-research', NULL, 'base', 'auto_advance', 'failed', NULL, ?, ?, ?)"
+  ).run(id, taskId, retriedFrom, retryMarker, createdAt);
+}
+
+test("full auto stops retrying at maxRetries", async () => {
+  const db = makeDb();
+  const { taskId } = seed(db, "implementation", "describe-pr", { auto_advance: 0, e2e_mode: 1 });
+  // Four chained attempts, three retried_from links: the newest failed tip sits at depth 3.
+  insertFailedChainRow(db, taskId, "a1", null, "a2", 1);
+  insertFailedChainRow(db, taskId, "a2", "a1", "a3", 2);
+  insertFailedChainRow(db, taskId, "a3", "a2", "a4", 3);
+  insertFailedChainRow(db, taskId, "a4", "a3", null, 4);
+  const capBb = fakeBb().bb;
+  assert.equal(await autoRetryFailedAttempt(capBb as never, db, new Map(), createLaunchBindingMirror(), taskId, { maxRetries: 3, permissionMode: "bypass" }), null);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts WHERE task_id = ?").get(taskId) as { count: number }).count, 4);
+  const { bb } = fakeBb();
+  await autoRetryFailedAttempt(bb as never, db, new Map(), createLaunchBindingMirror(), taskId, { maxRetries: 4, permissionMode: "bypass" });
+  const rows = db.prepare(
+    "SELECT id, status, retried_from AS retriedFrom FROM launch_attempts WHERE task_id = ?"
+  ).all(taskId) as Array<{ id: string; status: string; retriedFrom: string | null }>;
+  assert.equal(rows.length, 5);
+  const retried = rows.find((row) => row.retriedFrom === "a4");
+  assert.ok(retried);
+  assert.equal(retried.status, "spawned");
+  db.close();
+});
+
+test("auto retry ignores tasks without full auto", async () => {
+  const db = makeDb();
+  const { taskId } = seed(db, "implementation", "describe-pr", { auto_advance: 0, e2e_mode: 0 });
+  insertFailedChainRow(db, taskId, "solo", null, null, 1);
+  const { bb } = fakeBb();
+  const result = await autoRetryFailedAttempt(bb as never, db, new Map(), createLaunchBindingMirror(), taskId, DEFAULT_E2E_PREFS);
+  assert.equal(result, null);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts WHERE task_id = ?").get(taskId) as { count: number }).count, 1);
+  db.close();
 });
 
 test("auto-advance skips when master, flag, blocked reason, or next step is absent", async () => {

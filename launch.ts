@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type * as BetterSqlite3 from "better-sqlite3";
 import { TASK_ROOT_DIR } from "./constants";
-import { manualLaunchRequestSchema, modelOverrideSchema, reasoningLevelSchema, serviceTierSchema, type ManualLaunchRequest, type ModelOverride, type TaskRecord } from "./contract";
+import { manualLaunchRequestSchema, modelOverrideSchema, reasoningLevelSchema, serviceTierSchema, type E2ePrefs, type ManualLaunchRequest, type ModelOverride, type TaskRecord } from "./contract";
+import { retryChainDepth } from "./e2e";
 import { nowMs, parseJson, readRow, readRows, writeRow } from "./db";
 import { getTask } from "./tasks";
 import { FIRST_SKILL_BY_WORKFLOW, skillInfo, type SkillId } from "./transitions";
@@ -906,4 +907,31 @@ export async function resolveLaunchAttempt(
 function currentAttemptResult(db: Database, attempt: LaunchAttemptRow) {
   const retry = attempt.retryMarker ? readLaunchAttempt(db, attempt.retryMarker) : null;
   return { threadId: retry?.threadId ?? attempt.threadId };
+}
+
+// Full auto: retry the newest failed, not-yet-retried attempt of an e2e task until its chain
+// reaches maxRetries. Returns the retry result or null when nothing was retried.
+export async function autoRetryFailedAttempt(
+  bb: BbPluginApi,
+  db: Database,
+  mirror: Map<string, SessionMirrorRow>,
+  bindings: LaunchBindingMirror,
+  taskId: string,
+  prefs: Pick<E2ePrefs, "maxRetries" | "permissionMode">,
+) {
+  const task = getTask(db, taskId)?.task;
+  if (!task || !task.e2eMode || task.archived) return null;
+  // listLaunchAttempts returns newest-first; retryChainDepth (like e2eGuardState) is specified
+  // against oldest-first input, so reverse at the call site, same as the advance gate does.
+  const attempts = listLaunchAttempts(db, taskId);
+  const oldestFirst = [...attempts].reverse();
+  const failed = attempts.find((attempt) => attempt.status === "failed" && attempt.retryMarker === null);
+  if (!failed) return null;
+  if (retryChainDepth(oldestFirst, failed.id) >= prefs.maxRetries) return null;
+  try {
+    return await resolveLaunchAttempt(bb, db, mirror, bindings, failed.id, { type: "retry" }, { e2ePermissionMode: prefs.permissionMode });
+  } catch (error) {
+    bb.log.warn(`RPI full auto retry failed for attempt ${failed.id}: ${String(error)}`);
+    return null;
+  }
 }
