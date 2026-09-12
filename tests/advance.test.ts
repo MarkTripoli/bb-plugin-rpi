@@ -13,7 +13,7 @@ import {
 import { DEFAULT_E2E_PREFS, MANUAL_LAUNCH_TEXT_LIMIT, prepareManualLaunchOutputSchema, type ManualLaunchRequest } from "../contract";
 import { MIGRATIONS, stringifyJson } from "../db";
 import { upsertArtifact } from "../artifacts";
-import { createDraftTask, updateTask } from "../tasks";
+import { archiveTask, createDraftTask, deleteTask, updateTask } from "../tasks";
 import { proceed, scheduleEpic } from "../advance";
 import { createLaunchBindingMirror, mirrorSession, type SessionMirrorRow } from "../sessions";
 import { DEFAULT_NOTIFICATION_PREFS, recoverReadyAfterFailedAdvance } from "../notify";
@@ -142,6 +142,7 @@ const MATRIX = [
   { label: "review-fixes", next: "review-code", flag: "aa_implementation_to_pr", humanGate: false },
   { label: "describe-pr", next: "resolve-pr-reviews", flag: null, humanGate: true },
   { label: "pr-review", next: "resolve-pr-reviews", flag: null, humanGate: true },
+  { label: "epic-plan", next: "start-epic-delivery", flag: null, humanGate: true, workflow: "epic" },
 ] as const;
 
 test("auto-advance matrix covers rows, flags, master switch, blockers, and missing next step", async () => {
@@ -154,7 +155,9 @@ test("auto-advance matrix covers rows, flags, master switch, blockers, and missi
             const { bb, spawns } = fakeBb();
             const patch: Record<string, unknown> = { auto_advance: masterOn ? 1 : 0 };
             if (row.flag) patch[row.flag] = flagOn ? 1 : 0;
-            const { session } = seed(db, row.label, found ? row.next : null, patch);
+            const epic = "workflow" in row;
+            if (epic) patch.host_id = "host_seed";
+            const { session } = seed(db, row.label, found ? row.next : null, patch, epic ? "epic" : "rpi", epic ? EPIC_PLAN : undefined);
             if (blocked) db.prepare("UPDATE sessions SET blocked_reason = 'question' WHERE thread_id = 'thr_source'").run();
             const fresh = mirrorSession(db, new Map<string, SessionMirrorRow>(), "thr_source")!;
             await onCompletedTurn(bb as never, db, new Map(), createLaunchBindingMirror(), fresh ?? session);
@@ -198,7 +201,7 @@ test("full auto gate: one checked box advances every e2e row with the master tog
 });
 
 test("full auto gate: human gates never advance", async () => {
-  const cases = [
+  const cases: Array<[label: string, extracted: string, workflow?: "epic"]> = [
     ["design", "create-plan"],
     ["design-prd", "create-tdd"],
     ["design-tdd", "create-plan"],
@@ -206,11 +209,12 @@ test("full auto gate: human gates never advance", async () => {
     ["plan", "setup-worktree"],
     ["describe-pr", "resolve-pr-reviews"],
     ["pr-review", "resolve-pr-reviews"],
-  ] as const;
-  for (const [label, extracted] of cases) {
+    ["epic-plan", "start-epic-delivery", "epic"],
+  ];
+  for (const [label, extracted, workflow] of cases) {
     const db = makeDb();
     const { bb, spawns } = fakeBb();
-    seed(db, label, extracted, { auto_advance: 0, e2e_mode: 1 });
+    seed(db, label, extracted, { auto_advance: 0, e2e_mode: 1, ...(workflow ? { host_id: "host_seed" } : {}) }, workflow ?? "rpi", workflow ? EPIC_PLAN : undefined);
     await onCompletedTurn(bb as never, db, new Map(), createLaunchBindingMirror(), mirrorSession(db, new Map(), "thr_source")!);
     assert.equal(spawns.length, 0, label);
     db.close();
@@ -1359,4 +1363,70 @@ test("a failing child launch does not stop the others", async () => {
   const statuses = db.prepare("SELECT task_id AS taskId, status FROM launch_attempts ORDER BY created_at, rowid").all() as Array<{ taskId: string; status: string }>;
   assert.deepEqual(statuses.map((row) => [row.taskId === rows.A!.id ? "A" : "B", row.status]), [["A", "uncertain"], ["B", "spawned"]]);
   db.close();
+});
+
+test("an epic-plan turn completion never starts delivery; Proceed on the same session does", async () => {
+  const modes = [{ auto_advance: 1, e2e_mode: 0 }, { auto_advance: 0, e2e_mode: 1 }, { auto_advance: 0, e2e_mode: 0 }];
+  for (const mode of modes) {
+    const label = JSON.stringify(mode);
+    const db = makeDb();
+    const { taskId, session } = seed(db, "epic-plan", "start-epic-delivery", { ...mode, max_parallel: 2, host_id: "host_seed" }, "epic", EPIC_PLAN);
+    const { bb, spawns } = fakeBb();
+    const mirror = new Map<string, SessionMirrorRow>();
+    const bindings = createLaunchBindingMirror();
+    const advancedAt = () => (db.prepare("SELECT advanced_at AS advancedAt FROM sessions WHERE thread_id = 'thr_source'").get() as { advancedAt: number | null }).advancedAt;
+    await onCompletedTurn(bb as never, db, mirror, bindings, session);
+    assert.equal(Object.keys(children(db, taskId)).length, 0, `${label}: no children`);
+    assert.equal(spawns.length, 0, `${label}: no spawns`);
+    assert.equal(advancedAt(), null, `${label}: session not claimed`);
+    await proceed(bb as never, db, mirror, bindings, "thr_source");
+    assert.equal(Object.keys(children(db, taskId)).length, 4, `${label}: Proceed creates children`);
+    assert.equal(spawns.length, 2, `${label}: Proceed launches the first wave`);
+    assert.notEqual(advancedAt(), null);
+    db.close();
+  }
+});
+
+test("scheduler launches nothing for a completed epic", async () => {
+  const db = makeDb();
+  const { taskId } = seed(db, "epic-plan", "start-epic-delivery", { max_parallel: 1, host_id: "host_seed" }, "epic", EPIC_PLAN);
+  const { bb, spawns } = fakeBb();
+  const mirror = new Map<string, SessionMirrorRow>();
+  const bindings = createLaunchBindingMirror();
+  await proceed(bb as never, db, mirror, bindings, "thr_source");
+  assert.equal(spawns.length, 1, "A fills the cap of one");
+  const rows = children(db, taskId);
+  db.prepare("UPDATE sessions SET rpi_status = 'ready_for_input' WHERE task_id = ?").run(rows.A!.id);
+  updateTask(db, rows.A!.id, { completed: true });
+  updateTask(db, taskId, { completed: true });
+  await scheduleEpic(bb as never, db, mirror, bindings, taskId);
+  assert.equal(spawns.length, 1, "a completed epic launches nothing");
+  assert.equal(children(db, taskId).B!.isDraft, 1);
+  db.close();
+});
+
+test("a deleted or archived dependency no longer blocks its dependents", async () => {
+  for (const removal of ["delete", "archive"] as const) {
+    const db = makeDb();
+    const { taskId } = seed(db, "epic-plan", "start-epic-delivery", { max_parallel: 2, host_id: "host_seed" }, "epic", EPIC_PLAN);
+    const { bb, spawns } = fakeBb();
+    const mirror = new Map<string, SessionMirrorRow>();
+    const bindings = createLaunchBindingMirror();
+    await proceed(bb as never, db, mirror, bindings, "thr_source");
+    const rows = children(db, taskId);
+    assert.equal(spawns.length, 2);
+    db.prepare("UPDATE sessions SET rpi_status = 'failed' WHERE task_id = ?").run(rows.A!.id);
+    if (removal === "delete") assert.equal(deleteTask(db, rows.A!.id), true);
+    else archiveTask(db, rows.A!.id);
+    db.prepare("UPDATE sessions SET rpi_status = 'ready_for_input' WHERE task_id = ?").run(rows.B!.id);
+    updateTask(db, rows.B!.id, { completed: true });
+    await scheduleEpic(bb as never, db, mirror, bindings, taskId);
+    assert.equal(spawns.length, 4, `${removal}: C and D launch once A is gone and B is done`);
+    assert.deepEqual([children(db, taskId)["A-then-C"]!.isDraft, children(db, taskId).D!.isDraft], [0, 0], removal);
+    db.prepare("UPDATE sessions SET rpi_status = 'ready_for_input' WHERE task_id IN (?, ?)").run(rows["A-then-C"]!.id, rows.D!.id);
+    for (const name of ["A-then-C", "D"]) updateTask(db, rows[name]!.id, { completed: true });
+    await scheduleEpic(bb as never, db, mirror, bindings, taskId);
+    assert.equal((db.prepare("SELECT completed FROM tasks WHERE id = ?").get(taskId) as { completed: number }).completed, 1, `${removal}: epic completes`);
+    db.close();
+  }
 });

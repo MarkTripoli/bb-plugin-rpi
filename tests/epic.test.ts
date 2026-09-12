@@ -75,6 +75,9 @@ test("readyChildren honors pause, cap minus running, completed dependencies, and
   assert.deepEqual(readyChildren({ epicPaused: false, maxParallel: 1 }, children, new Set(["x"])), []);
   assert.equal(DEFAULT_EPIC_MAX_PARALLEL, 2);
   assert.deepEqual(readyChildren({ epicPaused: false, maxParallel: null }, children, new Set()).map((row) => row.id), ["c", "b"]);
+  // A dependency id with no live child (deleted or archived) no longer blocks; a live incomplete one still does.
+  const orphaned = [child("e", { dependsOn: ["gone"], position: 0 }), child("f", { dependsOn: ["gone", "e"], position: 1 })];
+  assert.deepEqual(readyChildren({ epicPaused: false, maxParallel: 5 }, orphaned, new Set()).map((row) => row.id), ["e"]);
 });
 
 test("childrenByDepth splits a chain into waves", () => {

@@ -567,6 +567,9 @@ function advanceSession(
       commandLine: nextStep.extraction.nextStepPrompt,
     };
     if (target.skillId === "start-epic-delivery") {
+      // Human gate: only Proceed materializes children. A completed turn stops here in every
+      // automation mode, so the Start delivery button is the one way in.
+      if (mode !== "proceed") return { threadId: existing };
       if (task.workflowType !== "epic") throw new LaunchRejectedError("invalid_next_step", "Only an epic can start delivery.");
       return startEpicDelivery(bb, db, mirror, bindings, task, fresh);
     }
@@ -690,7 +693,7 @@ export async function scheduleEpic(
   epicId: string,
 ) {
   const epic = getTask(db, epicId)?.task;
-  if (!epic || epic.workflowType !== "epic" || epic.archived) return;
+  if (!epic || epic.workflowType !== "epic" || epic.archived || epic.completed) return;
   const children = listChildren(db, epicId);
   if (children.length === 0) return;
   const running = new Set(children.filter((child) =>

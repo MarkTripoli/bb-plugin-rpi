@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { MIGRATIONS } from "../db";
-import { createDraftTask, defaultTaskPrefs, deleteTask, generateTaskSlug, getTask, listChildren, listDeliveringEpics, listTasks, resolveTaskExecutionDefaults, updateTask } from "../tasks";
+import { archiveTask, createDraftTask, defaultTaskPrefs, deleteTask, generateTaskSlug, getTask, listChildren, listDeliveringEpics, listTasks, resolveTaskExecutionDefaults, updateTask } from "../tasks";
 import { listSessions } from "../sessions";
 import { deriveBoardColumn } from "../transitions";
 import type { Prefs } from "../contract";
@@ -322,5 +322,19 @@ test("epic children carry parent, dependency, position, pause, and cap fields th
   assert.equal(deleteTask(db, firstId), true);
   assert.equal(deleteTask(db, secondId), true);
   assert.equal(deleteTask(db, epicId), true);
+  db.close();
+});
+
+test("archiveTask archives an epic's children with it", () => {
+  const db = makeDb();
+  for (const statement of MIGRATIONS) db.exec(statement);
+  const base = { projectId: "proj_1", worktreeTiming: "never" as const, permissionMode: "default", autoAdvance: false, providerId: null, model: null, reasoningLevel: null, serviceTier: null };
+  const epicId = createDraftTask(db, { ...base, prompt: "Ship the epic", name: "Epic", workflowType: "epic" }).taskId;
+  const childId = createDraftTask(db, { ...base, prompt: "child", name: "Child", workflowType: "oneshot", parentTaskId: epicId, position: 0 }).taskId;
+  const otherId = createDraftTask(db, { ...base, prompt: "other", name: "Other", workflowType: "oneshot" }).taskId;
+  assert.equal(archiveTask(db, epicId)?.archived, true);
+  assert.deepEqual(listTasks(db, { archived: false }).map((task) => task.id), [otherId]);
+  assert.deepEqual(listTasks(db, { archived: true }).map((task) => task.id).sort(), [childId, epicId].sort());
+  assert.deepEqual(listChildren(db, epicId), []);
   db.close();
 });

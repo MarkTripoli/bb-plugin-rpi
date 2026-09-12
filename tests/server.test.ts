@@ -1202,3 +1202,31 @@ test("updateTask on a child schedules its epic", async (t) => {
   assert.equal((db.prepare("SELECT is_draft AS isDraft FROM tasks WHERE id = ?").get(childB) as { isDraft: number }).isDraft, 0);
   assert.equal((db.prepare("SELECT completed FROM tasks WHERE id = ?").get(epic.taskId) as { completed: number }).completed, 0);
 });
+
+test("archiveTask on an epic archives its children and their threads", async (t) => {
+  const archivedThreads: string[] = [];
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "rpi",
+    sdk: {
+      subscribe: () => () => undefined,
+      threads: { archive: async ({ threadId }: { threadId: string }) => { archivedThreads.push(threadId); return { ok: true }; } },
+    },
+  });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const epic = await harness.behavior.callRpc("createTask", {
+    request: { text: "Ship the epic", projectId: "proj_1", workflowType: "epic", worktreeTiming: "never" }, name: "Epic", draft: true,
+  }) as { taskId: string };
+  const db = bb.storage.database();
+  const childId = createDraftTask(db, {
+    projectId: "proj_1", prompt: "do A", name: "A", workflowType: "oneshot", worktreeTiming: "never", autoAdvance: false, parentTaskId: epic.taskId, position: 0,
+  }).taskId;
+  db.prepare("UPDATE tasks SET is_draft = 0 WHERE id = ?").run(childId);
+  db.prepare(`INSERT INTO sessions (thread_id, task_id, launched_by, rpi_status, rpi_status_at, had_turn, created_at, updated_at)
+    VALUES ('thr_child', ?, 'user', 'running', 1, 1, 1, 1)`).run(childId);
+
+  await harness.behavior.callRpc("archiveTask", { taskId: epic.taskId });
+  assert.deepEqual(listTasks(db, { archived: false }), []);
+  assert.deepEqual(listTasks(db, { archived: true }).map((task) => task.id).sort(), [childId, epic.taskId].sort());
+  assert.deepEqual(archivedThreads, ["thr_child"]);
+});

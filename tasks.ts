@@ -651,8 +651,15 @@ function updateTaskDraftState(db: Database, taskId: string, isDraft: boolean) {
   );
 }
 
+// An epic's children archive with it: a child under an archived epic has no table, board, or
+// sidebar group left to appear in.
 export function archiveTask(db: Database, taskId: string) {
-  return updateTask(db, taskId, { archived: true });
+  return db.transaction(() => {
+    for (const child of readRows<{ id: string }>(db, "SELECT id FROM tasks WHERE parent_task_id = ? AND archived = 0", taskId)) {
+      updateTask(db, child.id, { archived: true });
+    }
+    return updateTask(db, taskId, { archived: true });
+  })();
 }
 
 export function deleteTask(db: Database, taskId: string) {

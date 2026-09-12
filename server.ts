@@ -106,6 +106,7 @@ import {
   createDraftTask,
   defaultTaskPrefs,
   getTask,
+  listChildren,
   listDeliveringEpics,
   listTasks,
   resolveTaskExecutionDefaults,
@@ -530,13 +531,14 @@ export default async function plugin(bb: BbPluginApi) {
     });
   }
 
-  // Shared by the archiveTask RPC and `bb rpi tasks archive`: flag the task, then cascade to its
-  // session threads so they leave the bb sidebar too. The flag is written first so a partially
+  // Shared by the archiveTask RPC and `bb rpi tasks archive`: flag the task (and an epic's
+  // children), then cascade to their session threads so they leave the bb sidebar too. The flag is written first so a partially
   // failed cascade still leaves the task archived (retention sweep keys off tasks.archived).
   async function archiveTaskEverywhere(taskId: string) {
+    const childIds = listChildren(db, taskId).map((child) => child.id);
     const task = archiveTask(db, taskId);
     if (!task) return null;
-    await archiveTaskThreads(bb, db, taskId);
+    for (const id of [taskId, ...childIds]) await archiveTaskThreads(bb, db, id);
     bb.realtime.publish("tasks", { taskId });
     bb.realtime.publish("rpi:sessions", { taskId, threadId: null });
     return task;

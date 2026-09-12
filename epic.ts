@@ -107,19 +107,20 @@ export function childWorktreeTiming(spec: Pick<EpicChildSpec, "workflow" | "work
 
 type ChildLike = Pick<TaskRow, "id" | "isDraft" | "completed" | "archived" | "dependsOn" | "position">;
 
-// Paused -> []; drafts whose every dependency id is completed, ordered by position, sliced to
-// max(0, cap - runningIds.size).
+// Paused -> []; drafts whose every dependency id is completed or names no live child (deleted or
+// archived, as childrenByDepth treats it), ordered by position, sliced to max(0, cap - runningIds.size).
 export function readyChildren<T extends ChildLike>(
   epic: Pick<TaskRow, "epicPaused" | "maxParallel">,
   children: T[],
   runningIds: ReadonlySet<string>,
 ): T[] {
   if (epic.epicPaused) return [];
+  const live = new Set(children.map((child) => child.id));
   const completed = new Set(children.filter((child) => child.completed).map((child) => child.id));
   const slots = Math.max(0, (epic.maxParallel ?? DEFAULT_EPIC_MAX_PARALLEL) - runningIds.size);
   return children
     .filter((child) => child.isDraft && !child.archived && !child.completed && !runningIds.has(child.id))
-    .filter((child) => child.dependsOn.every((id) => completed.has(id)))
+    .filter((child) => child.dependsOn.every((id) => !live.has(id) || completed.has(id)))
     .sort((left, right) => (left.position ?? Number.MAX_SAFE_INTEGER) - (right.position ?? Number.MAX_SAFE_INTEGER))
     .slice(0, slots);
 }
