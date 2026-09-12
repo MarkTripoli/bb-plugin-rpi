@@ -281,6 +281,9 @@ export const MIGRATIONS: string[] = [
   `CREATE TABLE deleted_task_slugs (slug TEXT PRIMARY KEY)`,
   `ALTER TABLE launch_attempts ADD COLUMN request_json TEXT`,
   `ALTER TABLE launch_attempts ADD COLUMN target_phase INTEGER`,
+  `ALTER TABLE tasks ADD COLUMN e2e_mode INTEGER NOT NULL DEFAULT 0 CHECK (e2e_mode IN (0, 1))`,
+  // JSON: Partial<Record<PhaseLabel, ModelOverride>>; NULL means no per-phase entries.
+  `ALTER TABLE tasks ADD COLUMN phase_models TEXT`,
 ];
 
 // `bb.storage.migrate` tracks applied migrations by statement index/count, not by content, so an

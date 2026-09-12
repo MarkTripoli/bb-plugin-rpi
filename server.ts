@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { prefsSchema, prefsUpdateSchema, proceedInputSchema, rpcContract, taskUiStateSchema, taskUpdateInputSchema, type ContextWarningPrefs, type WorkflowType } from "./contract";
+import { DEFAULT_E2E_PREFS, e2ePrefsSchema, prefsSchema, prefsUpdateSchema, proceedInputSchema, rpcContract, taskUiStateSchema, taskUpdateInputSchema, type ContextWarningPrefs, type E2ePrefs, type WorkflowType } from "./contract";
 import { contextThresholdFor, seedContextWarningRules } from "./context-threshold";
 import { nowMs, openPluginDatabase, parseJson, readRow, writeRow } from "./db";
 import {
@@ -252,6 +252,7 @@ export default async function plugin(bb: BbPluginApi) {
   let contextWarningPrefs: ContextWarningPrefs = seedContextWarningRules(
     initialPrefs.success ? initialPrefs.data.contextWarning : defaultTaskPrefs({}).contextWarning,
   );
+  let e2ePrefs: E2ePrefs = initialPrefs.success ? initialPrefs.data.e2e : DEFAULT_E2E_PREFS;
   for (const taskId of promoteStalePendingLaunchAttempts(db)) {
     bb.realtime.publish("tasks", { taskId });
     bb.realtime.publish("rpi:sessions", { taskId, threadId: null });
@@ -594,6 +595,7 @@ export default async function plugin(bb: BbPluginApi) {
         workflowType: request.workflowType,
         worktreeTiming: request.worktreeTiming,
         autoAdvance: request.autoAdvance,
+        e2eMode: request.e2eMode,
         baseEnvironmentId: request.baseEnvironmentId ?? null,
         ...resolved,
       });
@@ -891,10 +893,12 @@ export default async function plugin(bb: BbPluginApi) {
           rules: patch.contextWarning?.rules ?? current.contextWarning.rules,
           removedBuiltins: patch.contextWarning?.removedBuiltins ?? current.contextWarning.removedBuiltins,
         },
+        e2e: e2ePrefsSchema.parse({ ...current.e2e, ...patch.e2e }),
       };
       researchModelPreference = next.defaults.researchModel;
       notificationPrefs = next.notifications;
       contextWarningPrefs = seedContextWarningRules(next.contextWarning);
+      e2ePrefs = next.e2e;
       await bb.storage.kv.set(PREFS_KEY, next);
       bb.realtime.publish("prefs", { changed: true });
       return { ...prefsSchema.parse(next), contextWarning: contextWarningPrefs };

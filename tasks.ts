@@ -1,18 +1,21 @@
 import { randomUUID } from "node:crypto";
 import type * as BetterSqlite3 from "better-sqlite3";
-import { nowMs, readRow, readRows, transaction, writeRow } from "./db";
+import { nowMs, parseJson, readRow, readRows, stringifyJson, transaction, writeRow } from "./db";
 import { mimeFor, upsertArtifact } from "./artifacts";
 import { deriveBoardColumn, labelToStepLabel } from "./transitions";
 import { DEFAULT_CONTEXT_THRESHOLD } from "./context-threshold";
 import { attentionCountForTask } from "./status";
 import { LIVE_SESSION_CLAUSE, listSessions } from "./sessions";
-import type {
-  Prefs,
-  SessionRow,
-  TaskRecord,
-  TaskRow,
-  TaskWorkspaceState,
-  WorkflowType,
+import {
+  DEFAULT_E2E_PREFS,
+  phaseModelsSchema,
+  type Prefs,
+  type PhaseModels,
+  type SessionRow,
+  type TaskRecord,
+  type TaskRow,
+  type TaskWorkspaceState,
+  type WorkflowType,
 } from "./contract";
 
 type Database = BetterSqlite3.Database;
@@ -43,13 +46,23 @@ type RawTaskRecord = {
   aa_plan_to_worktree: number | boolean;
   aa_worktree_to_implementation: number | boolean;
   aa_implementation_to_pr: number | boolean;
+  e2eMode: number | boolean;
+  phaseModelsJson: string | null;
   createdAt: number;
   updatedAt: number;
 };
 
+// Persisted phase_models JSON is untrusted: an invalid or corrupt value reads back as {} instead
+// of failing every task read.
+export function parsePhaseModels(json: string | null): PhaseModels {
+  const parsed = phaseModelsSchema.safeParse(parseJson(json, {}));
+  return parsed.success ? parsed.data : {};
+}
+
 function normalizeTaskRecord(row: RawTaskRecord): TaskRecord {
+  const { phaseModelsJson, ...rest } = row;
   return {
-    ...row,
+    ...rest,
     isDraft: Boolean(row.isDraft),
     archived: Boolean(row.archived),
     completed: Boolean(row.completed),
@@ -59,6 +72,8 @@ function normalizeTaskRecord(row: RawTaskRecord): TaskRecord {
     aa_plan_to_worktree: Boolean(row.aa_plan_to_worktree),
     aa_worktree_to_implementation: Boolean(row.aa_worktree_to_implementation),
     aa_implementation_to_pr: Boolean(row.aa_implementation_to_pr),
+    e2eMode: Boolean(row.e2eMode),
+    phaseModels: parsePhaseModels(row.phaseModelsJson),
   };
 }
 
@@ -117,6 +132,8 @@ function readTaskRecord(db: Database, taskId: string): TaskRecord | undefined {
       aa_plan_to_worktree,
       aa_worktree_to_implementation,
       aa_implementation_to_pr,
+      e2e_mode AS e2eMode,
+      phase_models AS phaseModelsJson,
       created_at AS createdAt,
       updated_at AS updatedAt
     FROM tasks
@@ -180,6 +197,7 @@ function taskRowFromRecord(record: TaskRecord, sessionCount: number, latestLabel
     aa_plan_to_worktree: record.aa_plan_to_worktree,
     aa_worktree_to_implementation: record.aa_worktree_to_implementation,
     aa_implementation_to_pr: record.aa_implementation_to_pr,
+    e2eMode: record.e2eMode,
     currentLabel: latestLabel,
     stepLabel: record.isDraft ? "Draft" : latestLabel ? labelToStepLabel(latestLabel, false) : record.workflowType,
     attentionCount: record.completed ? 0 : attentionCount,
@@ -249,6 +267,8 @@ export function listTasks(
       aa_plan_to_worktree,
       aa_worktree_to_implementation,
       aa_implementation_to_pr,
+      e2e_mode AS e2eMode,
+      phase_models AS phaseModelsJson,
       created_at AS createdAt,
       updated_at AS updatedAt
     FROM tasks
@@ -400,6 +420,7 @@ export function createDraftTask(
     worktreeTiming: "now" | "later" | "never";
     permissionMode?: string | null;
     autoAdvance: boolean;
+    e2eMode?: boolean;
     providerId?: string | null;
     model?: string | null;
     reasoningLevel?: string | null;
@@ -422,8 +443,8 @@ export function createDraftTask(
         default_directory, provider_id, model, reasoning_level, service_tier,
         permission_mode, auto_advance, aa_questions_to_research,
         aa_research_to_design, aa_plan_to_worktree, aa_worktree_to_implementation,
-        aa_implementation_to_pr, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 1, 0, ?, ?)
+        aa_implementation_to_pr, e2e_mode, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 1, 0, ?, ?, ?)
       `,
       taskId,
       input.projectId,
@@ -442,6 +463,7 @@ export function createDraftTask(
       input.serviceTier ?? null,
       input.permissionMode ?? null,
       input.autoAdvance ? 1 : 0,
+      input.e2eMode ? 1 : 0,
       createdAt,
       createdAt,
     );
@@ -480,12 +502,21 @@ export function updateTask(
     aa_plan_to_worktree?: boolean;
     aa_worktree_to_implementation?: boolean;
     aa_implementation_to_pr?: boolean;
+    e2eMode?: boolean;
+    phaseModels?: PhaseModels | null;
   },
 ) {
   const task = readTaskRecord(db, taskId);
   if (!task) return null;
   const nextName = patch.name !== undefined ? cleanName(patch.name) : task.name;
   const nextUpdatedAt = nowMs();
+  // undefined keeps the stored JSON, null clears every entry, an object replaces it wholesale.
+  const nextPhaseModelsJson =
+    patch.phaseModels === undefined
+      ? stringifyJson(task.phaseModels)
+      : patch.phaseModels === null
+        ? null
+        : stringifyJson(patch.phaseModels);
   writeRow(
     db,
     `
@@ -510,6 +541,8 @@ export function updateTask(
       aa_plan_to_worktree = ?,
       aa_worktree_to_implementation = ?,
       aa_implementation_to_pr = ?,
+      e2e_mode = ?,
+      phase_models = ?,
       project_id = ?,
       updated_at = ?
     WHERE id = ?
@@ -533,6 +566,8 @@ export function updateTask(
     patch.aa_plan_to_worktree !== undefined ? (patch.aa_plan_to_worktree ? 1 : 0) : task.aa_plan_to_worktree ? 1 : 0,
     patch.aa_worktree_to_implementation !== undefined ? (patch.aa_worktree_to_implementation ? 1 : 0) : task.aa_worktree_to_implementation ? 1 : 0,
     patch.aa_implementation_to_pr !== undefined ? (patch.aa_implementation_to_pr ? 1 : 0) : task.aa_implementation_to_pr ? 1 : 0,
+    patch.e2eMode !== undefined ? (patch.e2eMode ? 1 : 0) : task.e2eMode ? 1 : 0,
+    nextPhaseModelsJson,
     patch.projectId ?? task.projectId,
     nextUpdatedAt,
     taskId,
@@ -658,5 +693,6 @@ export function defaultTaskPrefs(input: {
       jumpHotkey: "mod+shift+u",
     },
     contextWarning: { defaultThreshold: DEFAULT_CONTEXT_THRESHOLD, rules: [], removedBuiltins: [] },
+    e2e: DEFAULT_E2E_PREFS,
   };
 }

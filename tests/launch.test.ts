@@ -147,6 +147,8 @@ test("launchPhase prompts start with marker then task context first-action line"
     aa_plan_to_worktree: true,
     aa_worktree_to_implementation: true,
     aa_implementation_to_pr: false,
+    e2eMode: false,
+    phaseModels: {},
     createdAt: 1,
     updatedAt: 1,
   }, { skillId: null, prompt: "do work", launchedBy: "user", fromThreadId: null });
@@ -335,6 +337,8 @@ test("launchPhase rejects with a typed no_source_host error when the project has
       aa_plan_to_worktree: true,
       aa_worktree_to_implementation: true,
       aa_implementation_to_pr: false,
+      e2eMode: false,
+      phaseModels: {},
       createdAt: 1,
       updatedAt: 1,
     }, { skillId: null, prompt: "do work", launchedBy: "user", fromThreadId: null }),

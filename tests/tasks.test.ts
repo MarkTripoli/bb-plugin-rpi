@@ -168,3 +168,41 @@ test("an archived-thread session is excluded from listSessions, counts, and the 
   assert.deepEqual(listSessions(db, null).map((session) => session.threadId), ["thr_plan"]);
   assert.equal((db.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number }).n, 2, "the row is kept for retention");
 });
+
+test("e2e mode and phase models round-trip through create, update, and list", () => {
+  const db = makeDb();
+  for (const statement of MIGRATIONS) {
+    if (statement.trim().length > 0) {
+      db.exec(statement);
+    }
+  }
+  const { taskId } = createDraftTask(db, {
+    projectId: "proj_1",
+    prompt: "Run full auto",
+    name: "Full auto task",
+    workflowType: "rpi",
+    worktreeTiming: "later",
+    permissionMode: "default",
+    autoAdvance: false,
+    e2eMode: true,
+    providerId: null,
+    model: null,
+    reasoningLevel: null,
+    serviceTier: null,
+  });
+  const row = listTasks(db, { archived: false }).find((task) => task.id === taskId);
+  assert.ok(row);
+  assert.equal(row.e2eMode, true);
+
+  const models = { implementation: { providerId: "codex", model: "gpt-fast" } };
+  const withModels = updateTask(db, taskId, { phaseModels: models });
+  assert.deepEqual(withModels?.phaseModels, models);
+
+  const cleared = updateTask(db, taskId, { phaseModels: null });
+  assert.deepEqual(cleared?.phaseModels, {});
+
+  // Persisted JSON is untrusted: an invalid value reads back as {}.
+  db.prepare("UPDATE tasks SET phase_models = '{not json' WHERE id = ?").run(taskId);
+  const corrupted = updateTask(db, taskId, {});
+  assert.deepEqual(corrupted?.phaseModels, {});
+});

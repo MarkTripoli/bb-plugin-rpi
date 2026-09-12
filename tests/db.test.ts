@@ -57,9 +57,12 @@ test("migrations are idempotent", async () => {
   assert.ok(launchAttemptColumns.some((row) => row.name === "retry_marker"));
   assert.ok(launchAttemptColumns.some((row) => row.name === "request_json"));
   assert.ok(launchAttemptColumns.some((row) => row.name === "target_phase"));
+  assert.ok(taskColumns.includes("e2e_mode"));
+  assert.ok(taskColumns.includes("phase_models"));
   db.prepare("INSERT INTO tasks (id, project_id, name, slug, draft_prompt, created_at, updated_at) VALUES ('task_1', 'proj_1', 'Task', 'task', '', 1, 1)").run();
   db.prepare("INSERT INTO launch_attempts (id, task_id, status, created_at) VALUES ('attempt_1', 'task_1', 'retrying', 1)").run();
   assert.equal((db.prepare("SELECT request_json AS requestJson FROM launch_attempts WHERE id = 'attempt_1'").get() as { requestJson: string | null }).requestJson, null);
+  assert.throws(() => db.prepare("UPDATE tasks SET e2e_mode = 2").run());
   await harness.lifecycle.dispose();
 });
 
