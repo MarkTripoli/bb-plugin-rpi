@@ -12,7 +12,6 @@ import {
   markdownHeadings,
   markdownSection,
   nextArtifactNumber,
-  parseFrontmatter,
   selectContextArtifacts,
 } from "./artifacts";
 import {
@@ -421,7 +420,9 @@ export function registerArtifactTools(
       const saved = fileName.endsWith(".md") ? getArtifactVersion(db, row.taskId, fileName) : null;
       const savedText = saved ? saved.version.content.toString("utf8") : null;
       const writingIssues = savedText ? lintWriting(savedText) : [];
-      const children = savedText && parseFrontmatter(savedText).type === "epic-plan" ? parseEpicChildren(savedText) : null;
+      // Keyed on the stored type (frontmatter or NN-epic-plan-* name) so save-time validation and
+      // latestEpicPlan select the same files.
+      const children = savedText && artifact.type === "epic-plan" ? parseEpicChildren(savedText) : null;
       return JSON.stringify({
         version: artifact.currentVersion,
         ingested: result.ingested,

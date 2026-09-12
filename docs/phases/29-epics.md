@@ -38,7 +38,7 @@ record for the plan, so each phase's shipped surface is listed here from its com
    `Epic › Child` prefix in `NeedsYouRow`, `EpicProgressCell` (`K of N tasks`), the
    `Epic` composer entry, and the `Max parallel tasks` setting; `tests/ui-conventions.test.ts`
    asserts the surfaces exist and `launchDraft` stays the single launch call.
-6. **Ledgers and version** (this phase, uncommitted) - six rows in `FEATURES.md` (one under
+6. **Ledgers and version** (`aa1bfb8`) - six rows in `FEATURES.md` (one under
    `Workflow types`, five under a new `Epics` category) with the recount sentence set to the
    mechanical count and the ledger's "as of" phase set to 29; the six pins and regex in
    `tests/features.test.ts`; version `0.5.0` in `package.json` and both `package-lock.json`
@@ -49,12 +49,27 @@ record for the plan, so each phase's shipped surface is listed here from its com
 - `npm run check:features`: `102 status-bearing rows, 1 mixed: 68 full, 15 partial, 8 omitted, 12 N/A`
   (matches the opening bold sentence in `FEATURES.md` and the pins in `tests/features.test.ts`).
 - `npm test` (pretest `tsc --noEmit`): `tests 386, pass 386, fail 0`.
-- `npm run check:conventional`: `Validated 5 commit subjects.`
+- `npm run check:conventional`: `Validated 6 commit subjects.` (8 after the review-fix commits below).
 - `git diff --check`: no whitespace errors.
 
 Phases 1 to 5 each ticked `npm test` and, where listed, `bb plugin build` in the plan's
 Automated Verification. Phase 3's live install check (`bb plugin install . && bb plugin reload
 rpi` lists `rpi-create-epic-plan`) stays unticked; see Open items.
+
+## Review fixes (`11-code-review-epic-workflow-view.md`)
+
+- CR-001: `advanceSession` returns before `startEpicDelivery` unless the mode is `proceed`, so a
+  completed epic-plan turn never creates children in any automation mode. `tests/advance.test.ts`
+  adds the `epic-plan` MATRIX row, the human-gate case, and a three-mode gate test.
+- CR-002: `scheduleEpic` returns for a completed epic; Mark done on the epic row launches nothing.
+- CR-003: `readyChildren` treats a dependency id with no live child as satisfied, so a deleted or
+  archived dependency no longer strands its dependents and the epic still auto-completes.
+- CR-004: `archiveTask` archives an epic's children in one transaction and
+  `archiveTaskEverywhere` archives their session threads as well.
+- ADV-001: `rpi_artifact_save` validates the children block by the stored artifact type, the
+  same key `latestEpicPlan` uses. ADV-004: the resume and Mark done toasts say the ready
+  children have started, matching the synchronous schedule in the `updateTask` handler.
+- Left advisory: ADV-002 (epic worktree timing stays selectable) and ADV-005 (FYI).
 
 ## Deviations
 

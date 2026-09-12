@@ -3340,7 +3340,7 @@ function EpicSummaryRow({ epic, rollup, startedAt, onUpdated }: { epic: TaskReco
     setSaving(true);
     try {
       await rpc.call("updateTask", { taskId: epic.id, patch: { epicPaused: !epic.epicPaused } });
-      toast.success(epic.epicPaused ? "Epic resumed. Ready children start at the next check." : "Epic paused. Running children finish; nothing new starts.");
+      toast.success(epic.epicPaused ? "Epic resumed. Ready children are starting." : "Epic paused. Running children finish; nothing new starts.");
       onUpdated();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not update epic.");
@@ -3415,7 +3415,7 @@ function EpicChildRow({
     try {
       const result = await rpc.call("updateTask", { taskId: child.id, patch: { completed: true } });
       if (!result.task) throw new Error("Task no longer exists.");
-      toast.success(`${child.name} marked done. Dependents start at the next check.`);
+      toast.success(`${child.name} marked done. Ready dependents have started.`);
       onUpdated();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not update task.");
