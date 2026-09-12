@@ -91,6 +91,19 @@ test("provider environment provisioning a new machine maps to nothing", () => {
   assert.deepEqual(mapped, { hostId: null, defaultDirectory: null, baseEnvironmentId: null });
 });
 
+test("only a provider environment is persisted as the composer environment intent", () => {
+  const provider = composerRequestToTaskCreate(request({
+    environment: {
+      type: "provider",
+      environmentProviderId: "personal-workspace",
+      machine: { type: "existing", hostId: "host_1" },
+      inputs: null,
+    },
+  }), extras);
+  assert.equal(provider.composerEnvironment?.type, "provider");
+  assert.equal(composerRequestToTaskCreate(request(), extras).composerEnvironment, null);
+});
+
 test("the schema accepts the provider environment bb 0.43.0 composers submit", () => {
   const parsed = manualLaunchRequestSchema.safeParse({
     projectId: "proj_personal",

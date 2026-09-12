@@ -5,7 +5,7 @@ import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { MANUAL_LAUNCH_REQUEST_BYTES_LIMIT, manualLaunchRequestSchema, type ManualLaunchRequest } from "../contract";
 import { MIGRATIONS } from "../db";
 import { createDraftTask, getTask } from "../tasks";
-import { launchDraft, launchPhase, LaunchRejectedError, listLaunchAdoptionCandidates, listLaunchAttempts, promoteStalePendingLaunchAttempts, resolveLaunchAttempt } from "../launch";
+import { launchDraft, launchPhase, LaunchRejectedError, listLaunchAdoptionCandidates, listLaunchAttempts, promoteStalePendingLaunchAttempts, resolveLaunchAttempt, selectEnvironment } from "../launch";
 import { START_LINKED_TICKET_ACTION, E2E_LAUNCH_CONTEXT, TASK_CONTEXT_FIRST_ACTION } from "../instructions";
 import { bindPendingLaunch, createLaunchBindingMirror, registerPendingLaunch, type SessionMirrorRow } from "../sessions";
 
@@ -149,6 +149,7 @@ test("launchPhase prompts start with marker then task context first-action line"
     aa_implementation_to_pr: false,
     e2eMode: false,
     phaseModels: {},
+    composerEnvironment: null,
     createdAt: 1,
     updatedAt: 1,
   }, { skillId: null, prompt: "do work", launchedBy: "user", fromThreadId: null });
@@ -339,6 +340,7 @@ test("launchPhase rejects with a typed no_source_host error when the project has
       aa_implementation_to_pr: false,
       e2eMode: false,
       phaseModels: {},
+      composerEnvironment: null,
       createdAt: 1,
       updatedAt: 1,
     }, { skillId: null, prompt: "do work", launchedBy: "user", fromThreadId: null }),
@@ -786,6 +788,58 @@ test("a hostless base-role task targets the project's default source host, not t
   await launchPhase(bb as never, db, new Map(), createLaunchBindingMirror(), task, { skillId: "create-research", launchedBy: "user", fromThreadId: null });
   assert.equal(spawned, true);
   assert.deepEqual(environment, { type: "host", hostId: "host_second", workspace: { type: "unmanaged", path: "/repo-second" } });
+  db.close();
+});
+
+test("a provider composer environment is replayed for a base-role launch", async () => {
+  const db = makeDb();
+  const providerEnvironment = {
+    type: "provider" as const,
+    environmentProviderId: "personal-workspace",
+    machine: { type: "existing" as const, hostId: "host_1" },
+    inputs: null,
+  };
+  const taskId = createDraftTask(db, {
+    projectId: "proj_1",
+    prompt: "prompt",
+    name: "Task",
+    workflowType: "freeform",
+    worktreeTiming: "never",
+    permissionMode: "default",
+    autoAdvance: false,
+    providerId: null,
+    model: null,
+    reasoningLevel: null,
+    serviceTier: null,
+    composerEnvironment: providerEnvironment,
+  }).taskId;
+  const task = getTask(db, taskId)!.task;
+  const selected = await selectEnvironment({ log: { warn: () => undefined }, sdk: {} } as never, task, "create-research", "base");
+  assert.deepEqual(selected.environment, providerEnvironment);
+  assert.equal(selected.stores, "base");
+  db.close();
+});
+
+test("a stored base environment wins over the composer environment", async () => {
+  const db = makeDb();
+  const taskId = createDraftTask(db, {
+    projectId: "proj_1",
+    prompt: "prompt",
+    name: "Task",
+    workflowType: "freeform",
+    worktreeTiming: "never",
+    permissionMode: "default",
+    autoAdvance: false,
+    providerId: null,
+    model: null,
+    reasoningLevel: null,
+    serviceTier: null,
+    baseEnvironmentId: "env_base",
+    composerEnvironment: { type: "provider", environmentProviderId: "personal-workspace", machine: { type: "existing", hostId: "host_1" }, inputs: null },
+  }).taskId;
+  const task = getTask(db, taskId)!.task;
+  const selected = await selectEnvironment({ log: { warn: () => undefined }, sdk: {} } as never, task, "create-research", "base");
+  assert.deepEqual(selected.environment, { type: "reuse", environmentId: "env_base" });
   db.close();
 });
 

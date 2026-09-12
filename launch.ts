@@ -339,6 +339,12 @@ export async function selectEnvironment(bb: BbPluginApi, task: TaskRecord, skill
     }
   }
   if (task.baseEnvironmentId) return { environment: { type: "reuse" as const, environmentId: task.baseEnvironmentId }, stores: "none" as const, role: "base" as const };
+  // A provider environment is an explicit composer choice that cannot be reduced to a host and
+  // directory, so a base-role launch hands bb the exact args and lets the provider provision the
+  // environment. Once it exists, its environment id is stored and the reuse branch above wins.
+  if (task.composerEnvironment) {
+    return { environment: task.composerEnvironment, stores: "base" as const, role: "base" as const };
+  }
   if (task.hostId && task.defaultDirectory) {
     return {
       environment: { type: "host" as const, hostId: task.hostId, workspace: { type: "unmanaged" as const, path: task.defaultDirectory } },

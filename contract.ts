@@ -315,6 +315,7 @@ export const taskRecordSchema = z
     aa_implementation_to_pr: z.boolean(),
     e2eMode: z.boolean(),
     phaseModels: phaseModelsSchema,
+    composerEnvironment: createThreadEnvironmentSchema.nullable(),
     createdAt: z.number().int(),
     updatedAt: z.number().int(),
   })
@@ -599,6 +600,11 @@ export const taskCreateRequestSchema = z
     // (tasks.base_environment_id), which selectEnvironment already prefers for base-role
     // launches. Server-side createTask validates it still exists before storing.
     baseEnvironmentId: boundedId.nullable().optional(),
+    // Composer-created tasks only: when the submit-side picker resolved to a provider environment,
+    // the full args are persisted so a base-role launch can hand them to bb's spawn (a provider
+    // provisions its own machine/workspace). Host/reuse picks stay captured by hostId /
+    // defaultDirectory / baseEnvironmentId and leave this null.
+    composerEnvironment: createThreadEnvironmentSchema.nullable().optional(),
     autoAdvance: z.boolean().default(false),
     e2eMode: z.boolean().default(false),
   })

@@ -6,6 +6,9 @@
 //   composer's environment picker contributes host and directory only.
 // - A managed-worktree pick in the composer does not force timing; RPI's timing select governs
 //   when implementation gets its own worktree, and workspaceBaseBranch picks the base branch.
+// Extension, 2026-09-12: a `provider` environment (bb 0.43.0+) cannot be reduced to host and
+// directory, so its full args are persisted and replayed for the base-role launch. Worktree policy
+// still belongs to the extras row.
 import type { ManualLaunchRequest, WorkflowType } from "./contract";
 
 export type TaskCreateExtras = {
@@ -28,6 +31,8 @@ export type TaskCreateRequestInput = {
   reasoningLevel: string;
   serviceTier: string | undefined;
   baseEnvironmentId: string | null;
+  // Set only for a provider environment; host/reuse picks stay captured by the location fields.
+  composerEnvironment: ManualLaunchRequest["environment"] | null;
   autoAdvance: boolean;
   e2eMode: boolean;
 };
@@ -90,6 +95,7 @@ export function composerRequestToTaskCreate(
     model: request.model,
     reasoningLevel: request.reasoningLevel,
     serviceTier: request.serviceTier,
+    composerEnvironment: request.environment.type === "provider" ? request.environment : null,
     autoAdvance: extras.autoAdvance,
     e2eMode: extras.e2eMode,
   };
