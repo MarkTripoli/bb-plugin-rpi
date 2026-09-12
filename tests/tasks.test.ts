@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { MIGRATIONS } from "../db";
-import { createDraftTask, defaultTaskPrefs, generateTaskSlug, listTasks, resolveTaskExecutionDefaults, updateTask } from "../tasks";
+import { createDraftTask, defaultTaskPrefs, generateTaskSlug, getTask, listTasks, resolveTaskExecutionDefaults, updateTask } from "../tasks";
 import { listSessions } from "../sessions";
 import { deriveBoardColumn } from "../transitions";
 import type { Prefs } from "../contract";
@@ -205,4 +205,60 @@ test("e2e mode and phase models round-trip through create, update, and list", ()
   db.prepare("UPDATE tasks SET phase_models = '{not json' WHERE id = ?").run(taskId);
   const corrupted = updateTask(db, taskId, {});
   assert.deepEqual(corrupted?.phaseModels, {});
+});
+
+test("createDraftTask persists a provider composer environment and updateTask clears it on an explicit host or directory edit", () => {
+  const db = new Database(":memory:");
+  db.pragma("foreign_keys = ON");
+  for (const statement of MIGRATIONS) db.exec(statement);
+  const environment = {
+    type: "provider" as const,
+    environmentProviderId: "personal-workspace",
+    machine: { type: "existing" as const, hostId: "host_1" },
+    inputs: null,
+  };
+  const taskId = createDraftTask(db, {
+    projectId: "proj_1",
+    prompt: "prompt",
+    name: "Task",
+    workflowType: "freeform",
+    worktreeTiming: "never",
+    permissionMode: "default",
+    autoAdvance: false,
+    providerId: null,
+    model: null,
+    reasoningLevel: null,
+    serviceTier: null,
+    composerEnvironment: environment,
+  }).taskId;
+  assert.deepEqual(getTask(db, taskId)?.task.composerEnvironment, environment);
+
+  // Unrelated edits keep the intent.
+  assert.deepEqual(updateTask(db, taskId, { name: "Renamed" })?.composerEnvironment, environment);
+
+  // An explicit host or directory edit wins; the intent is dropped.
+  assert.equal(updateTask(db, taskId, { hostId: "host_2" })?.composerEnvironment, null);
+  db.close();
+});
+
+test("a corrupt persisted composer environment reads back as null", () => {
+  const db = new Database(":memory:");
+  db.pragma("foreign_keys = ON");
+  for (const statement of MIGRATIONS) db.exec(statement);
+  const taskId = createDraftTask(db, {
+    projectId: "proj_1",
+    prompt: "prompt",
+    name: "Task",
+    workflowType: "freeform",
+    worktreeTiming: "never",
+    permissionMode: "default",
+    autoAdvance: false,
+    providerId: null,
+    model: null,
+    reasoningLevel: null,
+    serviceTier: null,
+  }).taskId;
+  db.prepare("UPDATE tasks SET composer_environment_json = '{not json' WHERE id = ?").run(taskId);
+  assert.equal(getTask(db, taskId)?.task.composerEnvironment, null);
+  db.close();
 });

@@ -612,6 +612,7 @@ export default async function plugin(bb: BbPluginApi) {
         autoAdvance: request.autoAdvance,
         e2eMode: request.e2eMode,
         baseEnvironmentId: request.baseEnvironmentId ?? null,
+        composerEnvironment: request.composerEnvironment ?? null,
         ...resolved,
       });
       bb.realtime.publish("tasks", { taskId: result.taskId });

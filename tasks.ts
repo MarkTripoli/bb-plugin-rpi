@@ -8,6 +8,7 @@ import { attentionCountForTask } from "./status";
 import { LIVE_SESSION_CLAUSE, listSessions } from "./sessions";
 import {
   DEFAULT_E2E_PREFS,
+  createThreadEnvironmentSchema,
   phaseModelsSchema,
   type Prefs,
   type PhaseModels,
@@ -48,6 +49,7 @@ type RawTaskRecord = {
   aa_implementation_to_pr: number | boolean;
   e2eMode: number | boolean;
   phaseModelsJson: string | null;
+  composerEnvironmentJson: string | null;
   createdAt: number;
   updatedAt: number;
 };
@@ -59,8 +61,15 @@ export function parsePhaseModels(json: string | null): PhaseModels {
   return parsed.success ? parsed.data : {};
 }
 
+// Same trust boundary as phase_models: a corrupt persisted environment reads back as null (task
+// launches fall back to the host/directory resolution) instead of failing every task read.
+export function parseComposerEnvironment(json: string | null): TaskRecord["composerEnvironment"] {
+  const parsed = createThreadEnvironmentSchema.safeParse(parseJson<unknown>(json, null));
+  return parsed.success ? parsed.data : null;
+}
+
 function normalizeTaskRecord(row: RawTaskRecord): TaskRecord {
-  const { phaseModelsJson, ...rest } = row;
+  const { phaseModelsJson, composerEnvironmentJson, ...rest } = row;
   return {
     ...rest,
     isDraft: Boolean(row.isDraft),
@@ -74,6 +83,7 @@ function normalizeTaskRecord(row: RawTaskRecord): TaskRecord {
     aa_implementation_to_pr: Boolean(row.aa_implementation_to_pr),
     e2eMode: Boolean(row.e2eMode),
     phaseModels: parsePhaseModels(row.phaseModelsJson),
+    composerEnvironment: parseComposerEnvironment(row.composerEnvironmentJson),
   };
 }
 
@@ -134,6 +144,7 @@ function readTaskRecord(db: Database, taskId: string): TaskRecord | undefined {
       aa_implementation_to_pr,
       e2e_mode AS e2eMode,
       phase_models AS phaseModelsJson,
+      composer_environment_json AS composerEnvironmentJson,
       created_at AS createdAt,
       updated_at AS updatedAt
     FROM tasks
@@ -269,6 +280,7 @@ export function listTasks(
       aa_implementation_to_pr,
       e2e_mode AS e2eMode,
       phase_models AS phaseModelsJson,
+      composer_environment_json AS composerEnvironmentJson,
       created_at AS createdAt,
       updated_at AS updatedAt
     FROM tasks
@@ -426,6 +438,7 @@ export function createDraftTask(
     reasoningLevel?: string | null;
     serviceTier?: string | null;
     baseEnvironmentId?: string | null;
+    composerEnvironment?: TaskRecord["composerEnvironment"];
   },
 ) {
   const createdAt = nowMs();
@@ -443,8 +456,8 @@ export function createDraftTask(
         default_directory, provider_id, model, reasoning_level, service_tier,
         permission_mode, auto_advance, aa_questions_to_research,
         aa_research_to_design, aa_plan_to_worktree, aa_worktree_to_implementation,
-        aa_implementation_to_pr, e2e_mode, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 1, 0, ?, ?, ?)
+        aa_implementation_to_pr, e2e_mode, composer_environment_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 1, 0, ?, ?, ?, ?)
       `,
       taskId,
       input.projectId,
@@ -464,6 +477,7 @@ export function createDraftTask(
       input.permissionMode ?? null,
       input.autoAdvance ? 1 : 0,
       input.e2eMode ? 1 : 0,
+      input.composerEnvironment ? stringifyJson(input.composerEnvironment) : null,
       createdAt,
       createdAt,
     );
@@ -517,6 +531,14 @@ export function updateTask(
       : patch.phaseModels === null
         ? null
         : stringifyJson(patch.phaseModels);
+  // An explicit host or directory edit overrides the composer's environment intent; otherwise the
+  // stored intent rides along untouched.
+  const nextComposerEnvironmentJson =
+    patch.hostId !== undefined || patch.defaultDirectory !== undefined
+      ? null
+      : task.composerEnvironment
+        ? stringifyJson(task.composerEnvironment)
+        : null;
   writeRow(
     db,
     `
@@ -543,6 +565,7 @@ export function updateTask(
       aa_implementation_to_pr = ?,
       e2e_mode = ?,
       phase_models = ?,
+      composer_environment_json = ?,
       project_id = ?,
       updated_at = ?
     WHERE id = ?
@@ -568,6 +591,7 @@ export function updateTask(
     patch.aa_implementation_to_pr !== undefined ? (patch.aa_implementation_to_pr ? 1 : 0) : task.aa_implementation_to_pr ? 1 : 0,
     patch.e2eMode !== undefined ? (patch.e2eMode ? 1 : 0) : task.e2eMode ? 1 : 0,
     nextPhaseModelsJson,
+    nextComposerEnvironmentJson,
     patch.projectId ?? task.projectId,
     nextUpdatedAt,
     taskId,

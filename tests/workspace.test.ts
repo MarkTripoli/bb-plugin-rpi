@@ -66,6 +66,7 @@ test("workspace view reports exactly-one-primary warnings and provisioning event
     aa_implementation_to_pr: false,
     e2eMode: false,
     phaseModels: {},
+    composerEnvironment: null,
     createdAt: 1,
     updatedAt: 1,
   } as const;
@@ -130,6 +131,7 @@ test("workspace view merges root .local.json overrides", async () => {
     aa_implementation_to_pr: false,
     e2eMode: false,
     phaseModels: {},
+    composerEnvironment: null,
     createdAt: 1,
     updatedAt: 1,
   } as const;
@@ -183,6 +185,7 @@ test("workspace config reads are rooted under .rpi and invalid config is surface
     aa_implementation_to_pr: false,
     e2eMode: false,
     phaseModels: {},
+    composerEnvironment: null,
     createdAt: 1,
     updatedAt: 1,
   } as const;
