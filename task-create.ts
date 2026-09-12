@@ -59,6 +59,15 @@ export function composerEnvironmentToTaskLocation(request: ManualLaunchRequest):
       baseEnvironmentId: null,
     };
   }
+  // A provider environment names a machine only when it reuses an existing host; a provider that
+  // provisions its own machine ("new") has no host yet, so the project default source resolves it.
+  if (environment.type === "provider") {
+    return {
+      hostId: environment.machine?.type === "existing" ? environment.machine.hostId : null,
+      defaultDirectory: null,
+      baseEnvironmentId: null,
+    };
+  }
   return { hostId: null, defaultDirectory: null, baseEnvironmentId: null };
 }
 

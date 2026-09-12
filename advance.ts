@@ -519,6 +519,12 @@ function sameManualEnvironment(expected: ManualLaunchRequest["environment"], act
   if (expected.type !== actual.type) return false;
   if (expected.type === "reuse") return actual.type === "reuse" && expected.environmentId === actual.environmentId;
   if (expected.type === "project-default") return actual.type === "project-default";
+  if (expected.type === "provider") {
+    return actual.type === "provider"
+      && expected.environmentProviderId === actual.environmentProviderId
+      && JSON.stringify(expected.machine ?? null) === JSON.stringify(actual.machine ?? null)
+      && JSON.stringify(expected.inputs ?? null) === JSON.stringify(actual.inputs ?? null);
+  }
   if (actual.type !== "host" || (expected.hostId ?? null) !== (actual.hostId ?? null)) return false;
   if (expected.workspace.type !== actual.workspace.type) return false;
   if (expected.workspace.type === "personal") return actual.workspace.type === "personal";
