@@ -13,8 +13,8 @@ import {
 import { DEFAULT_E2E_PREFS, MANUAL_LAUNCH_TEXT_LIMIT, prepareManualLaunchOutputSchema, type ManualLaunchRequest } from "../contract";
 import { MIGRATIONS, stringifyJson } from "../db";
 import { upsertArtifact } from "../artifacts";
-import { createDraftTask } from "../tasks";
-import { proceed } from "../advance";
+import { createDraftTask, updateTask } from "../tasks";
+import { proceed, scheduleEpic } from "../advance";
 import { createLaunchBindingMirror, mirrorSession, type SessionMirrorRow } from "../sessions";
 import { DEFAULT_NOTIFICATION_PREFS, recoverReadyAfterFailedAdvance } from "../notify";
 import { resolveLaunchAttempt, autoRetryFailedAttempt } from "../launch";
@@ -27,9 +27,9 @@ function makeDb() {
   return db;
 }
 
-type TestWorkflowType = "rpi" | "outline_only" | "prd_tdd" | "oneshot" | "freeform";
+type TestWorkflowType = "rpi" | "outline_only" | "prd_tdd" | "oneshot" | "freeform" | "epic";
 
-function seed(db: Database.Database, label: string | null, nextStepType: string | null, patch: Record<string, unknown> = {}, workflowType: TestWorkflowType = "rpi") {
+function seed(db: Database.Database, label: string | null, nextStepType: string | null, patch: Record<string, unknown> = {}, workflowType: TestWorkflowType = "rpi", epicPlan?: string) {
   const taskId = createDraftTask(db, {
     projectId: "proj_1",
     prompt: "prompt",
@@ -59,6 +59,9 @@ function seed(db: Database.Database, label: string | null, nextStepType: string 
       operation: "test",
     });
   }
+  if (epicPlan !== undefined) {
+    upsertArtifact(db, taskId, "02-epic-plan-demo.md", epicPlan, { createdBy: "test", operation: "test" });
+  }
   const sourceSkillId = label === "implementation"
     ? workflowType === "outline_only" ? "implement-outline" : workflowType === "rpi" || workflowType === "prd_tdd" ? "implement-plan" : null
     : null;
@@ -72,7 +75,7 @@ function seed(db: Database.Database, label: string | null, nextStepType: string 
   return { taskId, session: mirrorSession(db, new Map<string, SessionMirrorRow>(), "thr_source")! };
 }
 
-function fakeBb(options: { pendingInteraction?: boolean; spawnError?: Error; onProjectGet?: () => void; projectGetFailures?: number } = {}) {
+function fakeBb(options: { pendingInteraction?: boolean; spawnError?: Error; spawnFailures?: number; onProjectGet?: () => void; projectGetFailures?: number } = {}) {
   let count = 0;
   let projectGetCalls = 0;
   const spawns: unknown[] = [];
@@ -93,7 +96,7 @@ function fakeBb(options: { pendingInteraction?: boolean; spawnError?: Error; onP
         spawn: async (input: unknown) => {
             count += 1;
             spawns.push(input);
-            if (options.spawnError) throw options.spawnError;
+            if (options.spawnError && (options.spawnFailures === undefined || count <= options.spawnFailures)) throw options.spawnError;
             return makeThreadResponse({ id: `thr_next_${count}`, environmentId: "env_base", projectId: "proj_1", originPluginId: "rpi" });
           },
           get: async () => makeThreadResponse({ id: `thr_next_${count}`, environmentId: "env_base", projectId: "proj_1", originPluginId: "rpi" }),
@@ -1222,4 +1225,138 @@ test("iterateSkillForLabel resolves a label's iterate skill or null when it has 
   assert.equal(iterateSkillForLabel("pr-review"), "resolve-pr-reviews");
   assert.equal(iterateSkillForLabel(null), null);
   assert.equal(iterateSkillForLabel("describe-pr"), null);
+});
+
+const EPIC_PLAN = `---
+type: epic-plan
+---
+
+# Epic
+
+## Children
+
+\`\`\`json
+[
+  { "name": "A", "workflow": "oneshot", "prompt": "do A" },
+  { "name": "B", "workflow": "freeform", "prompt": "do B" },
+  { "name": "A-then-C", "workflow": "rpi", "prompt": "do C", "depends_on": ["A"] },
+  { "name": "D", "workflow": "oneshot", "prompt": "do D", "depends_on": ["A", "B"] }
+]
+\`\`\`
+`;
+
+type ChildRow = { id: string; name: string; isDraft: number; completed: number; position: number; dependsOnJson: string | null };
+function children(db: Database.Database, epicId: string) {
+  const rows = db.prepare(
+    "SELECT id, name, is_draft AS isDraft, completed, position, depends_on_json AS dependsOnJson FROM tasks WHERE parent_task_id = ? ORDER BY position",
+  ).all(epicId) as ChildRow[];
+  return Object.fromEntries(rows.map((row) => [row.name, row])) as Record<string, ChildRow>;
+}
+
+test("start delivery creates children from the epic plan and launches the first wave", async () => {
+  const db = makeDb();
+  const { taskId } = seed(db, "epic-plan", "start-epic-delivery", { max_parallel: 2, host_id: "host_seed" }, "epic", EPIC_PLAN);
+  const { bb, spawns } = fakeBb();
+  const result = await proceed(bb as never, db, new Map(), createLaunchBindingMirror(), "thr_source");
+  assert.deepEqual(result, { threadId: null });
+  const rows = children(db, taskId);
+  assert.deepEqual(Object.keys(rows).sort(), ["A", "A-then-C", "B", "D"]);
+  assert.deepEqual([rows.A!.position, rows.B!.position, rows["A-then-C"]!.position, rows.D!.position], [0, 1, 2, 3]);
+  assert.deepEqual(JSON.parse(rows["A-then-C"]!.dependsOnJson!), [rows.A!.id]);
+  assert.deepEqual(JSON.parse(rows.D!.dependsOnJson!), [rows.A!.id, rows.B!.id]);
+  assert.deepEqual(JSON.parse(rows.A!.dependsOnJson!), []);
+  assert.notEqual((db.prepare("SELECT advanced_at AS advancedAt FROM sessions WHERE thread_id = 'thr_source'").get() as { advancedAt: number | null }).advancedAt, null);
+  assert.equal(spawns.length, 2);
+  assert.deepEqual([rows.A!.isDraft, rows.B!.isDraft, rows["A-then-C"]!.isDraft, rows.D!.isDraft], [0, 0, 1, 1]);
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM launch_attempts WHERE from_thread_id = 'thr_source'").get() as { n: number }).n, 0);
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM launch_attempts WHERE task_id IN (?, ?) AND status = 'spawned'").get(rows.A!.id, rows.B!.id) as { n: number }).n, 2);
+  db.close();
+});
+
+test("start delivery is idempotent", async () => {
+  const db = makeDb();
+  const { taskId } = seed(db, "epic-plan", "start-epic-delivery", { max_parallel: 2, host_id: "host_seed" }, "epic", EPIC_PLAN);
+  const { bb, spawns } = fakeBb();
+  await proceed(bb as never, db, new Map(), createLaunchBindingMirror(), "thr_source");
+  const before = children(db, taskId);
+  try {
+    await proceed(bb as never, db, new Map(), createLaunchBindingMirror(), "thr_source");
+  } catch (error) {
+    assert.equal((error as { code?: string }).code, "launch_blocked");
+  }
+  assert.deepEqual(children(db, taskId), before);
+  assert.equal(Object.keys(before).length, 4);
+  assert.equal(spawns.length, 2);
+  db.close();
+});
+
+test("start delivery rejects a malformed children block without creating children", async () => {
+  const db = makeDb();
+  const plan = EPIC_PLAN.replace('"depends_on": ["A", "B"]', '"depends_on": ["A", "Missing"]');
+  const { taskId } = seed(db, "epic-plan", "start-epic-delivery", { host_id: "host_seed" }, "epic", plan);
+  const { bb, spawns } = fakeBb();
+  await assert.rejects(
+    proceed(bb as never, db, new Map(), createLaunchBindingMirror(), "thr_source"),
+    /Epic plan children block: D depends on unknown child: Missing/,
+  );
+  assert.equal(Object.keys(children(db, taskId)).length, 0);
+  assert.equal((db.prepare("SELECT advanced_at AS advancedAt FROM sessions WHERE thread_id = 'thr_source'").get() as { advancedAt: number | null }).advancedAt, null);
+  assert.equal(spawns.length, 0);
+  db.close();
+});
+
+test("scheduler starts dependents when a dependency is marked done and respects pause and cap", async () => {
+  const db = makeDb();
+  const { taskId } = seed(db, "epic-plan", "start-epic-delivery", { max_parallel: 2, host_id: "host_seed" }, "epic", EPIC_PLAN);
+  const { bb, spawns } = fakeBb();
+  const mirror = new Map<string, SessionMirrorRow>();
+  const bindings = createLaunchBindingMirror();
+  await proceed(bb as never, db, mirror, bindings, "thr_source");
+  const rows = children(db, taskId);
+  const sessionsOf = (childId: string) => db.prepare("SELECT thread_id AS threadId FROM sessions WHERE task_id = ?").all(childId) as Array<{ threadId: string }>;
+  assert.equal(sessionsOf(rows.A!.id).length, 1);
+  assert.equal(sessionsOf(rows.B!.id).length, 1);
+  db.prepare("UPDATE sessions SET rpi_status = 'running' WHERE task_id IN (?, ?)").run(rows.A!.id, rows.B!.id);
+
+  await scheduleEpic(bb as never, db, mirror, bindings, taskId);
+  assert.equal(spawns.length, 2, "A and B fill the cap");
+
+  db.prepare("UPDATE sessions SET rpi_status = 'ready_for_input' WHERE task_id = ?").run(rows.A!.id);
+  updateTask(db, rows.A!.id, { completed: true });
+  await scheduleEpic(bb as never, db, mirror, bindings, taskId);
+  assert.equal(spawns.length, 3, "C launches; D waits on B");
+  assert.equal(children(db, taskId)["A-then-C"]!.isDraft, 0);
+  assert.equal(children(db, taskId).D!.isDraft, 1);
+
+  updateTask(db, taskId, { epicPaused: true });
+  db.prepare("UPDATE sessions SET rpi_status = 'ready_for_input' WHERE task_id = ?").run(rows.B!.id);
+  updateTask(db, rows.B!.id, { completed: true });
+  await scheduleEpic(bb as never, db, mirror, bindings, taskId);
+  assert.equal(spawns.length, 3, "paused epic launches nothing");
+
+  updateTask(db, taskId, { epicPaused: false });
+  await scheduleEpic(bb as never, db, mirror, bindings, taskId);
+  assert.equal(spawns.length, 4, "D launches after unpause");
+  assert.equal(children(db, taskId).D!.isDraft, 0);
+
+  for (const name of ["A-then-C", "D"]) updateTask(db, rows[name]!.id, { completed: true });
+  assert.equal((db.prepare("SELECT completed FROM tasks WHERE id = ?").get(taskId) as { completed: number }).completed, 0);
+  await scheduleEpic(bb as never, db, mirror, bindings, taskId);
+  assert.equal((db.prepare("SELECT completed FROM tasks WHERE id = ?").get(taskId) as { completed: number }).completed, 1);
+  assert.equal(spawns.length, 4);
+  db.close();
+});
+
+test("a failing child launch does not stop the others", async () => {
+  const db = makeDb();
+  const { taskId } = seed(db, "epic-plan", "start-epic-delivery", { max_parallel: 2, host_id: "host_seed" }, "epic", EPIC_PLAN);
+  const { bb, spawns } = fakeBb({ spawnError: new Error("spawn response lost"), spawnFailures: 1 });
+  await proceed(bb as never, db, new Map(), createLaunchBindingMirror(), "thr_source");
+  const rows = children(db, taskId);
+  assert.equal(spawns.length, 2);
+  assert.equal(rows.A!.isDraft, 1, "the failed launch leaves A a draft");
+  assert.equal(rows.B!.isDraft, 0, "B still spawned");
+  const statuses = db.prepare("SELECT task_id AS taskId, status FROM launch_attempts ORDER BY created_at, rowid").all() as Array<{ taskId: string; status: string }>;
+  assert.deepEqual(statuses.map((row) => [row.taskId === rows.A!.id ? "A" : "B", row.status]), [["A", "uncertain"], ["B", "spawned"]]);
+  db.close();
 });

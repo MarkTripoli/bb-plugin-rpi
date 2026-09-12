@@ -5110,6 +5110,7 @@ export function RpiComposerBanner() {
       } else if (pending.intent.kind === "proceed") {
         const result = await rpc.call("proceed", { threadId: pending.intent.threadId, ...patch });
         if (result.threadId) navigate.toThread(result.threadId);
+        else navigate.toPluginPanel("rpi", { subPath: `tasks/${session.taskId}` });
       } else if (pending.intent.kind === "completion") {
         const result = await rpc.call("launchCompletion", { intent: pending.intent, ...patch });
         navigate.toThread(result.threadId);

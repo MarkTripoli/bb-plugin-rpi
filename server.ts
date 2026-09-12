@@ -35,9 +35,11 @@ import {
   launchCompletion,
   launchSkill,
   manualLaunchRejection,
+  epicIdForTask,
   onCompletedTurn,
   prepareManualLaunch,
   proceed,
+  scheduleEpicLocked,
   submitManualLaunch,
 } from "./advance";
 import {
@@ -104,6 +106,7 @@ import {
   createDraftTask,
   defaultTaskPrefs,
   getTask,
+  listDeliveringEpics,
   listTasks,
   resolveTaskExecutionDefaults,
   updateTask,
@@ -626,6 +629,10 @@ export default async function plugin(bb: BbPluginApi) {
     updateTask: async ({ taskId, patch }) => {
       const task = updateTask(db, taskId, patch);
       bb.realtime.publish("tasks", { taskId });
+      if (patch.completed !== undefined || patch.epicPaused !== undefined || patch.maxParallel !== undefined) {
+        const epicId = task ? epicIdForTask(task) : null;
+        if (epicId) await scheduleEpicLocked(bb, db, sessionMirror, launchBindings, epicId);
+      }
       return { task };
     },
     archiveTask: async ({ taskId }) => ({ task: await archiveTaskEverywhere(taskId) }),
@@ -1324,7 +1331,11 @@ export default async function plugin(bb: BbPluginApi) {
     db,
     sessionMirror,
     launchBindings,
-    (row) => onCompletedTurn(bb, db, sessionMirror, launchBindings, row, { e2e: () => e2ePrefs }),
+    (row) => onCompletedTurn(bb, db, sessionMirror, launchBindings, row, { e2e: () => e2ePrefs }).finally(() => {
+      const task = getTask(db, row.taskId)?.task;
+      const epicId = task ? epicIdForTask(task) : null;
+      return epicId ? scheduleEpicLocked(bb, db, sessionMirror, launchBindings, epicId) : undefined;
+    }),
     childThreadMirror,
     notifySnapshot,
     notifyAdvanceFailed,
@@ -1358,6 +1369,15 @@ export default async function plugin(bb: BbPluginApi) {
             }
           } catch (error) {
             bb.log.warn(`RPI full auto sweep retry failed for task ${taskId}: ${String(error)}`);
+          }
+        }
+        // ponytail: 60s catch-up for slots freed by failed, interrupted, or dismissed child sessions; wire a
+        // status-change hook if the delay ever matters.
+        for (const epicId of listDeliveringEpics(db)) {
+          try {
+            await scheduleEpicLocked(bb, db, sessionMirror, launchBindings, epicId);
+          } catch (error) {
+            bb.log.warn(`RPI epic sweep failed for ${epicId}: ${String(error)}`);
           }
         }
         await sleep(60_000, signal);
