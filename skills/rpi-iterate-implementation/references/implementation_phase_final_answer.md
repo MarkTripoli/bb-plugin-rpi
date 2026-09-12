@@ -1,4 +1,4 @@
-Phase {completed_phase} is ready for review after iteration.
+Phase {completed_phase} automated checks are green after iteration.
 
 Review artifact:
 {artifact_directive}
@@ -7,8 +7,10 @@ Check:
 - {review_check}
 - Known limits: {known_limits}
 
-If changes are needed, comment on the artifact and send the comments to another iteration session.
-If approved, choose **Proceed to Phase {next_phase}**. Starting Phase {next_phase} records approval of Phase {completed_phase}.
+Deferred human evidence (recorded, not executed):
+- {evidence item and pointer, or None}
+
+Implementation continues to Phase {next_phase} automatically. This command re-enters the skill with the same target if the run is interrupted.
 
 ```text
 {implementation_command}{artifact_arg}

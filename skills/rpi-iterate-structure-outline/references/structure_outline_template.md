@@ -54,9 +54,13 @@ interface TargetShape {
 
 - [ ] [runnable command]
 
-#### Manual Verification
+human-gated: false
 
-- [ ] [specific manual check, only if needed]
+#### Deferred human evidence (recorded, not a gate)
+
+Omit this section when the phase has none.
+
+- [plain bullet, no checkbox] [evidence item and pointer to where it is recorded]
 
 ---
 

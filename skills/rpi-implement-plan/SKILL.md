@@ -7,7 +7,7 @@ After the task-context step, read the [RPI writing guide](../WRITING.md), resolv
 
 # Plan Implementation Orchestrator
 
-Coordinate an approved plan artifact in `.rpi/tasks/<slug>/`. Launch focused child threads, verify them, preserve the human gate, and hand off after implementation is complete. Do not do bulk implementation inline.
+Coordinate an approved plan artifact in `.rpi/tasks/<slug>/`. Launch focused child threads, verify them, advance on green automated checks, and hand off after implementation is complete. Do not do bulk implementation inline.
 
 ## Workflow
 
@@ -15,7 +15,7 @@ Coordinate an approved plan artifact in `.rpi/tasks/<slug>/`. Launch focused chi
 
 - If the user supplied a specific plan path or `@file`, use that file.
 - Otherwise use the selected plan in `rpi_task_context`; if none is selected, page `rpi_artifacts_list` and resolve ambiguity before reading one.
-- Use `rpi_artifact_read` on the selected plan version: headings first, then the implementation overview, shared constraints, first incomplete phase, and that phase's acceptance checks. Do not load completed or later phase bodies unless the current phase depends on them. Read `task.md` or `ticket.md` only when needed for ticket identity, manual checks, or acceptance language.
+- Use `rpi_artifact_read` on the selected plan version: headings first, then the implementation overview, shared constraints, first incomplete phase, and that phase's acceptance checks. Do not load completed or later phase bodies unless the current phase depends on them. Read `task.md` or `ticket.md` only when needed for ticket identity, deferred evidence pointers, or acceptance language.
 - Use `assignment.approvedPhase` and `assignment.primaryReviewArtifact` from `rpi_task_context` as authoritative; ignore inferred phase markers.
 - If no plan is found, ask for the plan path and stop.
 
@@ -32,7 +32,7 @@ Inspect the implementer report and confirm:
 - Which files changed.
 - Which plan items were completed.
 - Which automated checks ran and their results.
-- Which manual checks are still needed.
+- Which deferred human evidence is pending, with pointers.
 - Whether the child reported mismatches, blockers, or intentionally skipped work.
 
 If the child says the plan cannot be followed, present that mismatch to the user instead of improvising a new direction.
@@ -58,23 +58,19 @@ Then summarize:
 **Automated verification:**
 - [command] -> [result]
 
-**Manual verification required:**
-- [manual check]
+**Deferred human evidence (recorded, not executed):**
+- [evidence item and pointer, or None]
 
-Ready for Phase [N+1] after you confirm manual verification, or send the issue you want addressed.
+Automated checks are green, so implementation continues automatically.
 ```
 
-### 6. Wait for human confirmation
+### 6. Commit and continue
 
-Pause unless the user explicitly requested multiple phases in one run. Wait for confirmation, an issue report, or approval to move on.
+When every Automated Verification checkbox in the phase is checked with a recorded passing result, create a focused commit and start the next phase without waiting. Do not commit `.rpi/tasks/` or generated task mirrors. Use explicit paths with `git add`; never stage the whole repository. `/rpi-ci-commit` stays the manual fallback for work outside this flow.
 
-### 7. Commit changes after approval
+### 7. Repeat for the next phase
 
-When the user confirms the phase and asks you to commit, create a focused commit. Do not commit `.rpi/tasks/` or generated task mirrors. Use explicit paths with `git add`; never stage the whole repository. In the normal RPI flow, `/rpi-ci-commit` owns this handoff.
-
-### 8. Repeat for the next phase
-
-Repeat the same child-thread, review, verification, human gate, and commit handoff. If the user asked for several phases, still use a separate child thread per phase and verify between phases.
+Repeat the same child-thread, review, verification, and commit cycle. A `human-gated: true` line in the executed phase block is the only reason to stop for confirmation; report it and wait.
 
 ## Special Instructions
 
@@ -104,7 +100,7 @@ Do not patch around unclear plan drift without user direction.
 
 ### Multiple Phases
 
-When the user explicitly asks for multiple phases, spawn a fresh implementer child for each phase, verify between phases, collect manual checks, and report them after the final requested phase. Do not mark manual checks complete unless the user confirms them.
+Every phase advances automatically on green automated checks. Spawn a fresh implementer child for each phase and verify between phases. Deferred human evidence is reported with pointers and never marked executed. A `human-gated: true` line in the executed phase block stops the run for confirmation.
 
 ### Artifact Notes
 
@@ -114,7 +110,7 @@ If you write an implementation receipt or update the plan artifact, call `rpi_ne
 
 ## After Final Phase Completion
 
-When every phase is complete, automated checks pass, and the human gate is satisfied:
+When every phase is complete, automated checks pass, and any phase with `human-gated: true` received its recorded confirmation:
 
 1. Save changed task artifacts with `rpi_artifact_save`.
 2. Commit all remaining repository work before the PR handoff. Use the `/rpi-ci-commit` conventions: inspect the diff, stage explicit files, exclude `.rpi/tasks/` task mirrors unless the user specifically asks for them, and write a focused message.

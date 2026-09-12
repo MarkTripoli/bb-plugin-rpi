@@ -35,7 +35,7 @@ Revise an existing implementation plan. Check feedback before applying it, prese
    - Preserve frontmatter and template shape.
    - Keep examples accurate and concise.
    - Ensure automated checks are commands the implementer can run.
-   - Keep manual checks specific and remove filler.
+    - Keep deferred human evidence as plain bullets with pointers, never checkboxes; remove filler.
    - Maintain phase sections with success criteria.
 
 5. **Inspect workspace state**:
@@ -59,5 +59,6 @@ git rev-parse --git-dir
 - Include concrete code examples when they prevent ambiguity.
 - Use runnable automated checks.
 - Use manual validation only when human judgment is needed.
-- Pause for human confirmation at every phase boundary before the next phase starts.
+- Deferred human evidence is a plain bullet naming the evidence and where it is recorded; it never blocks a phase.
+- A phase's `human-gated: false` line may be edited to `true` when the user asks to gate that phase.
 - Normal iteration edits the existing plan file; do not allocate a new artifact number unless the user asks for a separate plan.

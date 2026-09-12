@@ -28,4 +28,4 @@ Treat feedback as instruction to update outline, not begin implementation. Verif
 
 ## Conciseness
 
-Prefer signatures, trees, short snippets over long code blocks. Detailed function bodies belong in plan. Manual checks should exist only when they add value; automated verification is better when the behavior can be checked by a command.
+Prefer signatures, trees, short snippets over long code blocks. Detailed function bodies belong in plan. Prefer automated verification; record human-only evidence as plain bullets with pointers, never as checklist items. Manual checks should exist only when they add value; automated verification is better when the behavior can be checked by a command.

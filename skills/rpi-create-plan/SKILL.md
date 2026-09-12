@@ -33,8 +33,8 @@ Expand the structure outline into a detailed implementation plan with concrete e
 - Every phase must be independently testable.
 - Use specific file edits, target functions, and short code examples over broad descriptions.
 - Automated verification must be runnable commands.
-- Manual verification must be concrete steps a person can perform.
-- Pause for human confirmation at every phase boundary before the next phase starts.
+- Deferred human evidence is a plain bullet naming the evidence and where it is recorded; it never blocks a phase.
+- A phase's `human-gated: false` line may be edited to `true` when the user asks to gate that phase.
 - Include test additions or modified test examples following patterns from research.
 - Do not add manual validation just to fill a section.
 

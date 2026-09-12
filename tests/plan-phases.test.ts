@@ -49,6 +49,15 @@ test("parsePlanPhases accepts the shipped outline Step headings", () => {
   ]);
 });
 
+test("parsePlanPhases ignores the human-gated line and plain deferred-evidence bullets", () => {
+  assert.deepEqual(parsePlanPhases("## Phase 1: A\nhuman-gated: false\n- evidence pointer\n- [ ] npm test"), [
+    { phase: 1, title: "A", complete: false },
+  ]);
+  assert.deepEqual(parsePlanPhases("## Phase 1: A\nhuman-gated: false\n- evidence pointer\n- [x] npm test"), [
+    { phase: 1, title: "A", complete: true },
+  ]);
+});
+
 test("latestPlanArtifact keeps plan selection deterministic", () => {
   const artifacts = [
     { fileName: "01-plan-a.md", groupType: "plan", updatedAt: 10 },

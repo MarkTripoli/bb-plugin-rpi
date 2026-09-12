@@ -23,9 +23,10 @@ summary: "[Two to four sentences stating what the completed phase proves and wha
 ## Verification
 - command:
 - result:
+- deferred human evidence: [evidence item and pointer, recorded not executed, or None]
 
 ## Remaining Work
-List any manual checks, unresolved comments, or blockers.
+List any unresolved evidence pointers, comments, or blockers.
 
 ## Human Review
 
@@ -35,7 +36,7 @@ List any manual checks, unresolved comments, or blockers.
 
 ### Verify
 
-- [ ] [Exact manual or evidence-review check required before the next phase.]
+- [Exact evidence check the receipt records for the next phase.]
 
 ### Known limits
 
