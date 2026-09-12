@@ -20,7 +20,7 @@ import {
 } from "../transitions";
 
 test("skills table keeps labels and button text", () => {
-  assert.equal(SKILLS.length, 25);
+  assert.equal(SKILLS.length, 27);
   assert.ok(SKILLS.every((entry) => entry[2].length > 0));
   assert.ok(HELPERS.some((entry) => entry[1] === "show-me"));
 });
@@ -31,6 +31,7 @@ test("workflow graphs match the phase plan", () => {
   assert.deepEqual(WORKFLOW_GRAPHS.prd_tdd, ["research", "PRD", "TDD", "plan", "worktree", "implementation", "review", "PR", "PR review"]);
   assert.deepEqual(WORKFLOW_GRAPHS.oneshot, ["single session", "review", "PR", "PR review"]);
   assert.deepEqual(WORKFLOW_GRAPHS.freeform, ["single session", "review", "PR", "PR review"]);
+  assert.deepEqual(WORKFLOW_GRAPHS.epic, ["questions", "research", "epic plan", "delivery"]);
   assert.equal(ALIASES["create-worktree"], "setup-worktree");
 });
 
@@ -59,6 +60,7 @@ test("e2e auto advance table is literal", () => {
       "create-design-discussion": { next: "create-design-discussion", to: "design" },
       "create-structure-outline": { next: "create-structure-outline", to: "structure" },
       "create-prd": { next: "create-prd", to: "design-prd" },
+      "create-epic-plan": { next: "create-epic-plan", to: "epic-plan" },
     },
     "worktree-setup": {
       "implement-plan": { next: "implement-plan", to: "implementation" },
@@ -89,6 +91,10 @@ test("e2eTransition resolves rows, redirects implementation into review, and ref
   }
   assert.equal(e2eTransition("code-review", "rpi", "show-me"), undefined);
   assert.equal(e2eTransition(null, "rpi", "create-research"), undefined);
+  // The epic plan is a human gate even in full auto; research still flows into the epic plan.
+  assert.equal(e2eTransition("epic-plan", "epic", "start-epic-delivery"), undefined);
+  assert.equal(e2eTransition("research", "epic", "create-epic-plan")?.to, "epic-plan");
+  assert.equal(e2eTransition("research", "rpi", "create-epic-plan"), undefined);
 });
 
 test("auto advance resolves workflow-specific targets", () => {
@@ -96,6 +102,9 @@ test("auto advance resolves workflow-specific targets", () => {
   assert.equal(autoAdvanceTransition("research", "outline_only")?.next, "create-structure-outline");
   assert.equal(autoAdvanceTransition("research", "prd_tdd")?.next, "create-prd");
   assert.equal(autoAdvanceTransition("worktree-setup", "outline_only")?.next, "implement-outline");
+  assert.deepEqual(autoAdvanceTransition("research", "epic"), { flag: "aa_research_to_design", next: "create-epic-plan", to: "epic-plan" });
+  assert.deepEqual(autoAdvanceTransition("epic-plan", "epic"), { flag: null, next: "start-epic-delivery", to: "delivery" });
+  assert.equal(autoAdvanceTransition("epic-plan", "rpi"), undefined);
   assert.equal(autoAdvanceAccepts("code-review", "rpi", "fix-code-review"), true);
   assert.equal(autoAdvanceAccepts("code-review", "rpi", "describe-pr"), true);
   assert.equal(autoAdvanceAccepts("code-review", "rpi", "create-research"), false);
@@ -106,6 +115,8 @@ test("board column derives from the current label", () => {
   assert.equal(deriveBoardColumn("research", false), "research_design");
   assert.equal(deriveBoardColumn("plan", false), "planning");
   assert.equal(deriveBoardColumn("implementation", false), "implementation");
+  assert.equal(deriveBoardColumn("epic-plan", false), "planning");
+  assert.equal(deriveBoardColumn("delivery", false), "implementation");
 });
 
 test("computeSuggestedNext visibility matrix: found+match, found+mismatch, none, and human gates", () => {

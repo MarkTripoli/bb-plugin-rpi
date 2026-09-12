@@ -35,9 +35,11 @@ import {
   launchCompletion,
   launchSkill,
   manualLaunchRejection,
+  epicIdForTask,
   onCompletedTurn,
   prepareManualLaunch,
   proceed,
+  scheduleEpicLocked,
   submitManualLaunch,
 } from "./advance";
 import {
@@ -104,6 +106,8 @@ import {
   createDraftTask,
   defaultTaskPrefs,
   getTask,
+  listChildren,
+  listDeliveringEpics,
   listTasks,
   resolveTaskExecutionDefaults,
   updateTask,
@@ -113,7 +117,8 @@ import { RPI_AGENT_SKILL_IDS, SKILLS, suggestedNextHint } from "./transitions";
 import { findLegacyTaskDirTaskIds, getWorkspaceView, legacyTaskRootDirName, rerunWorkspaceSetup, validateWorkspaceForWorktreeLaunch } from "./workspace";
 
 const PREFS_KEY = "prefs:structured-defaults";
-const RPI_SKILL_NAMES = SKILLS.map(([, skillId]) => `rpi-${skillId}`);
+// start-epic-delivery is a gate target only (transitions.ts SKILLS); it has no skills/ directory.
+const RPI_SKILL_NAMES = SKILLS.filter(([, skillId]) => skillId !== "start-epic-delivery").map(([, skillId]) => `rpi-${skillId}`);
 const RPI_AGENT_SKILL_NAMES = RPI_AGENT_SKILL_IDS.map((skillId) => `rpi-agent-${skillId}`);
 // Source runs resolve ./assets next to server.ts; a prebuilt dist/server.js resolves one level
 // deeper, where the asset lives at the install checkout root (../assets).
@@ -526,13 +531,14 @@ export default async function plugin(bb: BbPluginApi) {
     });
   }
 
-  // Shared by the archiveTask RPC and `bb rpi tasks archive`: flag the task, then cascade to its
-  // session threads so they leave the bb sidebar too. The flag is written first so a partially
+  // Shared by the archiveTask RPC and `bb rpi tasks archive`: flag the task (and an epic's
+  // children), then cascade to their session threads so they leave the bb sidebar too. The flag is written first so a partially
   // failed cascade still leaves the task archived (retention sweep keys off tasks.archived).
   async function archiveTaskEverywhere(taskId: string) {
+    const childIds = listChildren(db, taskId).map((child) => child.id);
     const task = archiveTask(db, taskId);
     if (!task) return null;
-    await archiveTaskThreads(bb, db, taskId);
+    for (const id of [taskId, ...childIds]) await archiveTaskThreads(bb, db, id);
     bb.realtime.publish("tasks", { taskId });
     bb.realtime.publish("rpi:sessions", { taskId, threadId: null });
     return task;
@@ -625,6 +631,10 @@ export default async function plugin(bb: BbPluginApi) {
     updateTask: async ({ taskId, patch }) => {
       const task = updateTask(db, taskId, patch);
       bb.realtime.publish("tasks", { taskId });
+      if (patch.completed !== undefined || patch.epicPaused !== undefined || patch.maxParallel !== undefined) {
+        const epicId = task ? epicIdForTask(task) : null;
+        if (epicId) await scheduleEpicLocked(bb, db, sessionMirror, launchBindings, epicId);
+      }
       return { task };
     },
     archiveTask: async ({ taskId }) => ({ task: await archiveTaskEverywhere(taskId) }),
@@ -1323,7 +1333,11 @@ export default async function plugin(bb: BbPluginApi) {
     db,
     sessionMirror,
     launchBindings,
-    (row) => onCompletedTurn(bb, db, sessionMirror, launchBindings, row, { e2e: () => e2ePrefs }),
+    (row) => onCompletedTurn(bb, db, sessionMirror, launchBindings, row, { e2e: () => e2ePrefs }).finally(() => {
+      const task = getTask(db, row.taskId)?.task;
+      const epicId = task ? epicIdForTask(task) : null;
+      return epicId ? scheduleEpicLocked(bb, db, sessionMirror, launchBindings, epicId) : undefined;
+    }),
     childThreadMirror,
     notifySnapshot,
     notifyAdvanceFailed,
@@ -1357,6 +1371,15 @@ export default async function plugin(bb: BbPluginApi) {
             }
           } catch (error) {
             bb.log.warn(`RPI full auto sweep retry failed for task ${taskId}: ${String(error)}`);
+          }
+        }
+        // ponytail: 60s catch-up for slots freed by failed, interrupted, or dismissed child sessions; wire a
+        // status-change hook if the delay ever matters.
+        for (const epicId of listDeliveringEpics(db)) {
+          try {
+            await scheduleEpicLocked(bb, db, sessionMirror, launchBindings, epicId);
+          } catch (error) {
+            bb.log.warn(`RPI epic sweep failed for ${epicId}: ${String(error)}`);
           }
         }
         await sleep(60_000, signal);

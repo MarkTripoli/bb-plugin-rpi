@@ -342,8 +342,15 @@ test("workflowSteps: oneshot ignores worktree timing but keeps optional review p
   assert.deepEqual(workflowSteps("oneshot", "later"), ["single session", "review", "PR", "PR review"]);
 });
 
+test("workflowSteps: epic ignores worktree timing and has no worktree step", () => {
+  assert.deepEqual(workflowSteps("epic", "now"), ["questions", "research", "epic plan", "delivery"]);
+  assert.deepEqual(workflowSteps("epic", "later"), ["questions", "research", "epic plan", "delivery"]);
+});
+
 test("labelStep: normalizes rpi: prefix and known labels", () => {
   assert.equal(labelStep("rpi:research"), "research");
+  assert.equal(labelStep("epic-plan"), "epic plan");
+  assert.equal(labelStep("delivery"), "delivery");
   assert.equal(labelStep("freeform"), "single session");
   assert.equal(labelStep("research-questions"), "questions");
   assert.equal(labelStep("worktree-setup"), "worktree");

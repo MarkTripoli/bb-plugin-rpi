@@ -26,6 +26,10 @@ export const SKILLS = [
   ["/rpi-resolve-pr-reviews", "resolve-pr-reviews", "pr-review", "resolve pull request reviews"],
   ["/rpi-ci-commit", "ci-commit", "implementation", "commit changes"],
   ["/rpi-review-artifact-comments", "review-artifact-comments", "review", "review comments"],
+  ["/rpi-create-epic-plan", "create-epic-plan", "epic-plan", "write epic plan"],
+  // Gate target only: Proceed materializes children instead of spawning a session (advance.ts
+  // startEpicDelivery). No skills/ directory exists for it; server.ts filters it from RPI_SKILL_NAMES.
+  ["/rpi-start-epic-delivery", "start-epic-delivery", "delivery", "start delivery"],
 ] as const;
 
 export const HELPERS = [
@@ -76,7 +80,7 @@ type AutoAdvanceFlag =
   | null;
 type AutoAdvanceTransition = { flag: AutoAdvanceFlag; next: SkillId; to: PhaseLabel };
 
-const WORKFLOW_AUTO_ADVANCE: Partial<Record<string, Partial<Record<AutoAdvanceLabel, AutoAdvanceTransition>>>> = {
+const WORKFLOW_AUTO_ADVANCE: Partial<Record<string, Partial<Record<PhaseLabel, AutoAdvanceTransition>>>> = {
   outline_only: {
     research: { flag: "aa_research_to_design", next: "create-structure-outline", to: "structure" },
     "worktree-setup": { flag: "aa_worktree_to_implementation", next: "implement-outline", to: "implementation" },
@@ -84,11 +88,14 @@ const WORKFLOW_AUTO_ADVANCE: Partial<Record<string, Partial<Record<AutoAdvanceLa
   prd_tdd: {
     research: { flag: "aa_research_to_design", next: "create-prd", to: "design-prd" },
   },
+  epic: {
+    research: { flag: "aa_research_to_design", next: "create-epic-plan", to: "epic-plan" },
+    "epic-plan": { flag: null, next: "start-epic-delivery", to: "delivery" },
+  },
 };
 
 export function autoAdvanceTransition(label: PhaseLabel, workflowType: string): AutoAdvanceTransition | undefined {
-  const key = label as AutoAdvanceLabel;
-  return WORKFLOW_AUTO_ADVANCE[workflowType]?.[key] ?? AUTO_ADVANCE[key];
+  return WORKFLOW_AUTO_ADVANCE[workflowType]?.[label] ?? AUTO_ADVANCE[label as AutoAdvanceLabel];
 }
 
 const AUTO_ADVANCE_ALTERNATIVES: Partial<Record<PhaseLabel, readonly string[]>> = {
@@ -110,6 +117,7 @@ export const E2E_AUTO_ADVANCE = {
     "create-design-discussion": { next: "create-design-discussion", to: "design" },
     "create-structure-outline": { next: "create-structure-outline", to: "structure" },
     "create-prd": { next: "create-prd", to: "design-prd" },
+    "create-epic-plan": { next: "create-epic-plan", to: "epic-plan" },
   },
   "worktree-setup": {
     "implement-plan": { next: "implement-plan", to: "implementation" },
@@ -146,6 +154,7 @@ export const WORKFLOW_GRAPHS = {
   prd_tdd: ["research", "PRD", "TDD", "plan", "worktree", "implementation", "review", "PR", "PR review"],
   oneshot: ["single session", "review", "PR", "PR review"],
   freeform: ["single session", "review", "PR", "PR review"],
+  epic: ["questions", "research", "epic plan", "delivery"],
 } as const;
 
 export const WORKFLOW_GRAPH_LABELS = {
@@ -154,6 +163,7 @@ export const WORKFLOW_GRAPH_LABELS = {
   prd_tdd: "PRD / TDD",
   oneshot: "Oneshot",
   freeform: "Freeform",
+  epic: "Epic",
 } as const;
 
 export type SkillId = (typeof SKILLS)[number][1];
@@ -191,6 +201,7 @@ export const FIRST_SKILL_BY_WORKFLOW = {
   prd_tdd: "create-research",
   oneshot: null,
   freeform: null,
+  epic: "create-research-questions",
 } as const;
 
 export function normalizeSkillId(input: string) {
@@ -222,9 +233,9 @@ const RESEARCH_AND_DESIGN = new Set([
   "design-tdd",
 ]);
 
-const PLANNING = new Set(["structure", "plan", "worktree-setup"]);
+const PLANNING = new Set(["structure", "plan", "worktree-setup", "epic-plan"]);
 // Ground truth does not specify rpi:review, so keep it in Implementation for now.
-const IMPLEMENTATION = new Set(["implementation", "implement-plan", "implement-outline", "code-review", "review-fixes", "describe-pr", "pr-review", "review"]);
+const IMPLEMENTATION = new Set(["implementation", "implement-plan", "implement-outline", "code-review", "review-fixes", "describe-pr", "pr-review", "review", "delivery"]);
 
 export function deriveBoardColumn(currentLabel: string | null | undefined, isDraft: boolean): BoardColumn {
   if (isDraft || !currentLabel) return "todo_draft";

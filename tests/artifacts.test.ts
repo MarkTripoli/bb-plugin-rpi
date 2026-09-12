@@ -13,6 +13,7 @@ import {
   getArtifact,
   getArtifactVersion,
   groupByType,
+  groupForType,
   listArtifacts,
   listArtifactVersions,
   markdownHeadings,
@@ -62,6 +63,8 @@ test("artifact type uses frontmatter before numbered file names", () => {
   assert.equal(artifactType("01-research-topic.md", {}), "research");
   assert.equal(artifactType("01-research-topic.md", { type: "notes" }), "notes");
   assert.equal(artifactType("handoff.md", {}), "other");
+  assert.equal(artifactType("04-epic-plan-billing.md", {}), "epic-plan");
+  assert.equal(groupForType("epic-plan"), "epic-plan");
 });
 
 test("next artifact number ignores gaps, non-numbered files, and deleted files", () => {

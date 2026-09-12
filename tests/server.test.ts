@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin from "../server";
-import { listTasks } from "../tasks";
+import { createDraftTask, listTasks, updateTask } from "../tasks";
 import { listSessions } from "../sessions";
 import { attentionQueue } from "../status";
 
@@ -601,6 +602,74 @@ test("artifact context tools select a bounded manifest and page exact revisions"
   await harness.lifecycle.dispose();
 });
 
+test("rpi_artifact_save reports children block issues for an epic plan", async () => {
+  const thread = makeThreadResponse({ id: "thr_epic_save", environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
+  const files = new Map<string, string>();
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "rpi",
+    sdk: {
+      subscribe: () => () => undefined,
+      projects: {
+        get: async ({ projectId }: { projectId: string }) => ({
+          id: projectId,
+          name: "Proj",
+          kind: "standard" as const,
+          gitRemoteUrl: null,
+          createdAt: 1,
+          updatedAt: 1,
+          sources: [{ id: "src_1", projectId, hostId: "host_seed", path: "/repo", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 }],
+        }),
+      },
+      threads: {
+        spawn: async () => thread,
+        get: async () => ({ ...thread, environment: { id: "env_1", path: "/repo", branchName: "feature/epic", status: "ready" } }),
+        interactions: { list: async () => [] },
+      },
+      files: {
+        mkdir: async () => ({ outcome: "created" }),
+        write: async () => ({ outcome: "written", sha256: "next", sizeBytes: 1 }),
+        read: async ({ path }: { path: string }) => {
+          const name = path.split("/").pop() ?? "";
+          const content = files.get(name);
+          if (content === undefined) throw new Error("not found");
+          return { content, contentEncoding: "utf8", sha256: createHash("sha256").update(content).digest("hex"), sizeBytes: Buffer.byteLength(content) };
+        },
+      },
+    },
+  });
+  await plugin(bb);
+  const created = await harness.behavior.callRpc("createTask", {
+    request: { text: "prompt", projectId: "proj_1", workflowType: "epic", worktreeTiming: "never", permissionMode: "default", autoAdvance: false },
+    name: "Epic",
+    draft: true,
+  }) as { taskId: string };
+  await harness.behavior.callRpc("launchSkill", {
+    taskId: created.taskId,
+    skillId: "create-epic-plan",
+    commandLine: "/rpi-create-epic-plan",
+  });
+  bb.storage.database().prepare("UPDATE sessions SET hydrated_at = 1 WHERE thread_id = 'thr_epic_save'").run();
+  await harness.behavior.emitThreadEvent("thread.active", { thread: { ...thread, status: "active" } });
+
+  const save = async (content: string) => {
+    files.set("03-epic-plan-billing.md", content);
+    return JSON.parse(toolText(await harness.behavior.callAgentTool("rpi_artifact_save", { file_name: "03-epic-plan-billing.md" }, { threadId: "thr_epic_save" }))) as {
+      version: number;
+      children_issues?: string[];
+      children_action?: string;
+    };
+  };
+  const invalid = await save("---\ntype: epic-plan\n---\n# Epic\n\n## Children\n\n```json\n[{\"name\":\"A\",\"workflow\":\"rpi\",\"prompt\":\"p\",\"depends_on\":[\"Z\"]}]\n```\n");
+  assert.equal(invalid.version, 1);
+  assert.deepEqual(invalid.children_issues, ["A depends on unknown child: Z"]);
+  assert.match(invalid.children_action ?? "", /## Children/);
+
+  const valid = await save("---\ntype: epic-plan\n---\n# Epic\n\n## Children\n\n```json\n[{\"name\":\"A\",\"workflow\":\"rpi\",\"prompt\":\"p\"}]\n```\n");
+  assert.equal(valid.version, 2);
+  assert.equal("children_issues" in valid, false);
+  await harness.lifecycle.dispose();
+});
+
 test("numeric approval carries its target and predecessor receipt into each successor context", async () => {
   const spawnInputs: Array<Record<string, unknown>> = [];
   let spawnNumber = 0;
@@ -1081,4 +1150,83 @@ test("advance failure on a full-auto task retries before notifying", async (t) =
     (db.prepare("SELECT COUNT(*) AS count FROM notifications WHERE kind = 'ready_after_failed_advance' AND thread_id = 'thr_s_3'").get() as { count: number }).count,
     1,
   );
+});
+
+test("updateTask on a child schedules its epic", async (t) => {
+  const spawnInputs: Array<Record<string, unknown>> = [];
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "rpi",
+    sdk: {
+      subscribe: () => () => undefined,
+      projects: {
+        get: async ({ projectId }: { projectId: string }) => ({
+          id: projectId,
+          name: "Proj",
+          kind: "standard" as const,
+          gitRemoteUrl: null,
+          createdAt: 1,
+          updatedAt: 1,
+          sources: [{ id: "src_1", projectId, hostId: "host_seed", path: "/repo", type: "local_path" as const, isDefault: true, createdAt: 1, updatedAt: 1 }],
+        }),
+      },
+      threads: {
+        spawn: async (input) => {
+          spawnInputs.push(input as unknown as Record<string, unknown>);
+          return makeThreadResponse({ id: `thr_child_${spawnInputs.length}`, environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" });
+        },
+        get: async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, environmentId: "env_1", projectId: "proj_1", originPluginId: "rpi" }),
+        interactions: { list: async () => [] },
+      },
+    },
+  });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const epic = await harness.behavior.callRpc("createTask", {
+    request: { text: "Ship the epic", projectId: "proj_1", workflowType: "epic", worktreeTiming: "never" }, name: "Epic", draft: true,
+  }) as { taskId: string };
+  const db = bb.storage.database();
+  const child = (name: string, position: number) => createDraftTask(db, {
+    projectId: "proj_1", prompt: `do ${name}`, name, workflowType: "oneshot", worktreeTiming: "never", autoAdvance: false,
+    parentTaskId: epic.taskId, position,
+  }).taskId;
+  const childA = child("A", 0);
+  const childB = child("B", 1);
+  updateTask(db, childB, { dependsOn: [childA] });
+  db.prepare("UPDATE tasks SET is_draft = 0 WHERE id = ?").run(childA);
+  db.prepare(`INSERT INTO sessions (thread_id, task_id, launched_by, rpi_status, rpi_status_at, had_turn, created_at, updated_at)
+    VALUES ('thr_a', ?, 'user', 'ready_for_input', 1, 1, 1, 1)`).run(childA);
+
+  await harness.behavior.callRpc("updateTask", { taskId: childA, patch: { completed: true } });
+  assert.equal(spawnInputs.length, 1);
+  assert.equal((spawnInputs[0] as { title?: string }).title?.includes("B"), true);
+  assert.equal((db.prepare("SELECT is_draft AS isDraft FROM tasks WHERE id = ?").get(childB) as { isDraft: number }).isDraft, 0);
+  assert.equal((db.prepare("SELECT completed FROM tasks WHERE id = ?").get(epic.taskId) as { completed: number }).completed, 0);
+});
+
+test("archiveTask on an epic archives its children and their threads", async (t) => {
+  const archivedThreads: string[] = [];
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "rpi",
+    sdk: {
+      subscribe: () => () => undefined,
+      threads: { archive: async ({ threadId }: { threadId: string }) => { archivedThreads.push(threadId); return { ok: true }; } },
+    },
+  });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const epic = await harness.behavior.callRpc("createTask", {
+    request: { text: "Ship the epic", projectId: "proj_1", workflowType: "epic", worktreeTiming: "never" }, name: "Epic", draft: true,
+  }) as { taskId: string };
+  const db = bb.storage.database();
+  const childId = createDraftTask(db, {
+    projectId: "proj_1", prompt: "do A", name: "A", workflowType: "oneshot", worktreeTiming: "never", autoAdvance: false, parentTaskId: epic.taskId, position: 0,
+  }).taskId;
+  db.prepare("UPDATE tasks SET is_draft = 0 WHERE id = ?").run(childId);
+  db.prepare(`INSERT INTO sessions (thread_id, task_id, launched_by, rpi_status, rpi_status_at, had_turn, created_at, updated_at)
+    VALUES ('thr_child', ?, 'user', 'running', 1, 1, 1, 1)`).run(childId);
+
+  await harness.behavior.callRpc("archiveTask", { taskId: epic.taskId });
+  assert.deepEqual(listTasks(db, { archived: false }), []);
+  assert.deepEqual(listTasks(db, { archived: true }).map((task) => task.id).sort(), [childId, epic.taskId].sort());
+  assert.deepEqual(archivedThreads, ["thr_child"]);
 });

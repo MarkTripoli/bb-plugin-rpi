@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { MIGRATIONS } from "../db";
-import { createDraftTask, defaultTaskPrefs, generateTaskSlug, getTask, listTasks, resolveTaskExecutionDefaults, updateTask } from "../tasks";
+import { archiveTask, createDraftTask, defaultTaskPrefs, deleteTask, generateTaskSlug, getTask, listChildren, listDeliveringEpics, listTasks, resolveTaskExecutionDefaults, updateTask } from "../tasks";
 import { listSessions } from "../sessions";
 import { deriveBoardColumn } from "../transitions";
 import type { Prefs } from "../contract";
@@ -260,5 +260,81 @@ test("a corrupt persisted composer environment reads back as null", () => {
   }).taskId;
   db.prepare("UPDATE tasks SET composer_environment_json = '{not json' WHERE id = ?").run(taskId);
   assert.equal(getTask(db, taskId)?.task.composerEnvironment, null);
+  db.close();
+});
+
+test("epic children carry parent, dependency, position, pause, and cap fields through create, update, and list", () => {
+  const db = makeDb();
+  for (const statement of MIGRATIONS) db.exec(statement);
+  const base = {
+    projectId: "proj_1",
+    worktreeTiming: "later" as const,
+    permissionMode: "default",
+    autoAdvance: false,
+    providerId: null,
+    model: null,
+    reasoningLevel: null,
+    serviceTier: null,
+  };
+  const epicId = createDraftTask(db, { ...base, prompt: "Ship the epic", name: "Epic", workflowType: "epic" }).taskId;
+  const secondId = createDraftTask(db, { ...base, prompt: "second", name: "Second", workflowType: "rpi", parentTaskId: epicId, position: 2 }).taskId;
+  const firstId = createDraftTask(db, { ...base, prompt: "first", name: "First", workflowType: "rpi", parentTaskId: epicId, position: 1 }).taskId;
+  db.prepare("UPDATE tasks SET is_draft = 0 WHERE id = ?").run(epicId);
+
+  const updated = updateTask(db, secondId, { dependsOn: [firstId], maxParallel: 3, epicPaused: true });
+  assert.deepEqual(updated?.dependsOn, [firstId]);
+  assert.equal(updated?.maxParallel, 3);
+  assert.equal(updated?.epicPaused, true);
+  // An unrelated edit keeps the stored dependencies.
+  assert.deepEqual(updateTask(db, secondId, { name: "Second child" })?.dependsOn, [firstId]);
+
+  const rows = listTasks(db, { archived: false });
+  const second = rows.find((task) => task.id === secondId);
+  assert.equal(second?.parentTaskId, epicId);
+  assert.deepEqual(second?.dependsOn, [firstId]);
+  assert.equal(second?.position, 2);
+  assert.equal(second?.epicPaused, true);
+  assert.equal(second?.maxParallel, 3);
+  const first = rows.find((task) => task.id === firstId);
+  assert.deepEqual([first?.parentTaskId, first?.dependsOn, first?.position, first?.epicPaused, first?.maxParallel], [epicId, [], 1, false, null]);
+
+  assert.deepEqual(listChildren(db, epicId).map((task) => task.id), [firstId, secondId]);
+
+  const epic = rows.find((task) => task.id === epicId);
+  assert.equal(epic?.currentLabel, "delivery");
+  assert.equal(epic?.stepLabel, "delivery");
+  assert.equal(epic?.boardColumn, "implementation");
+  assert.equal(getTask(db, epicId)?.workspace.currentLabel, "delivery");
+  // A child's own label still comes from its sessions.
+  assert.equal(first?.currentLabel, null);
+
+  assert.deepEqual(listDeliveringEpics(db), [epicId]);
+  updateTask(db, epicId, { epicPaused: true });
+  assert.deepEqual(listDeliveringEpics(db), []);
+  updateTask(db, epicId, { epicPaused: false, maxParallel: null });
+  assert.deepEqual(listDeliveringEpics(db), [epicId]);
+
+  // Persisted JSON is untrusted: a corrupt depends_on_json reads back as [].
+  db.prepare("UPDATE tasks SET depends_on_json = '{not json' WHERE id = ?").run(secondId);
+  assert.deepEqual(getTask(db, secondId)?.task.dependsOn, []);
+
+  assert.throws(() => deleteTask(db, epicId), /child tasks first/);
+  assert.equal(deleteTask(db, firstId), true);
+  assert.equal(deleteTask(db, secondId), true);
+  assert.equal(deleteTask(db, epicId), true);
+  db.close();
+});
+
+test("archiveTask archives an epic's children with it", () => {
+  const db = makeDb();
+  for (const statement of MIGRATIONS) db.exec(statement);
+  const base = { projectId: "proj_1", worktreeTiming: "never" as const, permissionMode: "default", autoAdvance: false, providerId: null, model: null, reasoningLevel: null, serviceTier: null };
+  const epicId = createDraftTask(db, { ...base, prompt: "Ship the epic", name: "Epic", workflowType: "epic" }).taskId;
+  const childId = createDraftTask(db, { ...base, prompt: "child", name: "Child", workflowType: "oneshot", parentTaskId: epicId, position: 0 }).taskId;
+  const otherId = createDraftTask(db, { ...base, prompt: "other", name: "Other", workflowType: "oneshot" }).taskId;
+  assert.equal(archiveTask(db, epicId)?.archived, true);
+  assert.deepEqual(listTasks(db, { archived: false }).map((task) => task.id), [otherId]);
+  assert.deepEqual(listTasks(db, { archived: true }).map((task) => task.id).sort(), [childId, epicId].sort());
+  assert.deepEqual(listChildren(db, epicId), []);
   db.close();
 });

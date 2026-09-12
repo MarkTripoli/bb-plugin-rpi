@@ -1,7 +1,7 @@
 # FEATURES.md - what the plugin does
 
 This is a feature ledger for the plugin as shipped, verified against the code in this
-repository as of phase 21, not aspirational. `status` is one of:
+repository as of phase 29, not aspirational. `status` is one of:
 
 - **full** - shipped, works as described, no named gap.
 - **partial** - shipped, with a named gap or a deliberate deviation.
@@ -10,9 +10,9 @@ repository as of phase 21, not aspirational. `status` is one of:
 
 `npm run check:features` (`scripts/features-count.ts`, covered by `tests/features.test.ts`)
 mechanically counts every `status`-column cell in this file's one table and asserts the total
-matches what's printed here, so this paragraph cannot silently drift from the table: **96
-status-bearing rows, 1 of them mixed (the palette row counts toward both N/A and full): 64
-full, 14 partial, 7 omitted, 12 N/A**.
+matches what's printed here, so this paragraph cannot silently drift from the table: **102
+status-bearing rows, 1 of them mixed (the palette row counts toward both N/A and full): 68
+full, 15 partial, 8 omitted, 12 N/A**.
 
 ## Features
 
@@ -28,6 +28,12 @@ full, 14 partial, 7 omitted, 12 N/A**.
 | Workflow types | `prd_tdd`: research → PRD → TDD → plan → worktree → implementation → optional review → PR → optional PR review | full | `transitions.ts` | |
 | Workflow types | `oneshot` / `freeform`: single session → optional review → PR → optional PR review | full | `transitions.ts` | Review and PR phases are entered manually. |
 | Workflow types | Workflow strip showing live position in the graph | full | `ui/rpi.tsx` `WorkflowStrip` | |
+| Workflow types | `epic`: questions → research → epic plan → delivery; children are tasks with `parent_task_id`, `depends_on_json`, `position` | full | `transitions.ts`, `tasks.ts` | |
+| Epics | Epic plan children block (fenced JSON) validated on `rpi_artifact_save`; Start delivery materializes draft children and records dependencies by sibling id | full | `epic.ts`, `tools.ts`, `advance.ts` startEpicDelivery | |
+| Epics | Scheduler: ready children launch up to `max_parallel` (default 2); triggers are updateTask, completed turns, and the 60s sweep; Mark done unblocks dependents; all done completes the epic | partial | `advance.ts` scheduleEpic, `server.ts` | Slots freed by failed or dismissed sessions are picked up by the sweep, up to 60s later. |
+| Epics | Epic page Tasks tab: waves by dependency depth, child rows with glyph, phase strip, what it wants, model, elapsed, attention, Open or recovery, Mark done at PR stage; Pause epic | full | `ui/rpi.tsx` EpicTasksPanel | |
+| Epics | Sidebar epic group lists only live child sessions; band rows read `Epic › Child`; task table shows `K of N tasks` | full | `ui/rpi.tsx` RpiThreadList, NeedsYouRow, EpicProgressCell | |
+| Epics | Iterate skill for the epic plan | omitted | | Comments reach a fresh session through the generic Iterate prompt. |
 | Sessions / status vocabulary | 12 session statuses (draft, ready_for_launch, launching, resuming, running, needs_approval, ready_for_input, interrupt_requested, failed, interrupted, lost, waiting_for_workspace), derived from bb thread/environment/interaction state, never set directly | full | `sessions.ts` `deriveStatus` | `lost` is derived only from `runtime.displayStatus` (`waiting-for-host`/`host-reconnecting`), never an inactivity timer. |
 | Sessions / status vocabulary | `user_question` interaction blocks the session, mapped to `ready_for_input` with `blockedReason: "question"` | partial | `sessions.ts` | Deliberate design decision for this case, not a gap. |
 | Sessions / status vocabulary | Fork, interrupt: `forkSession`/`interruptSession` RPCs, header buttons | full | `launch.ts`, `ui/rpi.tsx` | |

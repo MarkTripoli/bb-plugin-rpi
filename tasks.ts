@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type * as BetterSqlite3 from "better-sqlite3";
+import { z } from "zod";
 import { nowMs, parseJson, readRow, readRows, stringifyJson, transaction, writeRow } from "./db";
 import { mimeFor, upsertArtifact } from "./artifacts";
 import { deriveBoardColumn, labelToStepLabel } from "./transitions";
@@ -50,9 +51,56 @@ type RawTaskRecord = {
   e2eMode: number | boolean;
   phaseModelsJson: string | null;
   composerEnvironmentJson: string | null;
+  parentTaskId: string | null;
+  dependsOnJson: string | null;
+  position: number | null;
+  epicPaused: number | boolean;
+  maxParallel: number | null;
   createdAt: number;
   updatedAt: number;
 };
+
+// One column list for every task SELECT so a new column cannot land in one read path and not the
+// others (readTaskRecord, listTasks, listChildren all normalize through normalizeTaskRecord).
+const TASK_SELECT = `
+    SELECT
+      id,
+      project_id AS projectId,
+      name,
+      slug,
+      draft_prompt AS draftPrompt,
+      workflow_type AS workflowType,
+      worktree_timing AS worktreeTiming,
+      is_draft AS isDraft,
+      archived,
+      completed,
+      host_id AS hostId,
+      base_environment_id AS baseEnvironmentId,
+      worktree_environment_id AS worktreeEnvironmentId,
+      default_directory AS defaultDirectory,
+      provider_id AS providerId,
+      model,
+      reasoning_level AS reasoningLevel,
+      service_tier AS serviceTier,
+      permission_mode AS permissionMode,
+      auto_advance AS autoAdvance,
+      aa_questions_to_research,
+      aa_research_to_design,
+      aa_plan_to_worktree,
+      aa_worktree_to_implementation,
+      aa_implementation_to_pr,
+      e2e_mode AS e2eMode,
+      phase_models AS phaseModelsJson,
+      composer_environment_json AS composerEnvironmentJson,
+      parent_task_id AS parentTaskId,
+      depends_on_json AS dependsOnJson,
+      position,
+      epic_paused AS epicPaused,
+      max_parallel AS maxParallel,
+      created_at AS createdAt,
+      updated_at AS updatedAt
+    FROM tasks
+`;
 
 // Persisted phase_models JSON is untrusted: an invalid or corrupt value reads back as {} instead
 // of failing every task read.
@@ -68,10 +116,19 @@ export function parseComposerEnvironment(json: string | null): TaskRecord["compo
   return parsed.success ? parsed.data : null;
 }
 
+// Same trust boundary again: a corrupt depends_on_json reads back as [] (no dependencies) rather
+// than failing every task read.
+export function parseDependsOn(json: string | null): string[] {
+  const parsed = z.array(z.string()).safeParse(parseJson<unknown>(json, []));
+  return parsed.success ? parsed.data : [];
+}
+
 function normalizeTaskRecord(row: RawTaskRecord): TaskRecord {
-  const { phaseModelsJson, composerEnvironmentJson, ...rest } = row;
+  const { phaseModelsJson, composerEnvironmentJson, dependsOnJson, ...rest } = row;
   return {
     ...rest,
+    dependsOn: parseDependsOn(dependsOnJson),
+    epicPaused: Boolean(row.epicPaused),
     isDraft: Boolean(row.isDraft),
     archived: Boolean(row.archived),
     completed: Boolean(row.completed),
@@ -113,45 +170,7 @@ function defaultTaskNameFromPrompt(prompt: string) {
 }
 
 function readTaskRecord(db: Database, taskId: string): TaskRecord | undefined {
-  const row = readRow<RawTaskRecord>(
-    db,
-    `
-    SELECT
-      id,
-      project_id AS projectId,
-      name,
-      slug,
-      draft_prompt AS draftPrompt,
-      workflow_type AS workflowType,
-      worktree_timing AS worktreeTiming,
-      is_draft AS isDraft,
-      archived,
-      completed,
-      host_id AS hostId,
-      base_environment_id AS baseEnvironmentId,
-      worktree_environment_id AS worktreeEnvironmentId,
-      default_directory AS defaultDirectory,
-      provider_id AS providerId,
-      model,
-      reasoning_level AS reasoningLevel,
-      service_tier AS serviceTier,
-      permission_mode AS permissionMode,
-      auto_advance AS autoAdvance,
-      aa_questions_to_research,
-      aa_research_to_design,
-      aa_plan_to_worktree,
-      aa_worktree_to_implementation,
-      aa_implementation_to_pr,
-      e2e_mode AS e2eMode,
-      phase_models AS phaseModelsJson,
-      composer_environment_json AS composerEnvironmentJson,
-      created_at AS createdAt,
-      updated_at AS updatedAt
-    FROM tasks
-    WHERE id = ?
-    `,
-    taskId,
-  );
+  const row = readRow<RawTaskRecord>(db, `${TASK_SELECT} WHERE id = ?`, taskId);
   return row ? normalizeTaskRecord(row) : undefined;
 }
 
@@ -170,6 +189,17 @@ function readLatestLabel(db: Database, taskId: string) {
     taskId,
   );
   return row?.label ?? null;
+}
+
+function hasChildren(db: Database, taskId: string) {
+  return readRow(db, "SELECT 1 FROM tasks WHERE parent_task_id = ?", taskId) !== undefined;
+}
+
+// An epic in delivery has no session of its own: once children exist its current phase is
+// "delivery" regardless of which epic-level session ran last.
+function currentLabelFor(db: Database, record: Pick<TaskRecord, "id" | "workflowType">) {
+  if (record.workflowType === "epic" && hasChildren(db, record.id)) return "delivery";
+  return readLatestLabel(db, record.id);
 }
 
 // Live finding (phase B.1): counting raw rpi_status IN ('ready_for_input','needs_approval') over-
@@ -209,6 +239,11 @@ function taskRowFromRecord(record: TaskRecord, sessionCount: number, latestLabel
     aa_worktree_to_implementation: record.aa_worktree_to_implementation,
     aa_implementation_to_pr: record.aa_implementation_to_pr,
     e2eMode: record.e2eMode,
+    parentTaskId: record.parentTaskId,
+    dependsOn: record.dependsOn,
+    position: record.position,
+    epicPaused: record.epicPaused,
+    maxParallel: record.maxParallel,
     currentLabel: latestLabel,
     stepLabel: record.isDraft ? "Draft" : latestLabel ? labelToStepLabel(latestLabel, false) : record.workflowType,
     attentionCount: record.completed ? 0 : attentionCount,
@@ -252,43 +287,32 @@ export function listTasks(
     params.push(filters.completed ? 1 : 0);
   }
   const sql = `
-    SELECT
-      id,
-      project_id AS projectId,
-      name,
-      slug,
-      draft_prompt AS draftPrompt,
-      workflow_type AS workflowType,
-      worktree_timing AS worktreeTiming,
-      is_draft AS isDraft,
-      archived,
-      completed,
-      host_id AS hostId,
-      base_environment_id AS baseEnvironmentId,
-      worktree_environment_id AS worktreeEnvironmentId,
-      default_directory AS defaultDirectory,
-      provider_id AS providerId,
-      model,
-      reasoning_level AS reasoningLevel,
-      service_tier AS serviceTier,
-      permission_mode AS permissionMode,
-      auto_advance AS autoAdvance,
-      aa_questions_to_research,
-      aa_research_to_design,
-      aa_plan_to_worktree,
-      aa_worktree_to_implementation,
-      aa_implementation_to_pr,
-      e2e_mode AS e2eMode,
-      phase_models AS phaseModelsJson,
-      composer_environment_json AS composerEnvironmentJson,
-      created_at AS createdAt,
-      updated_at AS updatedAt
-    FROM tasks
+    ${TASK_SELECT}
     ${clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : ""}
     ORDER BY updated_at DESC, created_at DESC
   `;
-  const records = readRows<RawTaskRecord>(db, sql, ...params).map(normalizeTaskRecord);
-  return records.map((record) => taskRowFromRecord(record, readSessionCount(db, record.id), readLatestLabel(db, record.id), readAttentionCount(db, record)));
+  return readRows<RawTaskRecord>(db, sql, ...params).map(normalizeTaskRecord).map((record) => rowFor(db, record));
+}
+
+function rowFor(db: Database, record: TaskRecord) {
+  return taskRowFromRecord(record, readSessionCount(db, record.id), currentLabelFor(db, record), readAttentionCount(db, record));
+}
+
+// Children of one epic in plan order; archived children drop out the same way listTasks hides them.
+export function listChildren(db: Database, epicId: string): TaskRow[] {
+  return readRows<RawTaskRecord>(db, `${TASK_SELECT} WHERE parent_task_id = ? AND archived = 0 ORDER BY position, created_at`, epicId)
+    .map(normalizeTaskRecord)
+    .map((record) => rowFor(db, record));
+}
+
+// Epics the scheduler may launch children for: live, not paused, and already materialized.
+export function listDeliveringEpics(db: Database): string[] {
+  return readRows<{ id: string }>(
+    db,
+    `SELECT id FROM tasks WHERE workflow_type = 'epic' AND archived = 0 AND completed = 0 AND epic_paused = 0
+       AND EXISTS (SELECT 1 FROM tasks AS child WHERE child.parent_task_id = tasks.id)
+     ORDER BY created_at`,
+  ).map((row) => row.id);
 }
 
 export function getTask(db: Database, taskId: string) {
@@ -399,7 +423,7 @@ export function getTask(db: Database, taskId: string) {
     `,
     taskId,
   );
-  const latestLabel = readLatestLabel(db, taskId);
+  const latestLabel = currentLabelFor(db, task);
   const workspace: TaskWorkspaceState = {
     taskId: task.id,
     projectId: task.projectId,
@@ -439,6 +463,8 @@ export function createDraftTask(
     serviceTier?: string | null;
     baseEnvironmentId?: string | null;
     composerEnvironment?: TaskRecord["composerEnvironment"];
+    parentTaskId?: string | null;
+    position?: number | null;
   },
 ) {
   const createdAt = nowMs();
@@ -456,8 +482,9 @@ export function createDraftTask(
         default_directory, provider_id, model, reasoning_level, service_tier,
         permission_mode, auto_advance, aa_questions_to_research,
         aa_research_to_design, aa_plan_to_worktree, aa_worktree_to_implementation,
-        aa_implementation_to_pr, e2e_mode, composer_environment_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 1, 0, ?, ?, ?, ?)
+        aa_implementation_to_pr, e2e_mode, composer_environment_json, parent_task_id, position,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 1, 0, ?, ?, ?, ?, ?, ?)
       `,
       taskId,
       input.projectId,
@@ -478,6 +505,8 @@ export function createDraftTask(
       input.autoAdvance ? 1 : 0,
       input.e2eMode ? 1 : 0,
       input.composerEnvironment ? stringifyJson(input.composerEnvironment) : null,
+      input.parentTaskId ?? null,
+      input.position ?? null,
       createdAt,
       createdAt,
     );
@@ -518,6 +547,9 @@ export function updateTask(
     aa_implementation_to_pr?: boolean;
     e2eMode?: boolean;
     phaseModels?: PhaseModels | null;
+    epicPaused?: boolean;
+    maxParallel?: number | null;
+    dependsOn?: string[];
   },
 ) {
   const task = readTaskRecord(db, taskId);
@@ -566,6 +598,9 @@ export function updateTask(
       e2e_mode = ?,
       phase_models = ?,
       composer_environment_json = ?,
+      epic_paused = ?,
+      max_parallel = ?,
+      depends_on_json = ?,
       project_id = ?,
       updated_at = ?
     WHERE id = ?
@@ -592,6 +627,9 @@ export function updateTask(
     patch.e2eMode !== undefined ? (patch.e2eMode ? 1 : 0) : task.e2eMode ? 1 : 0,
     nextPhaseModelsJson,
     nextComposerEnvironmentJson,
+    patch.epicPaused !== undefined ? (patch.epicPaused ? 1 : 0) : task.epicPaused ? 1 : 0,
+    patch.maxParallel !== undefined ? patch.maxParallel : task.maxParallel,
+    patch.dependsOn !== undefined ? stringifyJson(patch.dependsOn) : task.dependsOn.length > 0 ? stringifyJson(task.dependsOn) : null,
     patch.projectId ?? task.projectId,
     nextUpdatedAt,
     taskId,
@@ -613,8 +651,15 @@ function updateTaskDraftState(db: Database, taskId: string, isDraft: boolean) {
   );
 }
 
+// An epic's children archive with it: a child under an archived epic has no table, board, or
+// sidebar group left to appear in.
 export function archiveTask(db: Database, taskId: string) {
-  return updateTask(db, taskId, { archived: true });
+  return db.transaction(() => {
+    for (const child of readRows<{ id: string }>(db, "SELECT id FROM tasks WHERE parent_task_id = ? AND archived = 0", taskId)) {
+      updateTask(db, child.id, { archived: true });
+    }
+    return updateTask(db, taskId, { archived: true });
+  })();
 }
 
 export function deleteTask(db: Database, taskId: string) {
@@ -626,6 +671,9 @@ export function deleteTask(db: Database, taskId: string) {
     }
     if (readRow(db, "SELECT 1 FROM sessions WHERE task_id = ? AND thread_archived_at IS NULL AND rpi_status IN ('running', 'launching', 'resuming', 'waiting_for_workspace', 'interrupt_requested')", taskId)) {
       throw new Error("Stop running sessions before deleting the task.");
+    }
+    if (hasChildren(db, taskId)) {
+      throw new Error("Delete or reassign the epic's child tasks first.");
     }
     for (const table of ["send_receipts", "comments", "artifact_versions"]) {
       writeRow(db, `DELETE FROM ${table} WHERE artifact_id IN (SELECT id FROM artifacts WHERE task_id = ?)`, taskId);

@@ -34,7 +34,7 @@ them.
 
 Open **RPI** in the sidebar, **Create task** (or press `T`), describe
 the work, pick a workflow type (`rpi`, `outline_only`, `prd_tdd`, `oneshot`,
-`freeform`), worktree timing (`now`/`later`/`never`), and permission mode, then
+`freeform`, `epic`), worktree timing (`now`/`later`/`never`), and permission mode, then
 **Create** to launch immediately or **Save draft** to launch later. The task
 detail page has tabs for Sessions, Artifacts, Workspace, Auto-advance, Scratch,
 Minimap, and Tips. Each phase session's header shows its phase pill, status,
@@ -58,6 +58,11 @@ and workspace remain fixed; for unmanaged workspaces bb may display a normalized
 checkout while RPI restores the task's canonical path on submit. Retry reuses the
 validated request stored with the launch attempt. CLI launch commands and
 eligible lifecycle auto-advance remain immediate.
+
+An `epic` task's plan lists child tasks, each with a workflow type and the
+siblings it depends on. **Start delivery** creates those children and runs the
+ready ones up to the epic's parallel cap. **Mark done** on a child unblocks its
+dependents, which start on the next scheduler pass.
 
 BB's current embedded composer persists edited prompt text under the RPI draft
 key, but execution and environment selections are component-local. Leaving the

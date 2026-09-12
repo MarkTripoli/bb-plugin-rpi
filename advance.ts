@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type * as BetterSqlite3 from "better-sqlite3";
 import { parseJson, readRow, writeRow } from "./db";
-import { getArtifactVersion, listArtifacts } from "./artifacts";
+import { getArtifactVersion, listArtifacts, parseArtifactNumber } from "./artifacts";
 import { derivePhaseHandoff, latestPhaseArtifact, parsePrimaryReviewArtifact, type PhaseHandoff } from "./plan-phases";
 import { DEFAULT_E2E_PREFS, manualLaunchRequestSchema, type E2ePrefs, type ManualLaunchIntent, type ManualLaunchRequest, type ModelOverride, type PreparedManualLaunch, type SessionRow, type TaskRecord } from "./contract";
 import type { NextStepSuggestions } from "./extraction";
@@ -12,6 +12,7 @@ import {
   environmentRoleForAttempt,
   insertAttempt,
   LaunchRejectedError,
+  launchDraft,
   launchPhase,
   listLaunchAttempts,
   resolveDraftLaunch,
@@ -20,7 +21,9 @@ import {
   taskExecutionSeeds,
   withTaskLock,
 } from "./launch";
-import { getTask } from "./tasks";
+import { createDraftTask, getTask, listChildren, updateTask } from "./tasks";
+import { childWorktreeTiming, parseEpicChildren, readyChildren, RUNNING_SESSION_STATUSES } from "./epic";
+import { listSessions } from "./sessions";
 import { AUTO_ADVANCE, ITERATE_SKILL_BY_LABEL, autoAdvanceAccepts, autoAdvanceTransition, completedTurnIsProcessed, completionActionsForSession, e2eTransition, isNumericImplementationSkill, isReviewEntrySkill, normalizePhaseLabel, phaseImplementationSkill, skillInfo, type PhaseLabel } from "./transitions";
 import type { LaunchBindingMirror, SessionMirrorRow } from "./sessions";
 
@@ -563,6 +566,13 @@ function advanceSession(
       skillId: nextStep.extraction.nextStepType,
       commandLine: nextStep.extraction.nextStepPrompt,
     };
+    if (target.skillId === "start-epic-delivery") {
+      // Human gate: only Proceed materializes children. A completed turn stops here in every
+      // automation mode, so the Start delivery button is the one way in.
+      if (mode !== "proceed") return { threadId: existing };
+      if (task.workflowType !== "epic") throw new LaunchRejectedError("invalid_next_step", "Only an epic can start delivery.");
+      return startEpicDelivery(bb, db, mirror, bindings, task, fresh);
+    }
     let e2eHop = false;
     if (mode === "auto_advance") {
       const label = normalizePhaseLabel(fresh.label) as PhaseLabel | null;
@@ -603,6 +613,121 @@ function advanceSession(
       e2ePermissionMode: (options.e2e?.() ?? DEFAULT_E2E_PREFS).permissionMode,
     });
   });
+}
+
+// The epic gate: the plan session's advanced_at is the one-shot claim, so a second Proceed on
+// the same session creates no second child set. Runs inside the epic's task lock (advanceSession).
+async function startEpicDelivery(
+  bb: BbPluginApi,
+  db: Database,
+  mirror: Map<string, SessionMirrorRow>,
+  bindings: LaunchBindingMirror,
+  epic: TaskRecord,
+  session: SessionRow,
+): Promise<{ threadId: null }> {
+  if (listChildren(db, epic.id).length === 0) {
+    const plan = latestEpicPlan(db, epic.id);
+    if (!plan) throw new LaunchRejectedError("stale_intent", "No epic plan artifact is saved.");
+    const parsed = parseEpicChildren(plan.content);
+    if (!parsed.ok) throw new LaunchRejectedError("stale_intent", `Epic plan children block: ${parsed.issues.join("; ")}`);
+    const now = Date.now();
+    // createDraftTask's own transaction becomes a savepoint inside this one (better-sqlite3 nests).
+    const created = db.transaction(() => {
+      const claim = writeRow(db, "UPDATE sessions SET advanced_at = ?, updated_at = ? WHERE thread_id = ? AND advanced_at IS NULL", now, now, session.threadId);
+      if (claim.changes !== 1) return false;
+      const ids = new Map<string, string>();
+      parsed.children.forEach((child, index) => {
+        const { taskId } = createDraftTask(db, {
+          projectId: epic.projectId,
+          prompt: child.prompt,
+          name: child.name,
+          parentTaskId: epic.id,
+          position: index,
+          workflowType: child.workflow,
+          worktreeTiming: childWorktreeTiming(child),
+          hostId: epic.hostId,
+          defaultDirectory: epic.defaultDirectory,
+          baseEnvironmentId: epic.baseEnvironmentId,
+          composerEnvironment: epic.composerEnvironment,
+          permissionMode: epic.permissionMode,
+          providerId: epic.providerId,
+          model: epic.model,
+          reasoningLevel: epic.reasoningLevel,
+          serviceTier: epic.serviceTier,
+          autoAdvance: epic.autoAdvance,
+          e2eMode: epic.e2eMode,
+        });
+        ids.set(child.name, taskId);
+      });
+      for (const child of parsed.children) {
+        updateTask(db, ids.get(child.name)!, { dependsOn: child.depends_on.map((name) => ids.get(name)!) });
+      }
+      return true;
+    })();
+    if (!created) return { threadId: null };
+  }
+  await scheduleEpic(bb, db, mirror, bindings, epic.id);
+  bb.realtime.publish("tasks", { taskId: epic.id });
+  return { threadId: null };
+}
+
+// Newest live epic-plan artifact by updatedAt, then artifact number.
+function latestEpicPlan(db: Database, taskId: string) {
+  const plan = listArtifacts(db, taskId)
+    .filter((artifact) => artifact.type === "epic-plan" && !artifact.isDeleted)
+    .sort((left, right) =>
+      right.updatedAt - left.updatedAt
+      || (parseArtifactNumber(right.fileName) ?? 0) - (parseArtifactNumber(left.fileName) ?? 0))[0];
+  if (!plan) return null;
+  const content = getArtifactVersion(db, taskId, plan.fileName)?.version.content.toString("utf8");
+  return content === undefined ? null : { fileName: plan.fileName, content };
+}
+
+// Lock-free on purpose: withTaskLock is a promise chain and not re-entrant, and startEpicDelivery
+// already runs inside the epic's lock. External triggers use scheduleEpicLocked.
+export async function scheduleEpic(
+  bb: BbPluginApi,
+  db: Database,
+  mirror: Map<string, SessionMirrorRow>,
+  bindings: LaunchBindingMirror,
+  epicId: string,
+) {
+  const epic = getTask(db, epicId)?.task;
+  if (!epic || epic.workflowType !== "epic" || epic.archived || epic.completed) return;
+  const children = listChildren(db, epicId);
+  if (children.length === 0) return;
+  const running = new Set(children.filter((child) =>
+    activeLaunchAttempt(db, child.id) !== undefined
+    || listSessions(db, child.id).some((session) => RUNNING_SESSION_STATUSES.has(session.rpiStatus)),
+  ).map((child) => child.id));
+  for (const child of readyChildren(epic, children, running)) {
+    try {
+      await launchDraft(bb, db, mirror, bindings, child.id);
+    } catch (error) {
+      // The failed attempt shows on the child's page; the other ready children still launch.
+      bb.log.warn(`RPI epic ${epicId}: launching child ${child.id} failed: ${String(error)}`);
+    }
+  }
+  if (!epic.completed && children.every((child) => child.completed)) {
+    updateTask(db, epicId, { completed: true });
+    bb.realtime.publish("tasks", { taskId: epicId });
+  }
+}
+
+export function scheduleEpicLocked(
+  bb: BbPluginApi,
+  db: Database,
+  mirror: Map<string, SessionMirrorRow>,
+  bindings: LaunchBindingMirror,
+  epicId: string,
+) {
+  return withTaskLock(epicId, () => scheduleEpic(bb, db, mirror, bindings, epicId));
+}
+
+// The epic a task write concerns: the task itself when it is an epic, else its parent.
+export function epicIdForTask(task: Pick<TaskRecord, "id" | "workflowType" | "parentTaskId">): string | null {
+  if (task.workflowType === "epic") return task.id;
+  return task.parentTaskId;
 }
 
 async function validateAdvance(

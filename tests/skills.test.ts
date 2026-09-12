@@ -43,6 +43,7 @@ const finalTemplateExpectations = [
   ["skills/rpi-iterate-plan/references/plan_final_answer.md", "setup-worktree"],
   ["skills/rpi-iterate-plan/references/plan_in_worktree_answer.md", "implement-plan"],
   ["skills/rpi-iterate-plan/references/plan_disabled_answer.md", "implement-plan"],
+  ["skills/rpi-create-epic-plan/references/epic_plan_final_answer.md", "start-epic-delivery"],
   ["skills/rpi-configure-workspaces/references/workspace_final_answer.md", "setup-worktree"],
   ["skills/rpi-setup-worktree/references/worktree_final_answer.md", "implement-plan"],
   ["skills/rpi-implement-plan/references/implementation_final_answer.md", "describe-pr"],
@@ -74,6 +75,7 @@ const humanReviewArtifactTemplates = [
   "skills/rpi-iterate-structure-outline/references/structure_outline_template.md",
   "skills/rpi-create-plan/references/plan_template.md",
   "skills/rpi-iterate-plan/references/plan_template.md",
+  "skills/rpi-create-epic-plan/references/epic_plan_template.md",
   "skills/rpi-implement-plan/references/implementation_template.md",
   "skills/rpi-implement-outline/references/implementation_template.md",
   "skills/rpi-iterate-implementation/references/implementation_template.md",
@@ -83,7 +85,7 @@ const humanReviewArtifactTemplates = [
 
 const humanGateAnswerTemplates = finalTemplateExpectations
   .map(([file]) => file)
-  .filter((file) => /rpi-(?:create|iterate)-(?:design-discussion|prd|tdd|structure-outline|plan)|rpi-(?:implement-plan|implement-outline|iterate-implementation)|rpi-(?:describe-pr|resolve-pr-reviews)\/(?:references)\/(?:pr_description_final_answer|pr_review_pending_answer)/.test(file))
+  .filter((file) => /rpi-(?:create|iterate)-(?:design-discussion|prd|tdd|structure-outline|plan|epic-plan)|rpi-(?:implement-plan|implement-outline|iterate-implementation)|rpi-(?:describe-pr|resolve-pr-reviews)\/(?:references)\/(?:pr_description_final_answer|pr_review_pending_answer)/.test(file))
   .filter((file) => !file.endsWith("implementation_phase_final_answer.md"));
 
 const phaseAnswerTemplates = [

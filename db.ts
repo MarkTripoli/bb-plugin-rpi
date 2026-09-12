@@ -290,6 +290,14 @@ export const MIGRATIONS: string[] = [
   // the environment instead of the plugin guessing a host. Cleared when the task's host or
   // directory is edited so an explicit pick always wins.
   `ALTER TABLE tasks ADD COLUMN composer_environment_json TEXT`,
+  // Epic children: an ordinary task whose parent_task_id points at a task of workflow_type 'epic'.
+  `ALTER TABLE tasks ADD COLUMN parent_task_id TEXT REFERENCES tasks(id)`,
+  // JSON string[] of sibling task ids this child waits on; NULL means none.
+  `ALTER TABLE tasks ADD COLUMN depends_on_json TEXT`,
+  `ALTER TABLE tasks ADD COLUMN position INTEGER`,
+  `ALTER TABLE tasks ADD COLUMN epic_paused INTEGER NOT NULL DEFAULT 0 CHECK (epic_paused IN (0, 1))`,
+  // NULL means the constant default (epic.ts DEFAULT_EPIC_MAX_PARALLEL).
+  `ALTER TABLE tasks ADD COLUMN max_parallel INTEGER`,
 ];
 
 // `bb.storage.migrate` tracks applied migrations by statement index/count, not by content, so an

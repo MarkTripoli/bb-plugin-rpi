@@ -144,7 +144,7 @@ function attentionRank(status: string): number {
   return 2; // ready_for_input
 }
 
-export type PhaseWorkflowType = "rpi" | "outline_only" | "prd_tdd" | "oneshot" | "freeform";
+export type PhaseWorkflowType = "rpi" | "outline_only" | "prd_tdd" | "oneshot" | "freeform" | "epic";
 export type PhaseWorktreeTiming = "now" | "later" | "never";
 
 // Minimal session/task shapes effectiveStatus needs; every caller (attentionQueue, phaseProgress,
@@ -242,8 +242,11 @@ export function workflowSteps(workflowType: PhaseWorkflowType, worktreeTiming: P
         ? ["questions", "research", "structure", "implementation", "review", "PR", "PR review"]
         : workflowType === "prd_tdd"
           ? ["research", "PRD", "TDD", "plan", "implementation", "review", "PR", "PR review"]
-          : ["single session", "review", "PR", "PR review"];
-  return worktreeTiming === "never" || baseSteps[0] === "single session"
+          : workflowType === "epic"
+            ? ["questions", "research", "epic plan", "delivery"]
+            : ["single session", "review", "PR", "PR review"];
+  // An epic never has its own worktree; its children each get their own.
+  return worktreeTiming === "never" || baseSteps[0] === "single session" || workflowType === "epic"
     ? baseSteps
     : worktreeTiming === "now"
       ? ["worktree", ...baseSteps]
@@ -271,6 +274,7 @@ export function labelStep(label: string | null | undefined): string | null {
   if (normalized === "pr-review") return "PR review";
   if (normalized === "design-prd") return "PRD";
   if (normalized === "design-tdd") return "TDD";
+  if (normalized === "epic-plan") return "epic plan";
   return normalized ?? null;
 }
 
@@ -331,4 +335,6 @@ export const PHASE_DESCRIPTIONS: Record<string, string> = {
   PRD: "Writes the product requirements document.",
   TDD: "Writes the technical design document.",
   "single session": "One session does the whole task.",
+  "epic plan": "Lists the child tasks, their workflow types, and what each depends on.",
+  delivery: "Runs child tasks in dependency order up to the parallel cap; no epic session.",
 };
