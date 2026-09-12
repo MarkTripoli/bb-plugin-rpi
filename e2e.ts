@@ -27,6 +27,12 @@ export function e2eGuardState(attempts: readonly E2eAttempt[], caps: Pick<E2ePre
   return { hops, reviewCycles, retryDepth, pausedReason };
 }
 
+// Same as e2eGuardState for callers that hold attempts newest-first (listLaunchAttempts order);
+// reverses into the oldest-first input e2eGuardState is specified against.
+export function e2eGuardStateFromRecent(attempts: readonly E2eAttempt[], caps: Pick<E2ePrefs, "maxHops" | "maxReviewCycles" | "maxRetries">): E2eGuardState {
+  return e2eGuardState([...attempts].reverse(), caps);
+}
+
 // Number of retried_from links from `attemptId` back to the first attempt of its chain.
 export function retryChainDepth(attempts: readonly E2eAttempt[], attemptId: string): number {
   const byId = new Map(attempts.map((attempt) => [attempt.id, attempt]));

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DEFAULT_E2E_PREFS } from "../contract";
-import { E2E_REASONING_LABELS, e2eGuardState, e2ePausedText, phaseModelFor, retryChainDepth, type E2eAttempt } from "../e2e";
+import { E2E_REASONING_LABELS, e2eGuardState, e2eGuardStateFromRecent, e2ePausedText, phaseModelFor, retryChainDepth, type E2eAttempt } from "../e2e";
 
 let counter = 0;
 function attempt(overrides: Partial<E2eAttempt> = {}): E2eAttempt {
@@ -106,6 +106,24 @@ test("retryChainDepth counts retried_from links and survives a cycle", () => {
   c1.retriedFrom = "c3";
   assert.equal(retryChainDepth([c1, c2, c3], "c3"), 3);
   assert.equal(retryChainDepth([c1, c2, c3], "c1"), 3);
+});
+
+test("e2eGuardStateFromRecent: newest-first panel input matches the oldest-first result", () => {
+  const attempts = [
+    attempt({ launchedBy: "proceed" }),
+    attempt(),
+    attempt(),
+    attempt({ skillId: "fix-code-review" }),
+    attempt({ skillId: "fix-code-review" }),
+    attempt({ launchedBy: "user" }),
+    attempt({ skillId: "fix-code-review" }),
+    attempt({ skillId: "fix-code-review" }),
+    attempt({ skillId: "fix-code-review" }),
+  ];
+  const newestFirst = [...attempts].reverse();
+  assert.deepEqual(e2eGuardStateFromRecent(newestFirst, { ...DEFAULT_E2E_PREFS, maxReviewCycles: 5 }), e2eGuardState(attempts, { ...DEFAULT_E2E_PREFS, maxReviewCycles: 5 }));
+  assert.deepEqual(e2eGuardStateFromRecent(newestFirst, DEFAULT_E2E_PREFS), e2eGuardState(attempts, DEFAULT_E2E_PREFS));
+  assert.deepEqual(e2eGuardStateFromRecent([], DEFAULT_E2E_PREFS), e2eGuardState([], DEFAULT_E2E_PREFS));
 });
 
 test("phaseModelFor: explicit per-phase entry wins over the class default", () => {

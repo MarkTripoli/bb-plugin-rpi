@@ -63,7 +63,7 @@ import { parseRpiThreadPanelParams, type RpiThreadPanelView } from "../thread-pa
 import { buildManualLaunchRoute, parseManualLaunchRoute } from "../manual-launch";
 import { manualLaunchRequestSchema } from "../contract";
 import { composerRequestToTaskCreate } from "../task-create";
-import { E2E_REASONING_LABELS, e2eGuardState, e2ePausedText } from "../e2e";
+import { E2E_REASONING_LABELS, e2eGuardStateFromRecent, e2ePausedText } from "../e2e";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -1758,7 +1758,7 @@ function AutoAdvancePanel({ task, launchAttempts, onUpdated }: { task: TaskRecor
   };
   const humanGates = Object.entries(AUTO_ADVANCE).filter(([, value]) => value.flag === null);
   const pausedText = prefs && task.e2eMode
-    ? e2ePausedText(e2eGuardState(launchAttempts, prefs.e2e))
+    ? e2ePausedText(e2eGuardStateFromRecent(launchAttempts, prefs.e2e))
     : null;
   // phaseModels is a record keyed by AUTO_ADVANCE labels; picking a concrete model stores the
   // entry, picking "default" removes it. An empty record is a valid value.
