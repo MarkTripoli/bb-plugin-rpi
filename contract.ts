@@ -156,6 +156,19 @@ export const createThreadEnvironmentSchema = z.discriminatedUnion("type", [
     ]),
   }).strict(),
   z.object({ type: z.literal("project-default") }).strict(),
+  // bb 0.43.0+ lets the composer express an environment through a provider plugin
+  // ("personal-workspace", "git-worktree", cloud sandboxes) instead of a plain host. Accept it so
+  // the composer submission parses; the launch still resolves its own host/worktree from the task
+  // (the provider selection only contributes the machine, per composerEnvironmentToTaskLocation).
+  z.object({
+    environmentProviderId: boundedId,
+    inputs: z.json().nullable().default(null),
+    machine: z.discriminatedUnion("type", [
+      z.object({ hostId: boundedId, type: z.literal("existing") }).strict(),
+      z.object({ inputs: z.json().nullable().default(null), machineProviderId: boundedId, type: z.literal("new") }).strict(),
+    ]).optional(),
+    type: z.literal("provider"),
+  }).strict(),
 ]);
 
 export const manualLaunchRequestSchema = z.object({

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { composerEnvironmentToTaskLocation, composerRequestToTaskCreate, sdkPermissionModeToTaskPermissionMode } from "../task-create";
-import type { ManualLaunchRequest } from "../contract";
+import { manualLaunchRequestSchema, type ManualLaunchRequest } from "../contract";
 import type { NewThreadRequest } from "@get-bb/plugin-sdk/app";
 
 function request(overrides: Partial<ManualLaunchRequest> = {}): ManualLaunchRequest {
@@ -72,6 +72,45 @@ test("reuse environment becomes the task base environment", () => {
   assert.deepEqual(mapped, { hostId: null, defaultDirectory: null, baseEnvironmentId: "env_1" });
 });
 
+test("provider environment reusing an existing machine maps to that host only", () => {
+  const mapped = composerEnvironmentToTaskLocation(request({
+    environment: {
+      type: "provider",
+      environmentProviderId: "personal-workspace",
+      inputs: null,
+      machine: { type: "existing", hostId: "host_1" },
+    },
+  }));
+  assert.deepEqual(mapped, { hostId: "host_1", defaultDirectory: null, baseEnvironmentId: null });
+});
+
+test("provider environment provisioning a new machine maps to nothing", () => {
+  const mapped = composerEnvironmentToTaskLocation(request({
+    environment: { type: "provider", environmentProviderId: "cloud", inputs: null, machine: { type: "new", machineProviderId: "prov_2", inputs: null } },
+  }));
+  assert.deepEqual(mapped, { hostId: null, defaultDirectory: null, baseEnvironmentId: null });
+});
+
+test("the schema accepts the provider environment bb 0.43.0 composers submit", () => {
+  const parsed = manualLaunchRequestSchema.safeParse({
+    projectId: "proj_personal",
+    providerId: "codex",
+    model: "gpt-5.6-sol",
+    reasoningLevel: "xhigh",
+    permissionMode: "full",
+    serviceTier: "fast",
+    executionInputSources: { providerId: "explicit" },
+    environment: {
+      type: "provider",
+      environmentProviderId: "personal-workspace",
+      machine: { type: "existing", hostId: "host_1" },
+      inputs: null,
+    },
+    input: [{ type: "text", text: "instrumented repro", mentions: [] }],
+  });
+  assert.equal(parsed.success, true, parsed.success ? undefined : JSON.stringify(parsed.error.issues));
+});
+
 test("personal workspace contributes nothing", () => {
   const mapped = composerEnvironmentToTaskLocation(request({
     environment: { type: "host", workspace: { type: "personal" } },
@@ -115,7 +154,12 @@ test("the mapped shape satisfies the SDK NewThreadRequest source type", () => {
     reasoningLevel: "high",
     permissionMode: "auto",
     executionInputSources: {},
-    environment: { type: "project-default" },
+    environment: {
+      type: "provider",
+      environmentProviderId: "personal-workspace",
+      machine: { type: "existing", hostId: "host_1" },
+      inputs: null,
+    },
     input: [{ type: "text", text: "Prompt", mentions: [] }],
   };
   const mapped = composerRequestToTaskCreate(request(sdkRequest as unknown as Partial<ManualLaunchRequest>), extras);
