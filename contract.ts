@@ -1,10 +1,10 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
-export const workflowTypeSchema = z.enum(["rpi", "outline_only", "prd_tdd", "oneshot", "freeform"]);
+export const workflowTypeSchema = z.enum(["rpi", "outline_only", "prd_tdd", "oneshot", "freeform", "epic"]);
 export type WorkflowType = z.infer<typeof workflowTypeSchema>;
 
-export const composerWorkflowTypeSchema = z.enum(["rpi", "outline_only", "prd_tdd", "oneshot", "freeform"]);
+export const composerWorkflowTypeSchema = workflowTypeSchema;
 
 export const worktreeTimingSchema = z.enum(["now", "later", "never"]);
 export const permissionModeSchema = z.enum(["default", "accept_edits", "auto", "bypass"]);
@@ -275,6 +275,11 @@ export const taskRowSchema = z
     aa_worktree_to_implementation: z.boolean(),
     aa_implementation_to_pr: z.boolean(),
     e2eMode: z.boolean(),
+    parentTaskId: z.string().nullable(),
+    dependsOn: z.array(z.string()),
+    position: z.number().int().nullable(),
+    epicPaused: z.boolean(),
+    maxParallel: z.number().int().min(1).max(20).nullable(),
     currentLabel: z.string().nullable(),
     stepLabel: z.string(),
     attentionCount: z.number().int().nonnegative(),
@@ -314,6 +319,11 @@ export const taskRecordSchema = z
     aa_worktree_to_implementation: z.boolean(),
     aa_implementation_to_pr: z.boolean(),
     e2eMode: z.boolean(),
+    parentTaskId: z.string().nullable(),
+    dependsOn: z.array(z.string()),
+    position: z.number().int().nullable(),
+    epicPaused: z.boolean(),
+    maxParallel: z.number().int().min(1).max(20).nullable(),
     phaseModels: phaseModelsSchema,
     composerEnvironment: createThreadEnvironmentSchema.nullable(),
     createdAt: z.number().int(),
@@ -646,6 +656,9 @@ export const taskUpdateInputSchema = z
         e2eMode: z.boolean().optional(),
         // null clears every per-phase entry.
         phaseModels: phaseModelsSchema.nullable().optional(),
+        epicPaused: z.boolean().optional(),
+        // null restores the constant default parallel cap.
+        maxParallel: z.number().int().min(1).max(20).nullable().optional(),
       })
       .strict(),
   })

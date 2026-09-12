@@ -59,10 +59,14 @@ test("migrations are idempotent", async () => {
   assert.ok(launchAttemptColumns.some((row) => row.name === "target_phase"));
   assert.ok(taskColumns.includes("e2e_mode"));
   assert.ok(taskColumns.includes("phase_models"));
+  for (const column of ["parent_task_id", "depends_on_json", "position", "epic_paused", "max_parallel"]) {
+    assert.ok(taskColumns.includes(column), column);
+  }
   db.prepare("INSERT INTO tasks (id, project_id, name, slug, draft_prompt, created_at, updated_at) VALUES ('task_1', 'proj_1', 'Task', 'task', '', 1, 1)").run();
   db.prepare("INSERT INTO launch_attempts (id, task_id, status, created_at) VALUES ('attempt_1', 'task_1', 'retrying', 1)").run();
   assert.equal((db.prepare("SELECT request_json AS requestJson FROM launch_attempts WHERE id = 'attempt_1'").get() as { requestJson: string | null }).requestJson, null);
   assert.throws(() => db.prepare("UPDATE tasks SET e2e_mode = 2").run());
+  assert.throws(() => db.prepare("UPDATE tasks SET epic_paused = 2").run());
   await harness.lifecycle.dispose();
 });
 

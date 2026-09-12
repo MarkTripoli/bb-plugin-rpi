@@ -113,7 +113,8 @@ import { RPI_AGENT_SKILL_IDS, SKILLS, suggestedNextHint } from "./transitions";
 import { findLegacyTaskDirTaskIds, getWorkspaceView, legacyTaskRootDirName, rerunWorkspaceSetup, validateWorkspaceForWorktreeLaunch } from "./workspace";
 
 const PREFS_KEY = "prefs:structured-defaults";
-const RPI_SKILL_NAMES = SKILLS.map(([, skillId]) => `rpi-${skillId}`);
+// start-epic-delivery is a gate target only (transitions.ts SKILLS); it has no skills/ directory.
+const RPI_SKILL_NAMES = SKILLS.filter(([, skillId]) => skillId !== "start-epic-delivery").map(([, skillId]) => `rpi-${skillId}`);
 const RPI_AGENT_SKILL_NAMES = RPI_AGENT_SKILL_IDS.map((skillId) => `rpi-agent-${skillId}`);
 // Source runs resolve ./assets next to server.ts; a prebuilt dist/server.js resolves one level
 // deeper, where the asset lives at the install checkout root (../assets).
