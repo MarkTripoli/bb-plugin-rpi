@@ -675,7 +675,7 @@ export default async function plugin(bb: BbPluginApi) {
     interruptSession: async ({ threadId }) => interruptSession(bb, db, sessionMirror, threadId),
     adoptThread: async ({ threadId, taskId }) => adoptThread(bb, db, sessionMirror, threadId, taskId),
 	    listLaunchAttempts: async ({ taskId }) => ({ attempts: await attemptsWithCandidates(bb, db, listLaunchAttempts(db, taskId)) }),
-    resolveLaunchAttempt: async ({ id, action }) => resolveLaunchAttempt(bb, db, sessionMirror, launchBindings, id, action),
+    resolveLaunchAttempt: async ({ id, action }) => resolveLaunchAttempt(bb, db, sessionMirror, launchBindings, id, action, { e2ePermissionMode: e2ePrefs.permissionMode }),
     listArtifacts: async ({ taskId, includeDeleted }) => ({ artifacts: listArtifacts(db, taskId, { includeDeleted }) }),
     getArtifact: async ({ taskId, fileName, version }) => {
       const result = getArtifactVersion(db, taskId, fileName, version ?? null);
@@ -1091,7 +1091,7 @@ export default async function plugin(bb: BbPluginApi) {
           if (argv[1] === "dismiss") {
             const opts = parseArgs(argv.slice(2));
             if (!opts.id) return { exitCode: 2, stderr: "usage: bb rpi launch-attempts dismiss --id <attemptId>\n" };
-            const result = await resolveLaunchAttempt(bb, db, sessionMirror, launchBindings, opts.id, { type: "dismiss" });
+            const result = await resolveLaunchAttempt(bb, db, sessionMirror, launchBindings, opts.id, { type: "dismiss" }, { e2ePermissionMode: e2ePrefs.permissionMode });
             return { exitCode: 0, stdout: json ? `${JSON.stringify(result)}\n` : "dismissed\n" };
           }
           const opts = parseArgs(argv.slice(1));
@@ -1307,7 +1307,7 @@ export default async function plugin(bb: BbPluginApi) {
     db,
     sessionMirror,
     launchBindings,
-    (row) => onCompletedTurn(bb, db, sessionMirror, launchBindings, row),
+    (row) => onCompletedTurn(bb, db, sessionMirror, launchBindings, row, { e2e: () => e2ePrefs }),
     childThreadMirror,
     notifySnapshot,
     notifyAdvanceFailed,

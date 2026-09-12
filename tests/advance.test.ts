@@ -10,7 +10,7 @@ import {
   prepareManualLaunch,
   submitManualLaunch,
 } from "../advance";
-import { MANUAL_LAUNCH_TEXT_LIMIT, prepareManualLaunchOutputSchema, type ManualLaunchRequest } from "../contract";
+import { DEFAULT_E2E_PREFS, MANUAL_LAUNCH_TEXT_LIMIT, prepareManualLaunchOutputSchema, type ManualLaunchRequest } from "../contract";
 import { MIGRATIONS, stringifyJson } from "../db";
 import { upsertArtifact } from "../artifacts";
 import { createDraftTask } from "../tasks";
@@ -18,7 +18,7 @@ import { proceed } from "../advance";
 import { createLaunchBindingMirror, mirrorSession, type SessionMirrorRow } from "../sessions";
 import { DEFAULT_NOTIFICATION_PREFS, recoverReadyAfterFailedAdvance } from "../notify";
 import { resolveLaunchAttempt } from "../launch";
-import { START_LINKED_TICKET_ACTION } from "../instructions";
+import { E2E_LAUNCH_CONTEXT, START_LINKED_TICKET_ACTION } from "../instructions";
 
 function makeDb() {
   const db = new Database(":memory:");
@@ -159,6 +159,173 @@ test("auto-advance matrix covers rows, flags, master switch, blockers, and missi
         }
       }
     }
+  }
+});
+
+test("full auto gate: one checked box advances every e2e row with the master toggle off", async () => {
+  const cases = [
+    ["research-questions", "create-research", "create-research"],
+    ["research", "create-design-discussion", "create-design-discussion"],
+    ["worktree-setup", "implement-plan", "implement-plan"],
+    ["implementation", "implement-plan", "implement-plan"],
+    ["implementation", "describe-pr", "review-code"],
+    ["code-review", "fix-code-review", "fix-code-review"],
+    ["code-review", "describe-pr", "describe-pr"],
+    ["review-fixes", "review-code", "review-code"],
+  ] as const;
+  for (const [label, extracted, expectedSkill] of cases) {
+    const db = makeDb();
+    const { taskId } = seed(db, label, extracted, { auto_advance: 0, e2e_mode: 1 });
+    const { bb, spawns } = fakeBb();
+    await onCompletedTurn(bb as never, db, new Map(), createLaunchBindingMirror(), mirrorSession(db, new Map(), "thr_source")!);
+    assert.equal(spawns.length, 1, `${label} + ${extracted}`);
+    const attempt = db.prepare("SELECT skill_id AS skillId, launched_by AS launchedBy, target_phase AS targetPhase FROM launch_attempts WHERE task_id = ?").get(taskId) as { skillId: string; launchedBy: string; targetPhase: number | null };
+    assert.equal(attempt.skillId, expectedSkill, `${label} + ${extracted}`);
+    assert.equal(attempt.launchedBy, "auto_advance");
+    if (label === "implementation" && extracted === "implement-plan") {
+      assert.equal(attempt.targetPhase, 2);
+      const prompt = (spawns[0] as { prompt: string }).prompt;
+      assert.ok(prompt.includes("Approved continuation target: Phase 2"), prompt);
+    }
+    db.close();
+  }
+});
+
+test("full auto gate: human gates never advance", async () => {
+  const cases = [
+    ["design", "create-plan"],
+    ["design-prd", "create-tdd"],
+    ["design-tdd", "create-plan"],
+    ["structure", "implement-outline"],
+    ["plan", "setup-worktree"],
+    ["describe-pr", "resolve-pr-reviews"],
+    ["pr-review", "resolve-pr-reviews"],
+  ] as const;
+  for (const [label, extracted] of cases) {
+    const db = makeDb();
+    const { bb, spawns } = fakeBb();
+    seed(db, label, extracted, { auto_advance: 0, e2e_mode: 1 });
+    await onCompletedTurn(bb as never, db, new Map(), createLaunchBindingMirror(), mirrorSession(db, new Map(), "thr_source")!);
+    assert.equal(spawns.length, 0, label);
+    db.close();
+  }
+});
+
+test("full auto gate: terminal receipt declines the phase chain and leaves no suppression row", async () => {
+  const db = makeDb();
+  const { taskId } = seed(db, "implementation", "implement-plan", { auto_advance: 0, e2e_mode: 1 });
+  db.prepare("UPDATE artifacts SET frontmatter_json = ? WHERE task_id = ? AND file_name = '01-implementation-receipt.md'").run(
+    stringifyJson({ type: "implementation", completed_phase: 2 }),
+    taskId,
+  );
+  const { bb, spawns } = fakeBb();
+  await onCompletedTurn(bb as never, db, new Map(), createLaunchBindingMirror(), mirrorSession(db, new Map(), "thr_source")!);
+  assert.equal(spawns.length, 0);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM launch_attempts").get() as { count: number }).count, 0);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM notification_suppressions").get() as { count: number }).count, 0);
+  db.close();
+});
+
+function insertAttemptRow(db: Database.Database, taskId: string, id: string, launchedBy: string, createdAt: number, skillId = "create-research") {
+  db.prepare(
+    "INSERT INTO launch_attempts (id, task_id, from_thread_id, skill_id, label, environment_role, launched_by, status, thread_id, created_at) VALUES (?, ?, NULL, ?, NULL, 'base', ?, 'spawned', NULL, ?)",
+  ).run(id, taskId, skillId, launchedBy, createdAt);
+}
+
+test("full auto gate: caps decline and leave the ready notification unsuppressed", async () => {
+  {
+    const db = makeDb();
+    const { taskId } = seed(db, "research-questions", "create-research", { auto_advance: 0, e2e_mode: 1 });
+    insertAttemptRow(db, taskId, "anchor_user", "user", 1);
+    for (let index = 0; index < 30; index += 1) insertAttemptRow(db, taskId, `hop_${index}`, "auto_advance", 2 + index);
+    const { bb, spawns } = fakeBb();
+    await onCompletedTurn(bb as never, db, new Map(), createLaunchBindingMirror(), mirrorSession(db, new Map(), "thr_source")!);
+    assert.equal(spawns.length, 0);
+    assert.equal((db.prepare("SELECT COUNT(*) AS count FROM notification_suppressions").get() as { count: number }).count, 0);
+    // A fresh human launch moves the anchor and unpauses the gate.
+    insertAttemptRow(db, taskId, "anchor_proceed", "proceed", 100);
+    await onCompletedTurn(bb as never, db, new Map(), createLaunchBindingMirror(), mirrorSession(db, new Map(), "thr_source")!);
+    assert.equal(spawns.length, 1);
+    db.close();
+  }
+  {
+    const db = makeDb();
+    const { taskId } = seed(db, "code-review", "fix-code-review", { auto_advance: 0, e2e_mode: 1 });
+    insertAttemptRow(db, taskId, "anchor_user", "user", 1);
+    for (let index = 0; index < 5; index += 1) insertAttemptRow(db, taskId, `fix_${index}`, "auto_advance", 2 + index, "fix-code-review");
+    const { bb, spawns } = fakeBb();
+    await onCompletedTurn(bb as never, db, new Map(), createLaunchBindingMirror(), mirrorSession(db, new Map(), "thr_source")!);
+    assert.equal(spawns.length, 0);
+    assert.equal((db.prepare("SELECT COUNT(*) AS count FROM notification_suppressions").get() as { count: number }).count, 0);
+    db.close();
+  }
+});
+
+test("full auto gate: unchecking returns the exact flag behavior", async () => {
+  {
+    const db = makeDb();
+    const { taskId } = seed(db, "implementation", "describe-pr", { auto_advance: 1, e2e_mode: 0 });
+    const { bb, spawns } = fakeBb();
+    await onCompletedTurn(bb as never, db, new Map(), createLaunchBindingMirror(), mirrorSession(db, new Map(), "thr_source")!);
+    assert.equal(spawns.length, 1);
+    assert.equal((db.prepare("SELECT skill_id AS skillId FROM launch_attempts WHERE task_id = ?").get(taskId) as { skillId: string }).skillId, "describe-pr");
+    db.close();
+  }
+  {
+    const db = makeDb();
+    const { taskId } = seed(db, "implementation", "describe-pr", { auto_advance: 1, e2e_mode: 1 });
+    const { bb, spawns } = fakeBb();
+    await onCompletedTurn(bb as never, db, new Map(), createLaunchBindingMirror(), mirrorSession(db, new Map(), "thr_source")!);
+    assert.equal(spawns.length, 1);
+    assert.equal((db.prepare("SELECT skill_id AS skillId FROM launch_attempts WHERE task_id = ?").get(taskId) as { skillId: string }).skillId, "review-code");
+    db.close();
+  }
+});
+
+test("full auto hop spawns with bypass permission, phase model, and the launch-context line", async () => {
+  const run = async (options: { e2e?: () => typeof DEFAULT_E2E_PREFS }) => {
+    const db = makeDb();
+    const { taskId } = seed(db, "implementation", "describe-pr", { auto_advance: 0, e2e_mode: 1, permission_mode: "default" });
+    db.prepare("UPDATE tasks SET phase_models = ? WHERE id = ?").run(
+      stringifyJson({ "code-review": { providerId: "pi", model: "reasoner", reasoningLevel: "high" } }),
+      taskId,
+    );
+    const { bb, spawns } = fakeBb();
+    await onCompletedTurn(bb as never, db, new Map(), createLaunchBindingMirror(), mirrorSession(db, new Map(), "thr_source")!, options);
+    assert.equal(spawns.length, 1);
+    const spawnInput = spawns[0] as Record<string, unknown>;
+    return { db, spawnInput } as const;
+  };
+  {
+    const { db, spawnInput } = await run({});
+    assert.equal(spawnInput.permissionMode, "full");
+    assert.equal((spawnInput.executionInputSources as { permissionMode?: string }).permissionMode, "explicit");
+    assert.equal(spawnInput.providerId, "pi");
+    assert.equal(spawnInput.model, "reasoner");
+    assert.ok((spawnInput.prompt as string).includes(E2E_LAUNCH_CONTEXT));
+    db.close();
+  }
+  {
+    const { db, spawnInput } = await run({ e2e: () => ({ ...DEFAULT_E2E_PREFS, permissionMode: "auto" }) });
+    assert.equal(spawnInput.permissionMode, "auto");
+    db.close();
+  }
+  {
+    const { db, spawnInput } = await run({ e2e: () => ({ ...DEFAULT_E2E_PREFS, permissionMode: "default" }) });
+    assert.equal("permissionMode" in spawnInput, false);
+    db.close();
+  }
+  {
+    const db = makeDb();
+    const { taskId } = seed(db, "implementation", "describe-pr", { auto_advance: 1, e2e_mode: 0, permission_mode: "accept_edits" });
+    const { bb, spawns } = fakeBb();
+    await onCompletedTurn(bb as never, db, new Map(), createLaunchBindingMirror(), mirrorSession(db, new Map(), "thr_source")!);
+    assert.equal(spawns.length, 1);
+    const spawnInput = spawns[0] as Record<string, unknown>;
+    assert.equal(spawnInput.permissionMode, "accept-edits");
+    assert.equal((spawnInput.prompt as string).includes(E2E_LAUNCH_CONTEXT), false);
+    assert.equal((db.prepare("SELECT skill_id AS skillId FROM launch_attempts WHERE task_id = ?").get(taskId) as { skillId: string }).skillId, "describe-pr");
+    db.close();
   }
 });
 

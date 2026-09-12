@@ -19,7 +19,7 @@ import {
   type LaunchBindingMirror,
   type SessionMirrorRow,
 } from "./sessions";
-import { START_LINKED_TICKET_ACTION, TASK_CONTEXT_FIRST_ACTION } from "./instructions";
+import { START_LINKED_TICKET_ACTION, E2E_LAUNCH_CONTEXT, TASK_CONTEXT_FIRST_ACTION } from "./instructions";
 import { supersedeReadyRecoverNotification } from "./notify";
 
 type Database = BetterSqlite3.Database;
@@ -243,7 +243,13 @@ function sdkPermissionMode(mode: TaskRecord["permissionMode"]): "accept-edits" |
   return undefined;
 }
 
-export function taskExecutionSeeds(task: TaskRecord) {
+export function taskExecutionSeeds(task: TaskRecord): {
+  providerId?: string;
+  model?: string;
+  reasoningLevel?: (typeof reasoningLevelSchema)["options"][number];
+  serviceTier?: (typeof serviceTierSchema)["options"][number];
+  permissionMode?: "accept-edits" | "auto" | "full";
+} {
   const reasoningLevel = reasoningLevelSchema.safeParse(task.reasoningLevel);
   const serviceTier = serviceTierSchema.safeParse(task.serviceTier);
   return {
@@ -421,14 +427,14 @@ export function visibleLaunchText(task: TaskRecord, input: { skillId: string | n
   return command ?? input.prompt ?? task.draftPrompt;
 }
 
-function taskLaunchContext(db: Database, task: TaskRecord, input: { skillId: string | null; fromThreadId: string | null; targetPhase?: number | null }) {
+function taskLaunchContext(db: Database, task: TaskRecord, input: { skillId: string | null; fromThreadId: string | null; targetPhase?: number | null; e2eHop?: boolean }) {
   const suffix = `Task artifact directory: ${TASK_ROOT_DIR}/tasks/${task.slug}`;
   const continuation = continuationNote(db, task, input.fromThreadId, input.skillId);
   const target = input.targetPhase ? `Approved continuation target: Phase ${input.targetPhase}. Treat rpi_task_context.assignment.approvedPhase as authoritative.` : null;
-  return `${suffix}${continuation ? `\n\n${continuation}` : ""}${target ? `\n\n${target}` : ""}`;
+  return `${suffix}${continuation ? `\n\n${continuation}` : ""}${target ? `\n\n${target}` : ""}${input.e2eHop ? `\n\n${E2E_LAUNCH_CONTEXT}` : ""}`;
 }
 
-function legacyPrompt(db: Database, task: TaskRecord, input: { skillId: string | null; prompt?: string; commandLine?: string | null; fromThreadId: string | null; targetPhase?: number | null }, attemptId: string) {
+function legacyPrompt(db: Database, task: TaskRecord, input: { skillId: string | null; prompt?: string; commandLine?: string | null; fromThreadId: string | null; targetPhase?: number | null; e2eHop?: boolean }, attemptId: string) {
   return `${TASK_CONTEXT_FIRST_ACTION}\n${visibleLaunchText(task, input)}\n\n${taskLaunchContext(db, task, input)}\n\n${launchMarker(attemptId)}`;
 }
 
@@ -538,6 +544,7 @@ export async function launchPhase(
     attemptId?: string;
     targetPhase?: number | null;
     selectedEnvironment?: Awaited<ReturnType<typeof selectEnvironment>>;
+    e2ePermissionMode?: TaskRecord["permissionMode"];
   },
 ) {
   canonicalSkill(input.skillId);
@@ -546,6 +553,11 @@ export async function launchPhase(
   const modelOverride = input.modelOverride
     ? modelOverrideSchema.parse(input.modelOverride)
     : undefined;
+  // Full-auto treatment applies to every auto_advance hop on an e2e task (e2e table hops, flag
+  // path hops, and their retries), decided from the task row plus launchedBy so nothing has to be
+  // persisted per attempt.
+  const e2eHop = Boolean(task.e2eMode) && input.launchedBy === "auto_advance";
+  const permissionOverride = e2eHop ? (input.e2ePermissionMode ?? "bypass") : null;
   const commandLine = commandFor(input.skillId, input.commandLine);
   const label = labelTitle(input.skillId);
   let environmentRole = environmentRoleForAttempt(task, input.skillId);
@@ -590,19 +602,26 @@ export async function launchPhase(
     throw error;
   }
   try {
+    const seeds = taskExecutionSeeds(task);
+    if (permissionOverride !== null) {
+      // The e2e permission mode replaces the task's seeded mode entirely; "default" removes it.
+      delete seeds.permissionMode;
+      const sdk = sdkPermissionMode(permissionOverride);
+      if (sdk) seeds.permissionMode = sdk;
+    }
     const thread = await bb.sdk.threads.spawn(request
       ? {
           ...request,
           projectId: task.projectId,
           environment: selected.environment,
-          input: wrapManualInput(request, taskLaunchContext(db, task, { ...input, targetPhase }), attemptId, draftLaunchInstruction(commandLine)),
+          input: wrapManualInput(request, taskLaunchContext(db, task, { ...input, targetPhase, e2eHop }), attemptId, draftLaunchInstruction(commandLine)),
           title: `${labelTitle(input.skillId)}: ${task.name}`,
           visibility: "visible",
         }
       : {
           projectId: task.projectId,
           environment: selected.environment,
-          prompt: legacyPrompt(db, task, { ...input, targetPhase }, attemptId),
+          prompt: legacyPrompt(db, task, { ...input, targetPhase, e2eHop }, attemptId),
           title: `${labelTitle(input.skillId)}: ${task.name}`,
           visibility: "visible",
           executionInputSources: {
@@ -610,9 +629,9 @@ export async function launchPhase(
             model: (modelOverride?.model ?? task.model) ? "explicit" : undefined,
             reasoningLevel: (modelOverride?.reasoningLevel ?? task.reasoningLevel) ? "explicit" : undefined,
             serviceTier: task.serviceTier ? "explicit" : undefined,
-            permissionMode: task.permissionMode && task.permissionMode !== "default" ? "explicit" : undefined,
+            permissionMode: (permissionOverride ?? task.permissionMode) && (permissionOverride ?? task.permissionMode) !== "default" ? "explicit" : undefined,
           },
-          ...taskExecutionSeeds(task),
+          ...seeds,
           // One-shot per-launch model choice wins over the task record without mutating it.
           ...(modelOverride?.providerId ? { providerId: modelOverride.providerId } : {}),
           ...(modelOverride?.model ? { model: modelOverride.model } : {}),
@@ -776,6 +795,7 @@ export async function resolveLaunchAttempt(
   bindings: LaunchBindingMirror,
   id: string,
   action: { type: "adopt"; threadId: string } | { type: "retry" } | { type: "dismiss" },
+  options: { e2ePermissionMode?: TaskRecord["permissionMode"] } = {},
 ) {
   const attempt = readLaunchAttempt(db, id);
   if (!attempt) throw new Error(`No launch attempt found for id ${id}`);
@@ -878,6 +898,7 @@ export async function resolveLaunchAttempt(
       fromThreadId: fresh.fromThreadId,
       attemptId: retryMarker,
       request,
+      e2ePermissionMode: options.e2ePermissionMode,
     });
   });
 }
