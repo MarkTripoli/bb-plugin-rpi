@@ -21,13 +21,14 @@ summary: "[Two to four sentences stating what the completed phase proves and wha
 
 ## Validation
 - automated:
-- manual:
+- deferred human evidence:
+  - [evidence item and pointer, recorded not executed, or None]
 
 ## Progress Markers
 List outline checkboxes or phase markers updated, with artifact save status.
 
 ## Commit Handoff
-State whether this is ready for `/rpi-ci-commit`, or name the blocker.
+State whether the phase commit was created after green automated checks, or name the blocker.
 
 ## Human Review
 
@@ -37,7 +38,7 @@ State whether this is ready for `/rpi-ci-commit`, or name the blocker.
 
 ### Verify
 
-- [ ] [Exact manual or evidence-review check required before the next phase.]
+- [Exact evidence check the receipt records for the next phase.]
 
 ### Known limits
 
