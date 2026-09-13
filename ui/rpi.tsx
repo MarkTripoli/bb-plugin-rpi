@@ -1263,6 +1263,16 @@ const PHASE_TIPS: Record<string, string[]> = {
     "Name the checks and manual gate after each phase.",
     "Proceed manually to workspace setup.",
   ],
+  "epic-plan": [
+    "One child per independently mergeable pull request, named by its outcome.",
+    "Keep depends_on minimal so independent children share a wave.",
+    "Start delivery creates the children and launches the ready ones; nothing launches before that click.",
+  ],
+  delivery: [
+    "Ready children launch up to the parallel cap; a Queued row waits on the siblings it names.",
+    "Merge a child's pull request, then Mark done on its row so its dependents start.",
+    "Pause epic lets running children finish and starts nothing new.",
+  ],
   "worktree-setup": [
     "Use .rpi/workspace.json for the requested shape.",
     "Let bb own managed worktree creation.",
@@ -3448,10 +3458,15 @@ function EpicChildRow({
           </Button>
         ) : null}
         {canMarkDone ? (
-          <Button type="button" size="sm" variant="outline" disabled={saving} onClick={markDone}>
-            <Icon name="Check" className="size-3.5" />
-            Mark done
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button type="button" size="sm" variant="outline" disabled={saving} onClick={markDone}>
+                <Icon name="Check" className="size-3.5" />
+                Mark done
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Click once this child's pull request has merged. Its dependents start next.</TooltipContent>
+          </Tooltip>
         ) : null}
         <TaskActionsMenu task={child} />
       </span>
@@ -3821,7 +3836,10 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
       </div>
       <div id={`rpi-task-tabpanel-${tab}`} role="tabpanel" aria-labelledby={`rpi-task-tab-${tab}`} className="flex min-h-0 flex-1 flex-col">
         {tab === "tasks" ? (
-          <EpicTasksPanel epic={task} children={epicChildren} sessionsByChild={sessionsByChild} compact={compact} onUpdated={refetch} />
+          <div className="space-y-3">
+            <TipsPanel taskId={taskId} label={workspace.currentLabel} variant="inline" />
+            <EpicTasksPanel epic={task} children={epicChildren} sessionsByChild={sessionsByChild} compact={compact} onUpdated={refetch} />
+          </div>
         ) : tab === "artifacts" ? (
           <div className="flex min-h-0 flex-1 flex-col">
             <ArtifactsPanel taskId={taskId} initialFileName={artifactFileName} />
@@ -3859,6 +3877,11 @@ function TaskDetailPage({ taskId, artifactFileName }: { taskId: string; artifact
               compact={compact}
             />
             <TipsPanel taskId={taskId} label={workspace.currentLabel} variant="inline" />
+            {task.workflowType === "epic" && epicChildren.length === 0 && !task.completed ? (
+              <p className="text-xs text-muted-foreground">
+                Child tasks appear on a Tasks tab here once you choose Start delivery on the approved epic plan. Nothing launches before that.
+              </p>
+            ) : null}
             {visibleAttempts.length > 0 ? (
               <div className="space-y-2">
                 {visibleAttempts.map((attempt) => <RecoverLaunchRow key={attempt.id} attempt={attempt} onResolved={refetch} />)}
