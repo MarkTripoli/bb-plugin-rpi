@@ -196,3 +196,15 @@ test("epic surfaces exist and reuse the one launch boundary", () => {
   assert.equal((content.match(/rpc\.call\("launchDraft"/g) ?? []).length, 1, "the scheduler launches children server-side");
   assert.ok((content.match(/<details/g) ?? []).length >= 1, "epic waves render as native <details>");
 });
+
+// Teach in place (PRODUCT.md #5): both epic phases have tips, the tips mount on the Tasks tab a
+// delivering epic opens on, the epic page explains where children will appear before delivery,
+// and Mark done says what the click means.
+test("epic phases teach in place", () => {
+  assert.match(content, /\n  "epic-plan": \[\n/, "PHASE_TIPS has an epic-plan entry");
+  assert.match(content, /\n  delivery: \[\n/, "PHASE_TIPS has a delivery entry");
+  const tipsMounts = content.match(/<TipsPanel taskId=\{taskId\} label=\{workspace\.currentLabel\} variant="inline" \/>/g) ?? [];
+  assert.equal(tipsMounts.length, 2, "inline tips mount on both the Sessions tab and the Tasks tab");
+  assert.equal(content.includes("Child tasks appear on a Tasks tab here once you choose Start delivery"), true, "pre-delivery empty state");
+  assert.equal(content.includes("Click once this child's pull request has merged. Its dependents start next."), true, "Mark done hint");
+});

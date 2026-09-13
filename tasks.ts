@@ -673,7 +673,7 @@ export function deleteTask(db: Database, taskId: string) {
       throw new Error("Stop running sessions before deleting the task.");
     }
     if (hasChildren(db, taskId)) {
-      throw new Error("Delete or reassign the epic's child tasks first.");
+      throw new Error("Delete the epic's child tasks first, or archive the epic instead.");
     }
     for (const table of ["send_receipts", "comments", "artifact_versions"]) {
       writeRow(db, `DELETE FROM ${table} WHERE artifact_id IN (SELECT id FROM artifacts WHERE task_id = ?)`, taskId);
